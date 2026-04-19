@@ -13,7 +13,10 @@ import time
 from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from launch_options import LaunchOptions
 
 
 class ServerState(Enum):
@@ -112,6 +115,14 @@ class LaunchConfig:
     hf_token: Optional[str] = None
     no_auth: bool = True
     docker_image_override: str = ""   # passed to --override-docker-image when set
+    # Optional LaunchOptions (carries advanced flags from the config panel).
+    # When present, options.docker_image_override takes precedence over the
+    # top-level docker_image_override field (but both are checked so that
+    # callers which populate only the flat field still work correctly).
+    options: Optional["LaunchOptions"] = None
+    # Model inference engine (e.g. "vllm", "media", "forge"); forwarded to
+    # build_extra_args so it can decide which engine-specific flags to emit.
+    inference_engine: str = ""
 
 
 class ServerManager:
@@ -191,8 +202,32 @@ class ServerManager:
         ]
         if config.no_auth:
             cmd.append("--no-auth")
-        if config.docker_image_override:
-            cmd += ["--override-docker-image", config.docker_image_override]
+
+        # docker_image_override: options.docker_image_override wins over the
+        # flat config field, allowing the config panel to set a custom image
+        # while preserving backward-compat with callers that use the flat field.
+        _docker_img = (
+            (config.options.docker_image_override if config.options else "")
+            or config.docker_image_override
+        )
+        if _docker_img:
+            cmd += ["--override-docker-image", _docker_img]
+
+        # Append any extra run.py flags derived from LaunchOptions (use-case
+        # presets, vLLM tuning knobs, dev flags, pass-through flags, etc.).
+        if config.options:
+            from launch_options import build_extra_args
+
+            # _EntryProxy duck-types just enough of ModelEntry for build_extra_args:
+            # it needs inference_engine (to guard vLLM-only flags) and family
+            # (for auto-detecting the tool-call parser).  family is left empty
+            # so the default "hermes" parser is used when tool_call_parser is
+            # not explicitly set.
+            class _EntryProxy:
+                inference_engine = config.inference_engine or ""
+                family = ""
+
+            cmd += build_extra_args(config.options, _EntryProxy())
 
         env = dict(os.environ)
         if config.hf_token:
