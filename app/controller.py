@@ -12,6 +12,7 @@ Threading discipline:
 """
 import json
 import os
+import socket
 import subprocess
 import threading
 import time
@@ -337,15 +338,56 @@ class AppController:
                         return token
         return None
 
+    @staticmethod
+    def _is_port_open(port: str) -> bool:
+        """Return True if something is already listening on localhost:port."""
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(0.3)
+                return s.connect_ex(("127.0.0.1", int(port))) == 0
+        except (OSError, ValueError):
+            return False
+
     def launch(self, entry: ModelEntry, port: str,
                options: Optional[LaunchOptions] = None) -> None:
-        """Start the inference server for the given model entry."""
+        """Start the inference server for the given model entry.
+
+        Pre-flight: if the target port is already bound by a known TT inference
+        container, emits on_running_servers instead of starting a duplicate.
+        If it's bound by an unknown process, logs a warning and tries to launch
+        anyway (docker run will surface the conflict in its own error output).
+        """
         if self._state not in (ServerState.IDLE, ServerState.ERROR):
             return
-        self._port = port
-        self._current_entry = entry
         if options:
             self._options = options
+
+        # Run pre-flight port check + actual launch in a background thread so we
+        # never block the UI for the docker-ps call.
+        def _preflight_and_launch():
+            if self._is_port_open(port):
+                # Something is listening — check if it's one of our containers.
+                servers = _parse_running_servers()
+                matching = [s for s in servers if s.port == str(port)]
+                if matching:
+                    # Hand off to the reconnect path via the existing callback.
+                    self._emit("on_log_line",
+                               f"⚠ Port {port} already used by {matching[0].container_name} — "
+                               f"reconnect instead of launching a new server")
+                    self._emit("on_running_servers", matching)
+                    return
+                # Unknown process — warn but continue; docker run will fail loudly.
+                self._emit("on_log_line",
+                           f"⚠ Port {port} is already in use by an unknown process — "
+                           f"launch may fail")
+            self._do_launch(entry, port)
+
+        threading.Thread(target=_preflight_and_launch, daemon=True).start()
+
+    def _do_launch(self, entry: ModelEntry, port: str) -> None:
+        """Internal: perform the actual server launch (called after port pre-flight)."""
+        self._port = port
+        self._current_entry = entry
 
         repo_path = Path(_settings.server_repo_path)
         if not (repo_path / "run.py").exists():
