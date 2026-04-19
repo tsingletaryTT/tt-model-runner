@@ -802,6 +802,12 @@ class MainPanel(Gtk.Box):
         self._log_count_lbl.set_hexpand(True)
         self._log_count_lbl.set_halign(Gtk.Align.END)
         filter_bar.append(self._log_count_lbl)
+        self._jump_error_btn = Gtk.Button(label="↓ Error")
+        self._jump_error_btn.add_css_class("flat")
+        self._jump_error_btn.set_tooltip_text("Jump to last ERROR line in log")
+        self._jump_error_btn.set_visible(False)
+        self._jump_error_btn.connect("clicked", self._on_jump_to_error)
+        filter_bar.append(self._jump_error_btn)
         logs_box.append(filter_bar)
         logs_box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
 
@@ -1038,6 +1044,31 @@ class MainPanel(Gtk.Box):
         if level not in self._hidden_levels:
             self._insert_line_to_buffer(line, level)
         self._update_log_count()
+        # Show jump-to-error button when an ERROR/CRITICAL line lands
+        if level == "ERROR" and not self._jump_error_btn.get_visible():
+            self._jump_error_btn.set_visible(True)
+
+    def _on_jump_to_error(self, _btn) -> None:
+        """Scroll the log view to the last ERROR-level line in the log entries."""
+        # Find the index of the last error entry
+        last_err_idx = None
+        for i in range(len(self._log_entries) - 1, -1, -1):
+            _, lvl = self._log_entries[i]
+            if lvl == "ERROR":
+                last_err_idx = i
+                break
+        if last_err_idx is None:
+            return
+        # Count visible lines up to that index to find buffer position
+        visible_line = 0
+        for i, (_, lvl) in enumerate(self._log_entries):
+            if lvl not in self._hidden_levels:
+                if i == last_err_idx:
+                    break
+                visible_line += 1
+        buf = self._log_buf
+        it = buf.get_iter_at_line(visible_line)
+        self._log_view.scroll_to_iter(it, 0.1, True, 0.0, 0.3)
 
     def set_state(self, state: ServerState, info: str = ""):
         label, css_class = _STATE_LABELS.get(state, ("?", "pill-idle"))
@@ -1097,6 +1128,7 @@ class MainPanel(Gtk.Box):
         self._log_buf.set_text("")
         self._log_entries.clear()
         self._auto_scroll = True
+        self._jump_error_btn.set_visible(False)
         self._update_log_count()
 
     def _rebuild_log_buffer(self):
