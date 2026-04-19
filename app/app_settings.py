@@ -21,6 +21,8 @@ _DEFAULTS = {
     "last_launched_at": 0.0,
     # Path to the tt-developer-image repo (for tt-forge/tt-metal model scripts).
     "dev_image_repo_path": str(Path.home() / "code" / "tt-developer-image"),
+    # Last 5 launched models: [{"model_name": str, "device": str, "display": str}]
+    "recent_models": [],
 }
 
 

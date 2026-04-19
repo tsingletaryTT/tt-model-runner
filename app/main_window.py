@@ -315,6 +315,26 @@ class Sidebar(Gtk.Box):
         last_model = _settings.last_model
         searching = bool(search)
 
+        # RECENT section — show up to 3 most-recently-launched models at top
+        if not searching:
+            recents = _settings.recent_models or []
+            recent_entries = []
+            for rec in recents[:3]:
+                entry = self._catalog.get_entry(rec.get("model_name", ""), rec.get("device", ""))
+                if entry:
+                    recent_entries.append(entry)
+            if recent_entries:
+                rec_it = self._tree_store.append(
+                    None, [f"RECENT ({len(recent_entries)})", "", "", False]
+                )
+                for entry in recent_entries:
+                    leaf_it = self._tree_store.append(
+                        rec_it, [entry.display_name, entry.model_name, entry.device_type, True]
+                    )
+                    if entry.model_name == last_model:
+                        self._tree_view.get_selection().select_iter(leaf_it)
+                self._tree_view.expand_row(self._tree_store.get_path(rec_it), False)
+
         for type_name in _TYPE_ORDER:
             if type_name not in tree:
                 continue

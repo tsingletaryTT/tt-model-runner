@@ -410,6 +410,15 @@ class AppController:
             inference_engine=entry.inference_engine,
         )
 
+        # Record in recent_models (newest first, capped at 5 unique entries)
+        rec = {"model_name": entry.model_name, "device": entry.device_type,
+               "display": entry.display_name}
+        recents = [r for r in (_settings.recent_models or [])
+                   if r.get("model_name") != rec["model_name"] or r.get("device") != rec["device"]]
+        recents.insert(0, rec)
+        _settings.recent_models = recents[:5]
+        _settings.save()
+
         self._emit("on_log_line",
                    f"▶ Launching {entry.display_name} on {entry.device_type} · port {port}")
         self._transition(ServerState.LAUNCHING)
