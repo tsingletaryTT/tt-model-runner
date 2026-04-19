@@ -10,6 +10,7 @@ Threading discipline:
     Background threading.Timer callbacks call self._emit(), which posts
     to the UI event loop — never touching widgets directly.
 """
+import json
 import os
 import threading
 import time
@@ -572,11 +573,73 @@ class AppController:
     def set_options(self, options: LaunchOptions) -> None:
         self._options = options
 
-    def run_benchmark(self, mode: str = "smoke-test",
-                      concurrency_sweeps: bool = False,
-                      percentile_report: bool = False) -> None:
-        """Wrap run.py --workflow benchmarks (implemented in Plan 2)."""
-        pass
+    def run_benchmark(
+        self,
+        mode: str = "smoke-test",
+        concurrency_sweeps: bool = False,
+        percentile_report: bool = False,
+    ) -> None:
+        """Run tt-inference-server benchmarks for the current model.
+
+        Spawns BenchmarkRunner in a background thread. Emits on_bench_progress
+        for each log line and on_bench_result for each parsed result file.
+
+        Args:
+            mode: Sampling mode passed to run.py as --limit-samples-mode
+                  (e.g. "smoke-test", "full").
+            concurrency_sweeps: If True, sweeps across concurrency levels.
+            percentile_report: If True, requests percentile breakdown in output.
+        """
+        from benchmark_runner import BenchmarkRunner
+
+        repo_path = Path(_settings.server_repo_path)
+        if not (repo_path / "run.py").exists():
+            self._emit("on_bench_progress",
+                       f"⚠ run.py not found at {repo_path} — cannot run benchmark")
+            return
+
+        model_name = (self._current_entry.display_name
+                      if self._current_entry else "unknown")
+        device = (self._current_entry.device_type
+                  if self._current_entry else "unknown")
+
+        # Pull perf_reference targets from model_spec.json when available so
+        # BenchmarkRunner can evaluate pass/fail without a second disk read.
+        perf_targets: dict = {}
+        spec_path = repo_path / "model_spec.json"
+        if self._current_entry and spec_path.exists():
+            try:
+                spec_data = json.loads(spec_path.read_text())
+                model_key = self._current_entry.model_name
+                device_key = self._current_entry.device_type
+                impl_data = (spec_data.get("model_specs", {})
+                             .get(model_key, {}).get(device_key, {}))
+                for engine_map in impl_data.values():
+                    if isinstance(engine_map, dict):
+                        for impl in engine_map.values():
+                            if isinstance(impl, dict) and "perf_reference" in impl:
+                                refs = impl["perf_reference"]
+                                if refs:
+                                    perf_targets = refs[0].get("targets", {})
+                                break
+                        break
+            except Exception:
+                # Best-effort — if parsing fails, run without targets
+                pass
+
+        runner = BenchmarkRunner(
+            repo_path=repo_path,
+            on_progress=lambda line: self._emit("on_bench_progress", line),
+            on_result=lambda r: self._emit("on_bench_result", r),
+        )
+        runner.run(
+            model_name=model_name,
+            device=device,
+            mode=mode,
+            concurrency_sweeps=concurrency_sweeps,
+            percentile_report=percentile_report,
+            perf_targets=perf_targets,
+        )
 
     def send_tool_call(self, tools: list, prompt: str) -> None:
         """Send a multi-turn tool-call to the running server.

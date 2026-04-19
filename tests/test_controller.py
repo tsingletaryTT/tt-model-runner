@@ -233,3 +233,49 @@ def test_send_tool_call_emits_error_on_exception():
 
     assert results and results[0].step == "final"
     assert "connection refused" in results[0].content
+
+
+# ── Benchmarks ───────────────────────────────────────────────────────────────
+
+def test_run_benchmark_emits_bench_progress_and_result():
+    """run_benchmark() must emit on_bench_progress lines and on_bench_result."""
+    import time
+    from controller import BenchResult
+    from unittest.mock import patch, MagicMock
+
+    ctrl, view = make_controller()
+    progress_lines = []
+    results = []
+    ctrl.on_bench_progress = lambda l: progress_lines.append(l)
+    ctrl.on_bench_result   = lambda r: results.append(r)
+    ctrl._current_entry = MagicMock()
+    ctrl._current_entry.display_name = "test-model"
+    ctrl._current_entry.device_type  = "N150"
+
+    fake_result = BenchResult(
+        model_name="test-model", device="N150",
+        timestamp="2026-01-01T00:00:00",
+        isl=128, osl=128, concurrency=1,
+        mean_ttft_ms=100.0, p95_ttft_ms=None,
+        mean_tps=30.0, tps_decode=32.0,
+        mean_e2el_ms=1000.0, request_throughput=0.5,
+        tier_pass="PASS",
+    )
+
+    class FakeRunner:
+        def __init__(self, repo_path, on_progress, on_result):
+            on_progress("Running…")
+            on_result(fake_result)
+        def run(self, *args, **kwargs):
+            pass
+
+    with patch("benchmark_runner.BenchmarkRunner", FakeRunner):
+        ctrl.run_benchmark(mode="smoke-test")
+        for _ in range(50):
+            if progress_lines and results:
+                break
+            time.sleep(0.05)
+
+    assert "Running…" in progress_lines
+    assert len(results) == 1
+    assert results[0].tier_pass == "PASS"
