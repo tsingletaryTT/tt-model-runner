@@ -577,12 +577,61 @@ class MainPanel(Gtk.Box):
         tools_box.append(tools_cols)
         self._stack.add_named(tools_box, "tools")
 
-        # ── Bench page placeholder (wired in Task 7) ─────────────────────────
-        bench_placeholder = Gtk.Label(
-            label="Benchmark runner — available after launch"
-        )
-        bench_placeholder.add_css_class("muted")
-        self._stack.add_named(bench_placeholder, "bench")
+        # ── Bench page ────────────────────────────────────────────────────────
+        bench_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        bench_box.set_margin_start(12); bench_box.set_margin_end(12)
+        bench_box.set_margin_top(8);    bench_box.set_margin_bottom(8)
+
+        run_cfg_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        mode_lbl = Gtk.Label(label="Mode:")
+        mode_lbl.add_css_class("muted")
+        run_cfg_box.append(mode_lbl)
+        self._bench_mode_combo = Gtk.ComboBoxText()
+        for m in ["smoke-test", "ci-nightly", "ci-long"]:
+            self._bench_mode_combo.append_text(m)
+        self._bench_mode_combo.set_active(0)
+        run_cfg_box.append(self._bench_mode_combo)
+        self._bench_sweeps_check = Gtk.CheckButton(label="Concurrency sweeps")
+        run_cfg_box.append(self._bench_sweeps_check)
+        self._bench_pct_check = Gtk.CheckButton(label="Percentile report")
+        run_cfg_box.append(self._bench_pct_check)
+        self._bench_run_btn = Gtk.Button(label="▶ Run Benchmark")
+        self._bench_run_btn.add_css_class("suggested-action")
+        run_cfg_box.append(self._bench_run_btn)
+        bench_box.append(run_cfg_box)
+        bench_box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+
+        bench_log_lbl = Gtk.Label(label="LIVE OUTPUT")
+        bench_log_lbl.add_css_class("muted")
+        bench_log_lbl.set_halign(Gtk.Align.START)
+        bench_box.append(bench_log_lbl)
+        self._bench_log_buf = Gtk.TextBuffer()
+        bench_log_view = Gtk.TextView(buffer=self._bench_log_buf)
+        bench_log_view.set_editable(False)
+        bench_log_view.set_monospace(True)
+        bench_log_view.add_css_class("log-view")
+        bench_log_scroll = Gtk.ScrolledWindow()
+        bench_log_scroll.set_vexpand(True)
+        bench_log_scroll.set_child(bench_log_view)
+        bench_box.append(bench_log_scroll)
+
+        bench_box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+        bench_results_lbl = Gtk.Label(label="RESULTS")
+        bench_results_lbl.add_css_class("muted")
+        bench_results_lbl.set_halign(Gtk.Align.START)
+        bench_box.append(bench_results_lbl)
+        self._bench_results_buf = Gtk.TextBuffer()
+        bench_results_view = Gtk.TextView(buffer=self._bench_results_buf)
+        bench_results_view.set_editable(False)
+        bench_results_view.set_monospace(True)
+        bench_results_view.add_css_class("log-view")
+        bench_results_scroll = Gtk.ScrolledWindow()
+        bench_results_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        bench_results_scroll.set_size_request(-1, 120)
+        bench_results_scroll.set_child(bench_results_view)
+        bench_box.append(bench_results_scroll)
+
+        self._stack.add_named(bench_box, "bench")
 
         self.append(self._stack)
 
@@ -780,6 +829,33 @@ class MainPanel(Gtk.Box):
         """Show/hide the 'tool use not enabled' hint in the tools page."""
         self._tool_hint.set_visible(visible)
 
+    def append_bench_progress(self, line: str) -> None:
+        """Append a live log line to the bench live-output buffer."""
+        buf = self._bench_log_buf
+        end = buf.get_end_iter()
+        if buf.get_char_count() > 0:
+            buf.insert(end, "\n")
+            end = buf.get_end_iter()
+        buf.insert(end, line)
+
+    def append_bench_result(self, result) -> None:
+        """Append a formatted BenchResult row to the bench results buffer."""
+        icon = {"PASS": "✓", "BELOW_TARGET": "⚠", "FAIL": "✗"}.get(result.tier_pass, "?")
+        line = (
+            f"{icon} {result.tier_pass:12s}"
+            f"  ISL={result.isl} OSL={result.osl} Con={result.concurrency}"
+            f"  TTFT={result.mean_ttft_ms:.0f}ms"
+            f"  TPS={result.mean_tps:.1f}"
+            f"  E2EL={result.mean_e2el_ms:.0f}ms"
+            f"  [{result.timestamp}]"
+        )
+        buf = self._bench_results_buf
+        end = buf.get_end_iter()
+        if buf.get_char_count() > 0:
+            buf.insert(end, "\n")
+            end = buf.get_end_iter()
+        buf.insert(end, line)
+
     def append_tool_result(self, rt) -> None:
         """Append a ToolRoundTrip step to the round-trip output buffer.
 
@@ -845,8 +921,8 @@ class MainWindow(Gtk.ApplicationWindow):
         controller.on_substage       = self._on_substage
         controller.on_catalog_loaded = self._on_catalog_loaded
         controller.on_cache_scanned  = lambda info: None   # no cache UI in this view
-        controller.on_bench_progress = self._panel.append_log
-        controller.on_bench_result   = lambda r: None
+        controller.on_bench_progress = self._on_bench_progress
+        controller.on_bench_result   = self._on_bench_result
         controller.on_tool_result    = self._on_tool_result
 
         # Auto-discover and load the inference-server repo on startup.
@@ -889,8 +965,9 @@ class MainWindow(Gtk.ApplicationWindow):
         elif state == ServerState.LAUNCHING:
             self._panel.show_logs()
         elif state == ServerState.READY:
-            # Wire the Send button on first READY transition (idempotent).
+            # Wire the Send button and bench run button on first READY transition (idempotent).
             self._wire_tool_send()
+            self._wire_bench_run()
 
     def _on_progress(self, fraction: float, label: str) -> None:
         """Update the progress bar.  fraction < 0 triggers an indeterminate pulse."""
@@ -995,3 +1072,42 @@ class MainWindow(Gtk.ApplicationWindow):
             self._ctrl.send_tool_call(tools, prompt)
 
         self._panel._tool_send_btn.connect("clicked", _on_send)
+
+    # ── Bench tab helpers ─────────────────────────────────────────────────────
+
+    def _on_bench_progress(self, line: str) -> None:
+        """Forward a benchmark live-output line to the bench log buffer.
+
+        Called via controller.on_bench_progress, dispatched through
+        GLib.idle_add so this always runs on the GTK main thread.
+        """
+        self._panel.append_bench_progress(line)
+
+    def _on_bench_result(self, result) -> None:
+        """Append a completed BenchResult row to the bench results buffer.
+
+        Called via controller.on_bench_result, dispatched through
+        GLib.idle_add so this always runs on the GTK main thread.
+        """
+        self._panel.append_bench_result(result)
+
+    def _wire_bench_run(self) -> None:
+        """Connect the Run Benchmark button to run_benchmark() on the controller.
+
+        This method is idempotent — subsequent calls after the first READY
+        transition are no-ops, guarded by _bench_run_wired.
+        """
+        if getattr(self, "_bench_run_wired", False):
+            return
+        self._bench_run_wired = True
+
+        def _on_run(_btn):
+            mode = self._panel._bench_mode_combo.get_active_text() or "smoke-test"
+            sweeps = self._panel._bench_sweeps_check.get_active()
+            pct    = self._panel._bench_pct_check.get_active()
+            # Clear previous live output before starting a new run.
+            self._panel._bench_log_buf.set_text("")
+            self._ctrl.run_benchmark(mode=mode, concurrency_sweeps=sweeps,
+                                     percentile_report=pct)
+
+        self._panel._bench_run_btn.connect("clicked", _on_run)
