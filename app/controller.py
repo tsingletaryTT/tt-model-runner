@@ -336,11 +336,10 @@ class AppController:
         """Called by HealthWorker when the server's health endpoint returns 200."""
         if self._state in (ServerState.LOADING, ServerState.LAUNCHING,
                            ServerState.PULLING_IMAGE):
-            self._transition(ServerState.READY)
             mstr = ", ".join(models) if models else "ready"
             port = _settings.last_port
-            self._emit("on_state_changed", ServerState.READY,
-                       f"localhost:{port}  ·  {mstr}")
+            self._transition(ServerState.READY,
+                             info_override=f"localhost:{port}  ·  {mstr}")
             if self._load_start and self._current_entry:
                 dur = time.monotonic() - self._load_start
                 self._timing.record_load(
@@ -356,17 +355,29 @@ class AppController:
             self._emit("on_log_line",
                        "⚠ Health check lost — server may have crashed")
 
-    def _transition(self, state: ServerState) -> None:
-        """Transition to a new state, emit on_state_changed, and manage timers."""
+    def _transition(self, state: ServerState, info_override: str = "") -> None:
+        """Transition to a new state, emit on_state_changed, and manage timers.
+
+        Args:
+            state: The new ServerState to transition to.
+            info_override: When non-empty, use this string as the info payload
+                for on_state_changed instead of the default
+                "localhost:port · display_name · device_type" format.
+                Used by _on_health_ready to surface model names without a
+                second emit.
+        """
         if state == self._state:
             return
         self._state = state
 
-        info = ""
-        if self._current_entry:
+        if info_override:
+            info = info_override
+        elif self._current_entry:
             port = _settings.last_port
             info = (f"localhost:{port}  ·  {self._current_entry.display_name}"
                     f"  ·  {self._current_entry.device_type}")
+        else:
+            info = ""
 
         self._emit("on_state_changed", state, info)
 

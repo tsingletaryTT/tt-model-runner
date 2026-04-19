@@ -7,3 +7,7 @@ def main():
     raise NotImplementedError(
         "TUI not yet implemented — run Plan 2 to build app/tui/"
     )
+
+
+if __name__ == "__main__":
+    main()
