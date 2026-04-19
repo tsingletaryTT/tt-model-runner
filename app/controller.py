@@ -579,5 +579,38 @@ class AppController:
         pass
 
     def send_tool_call(self, tools: list, prompt: str) -> None:
-        """Send a tool-call round-trip to the running server (Plan 2)."""
-        pass
+        """Send a multi-turn tool-call to the running server.
+
+        Runs in a background thread. Emits on_tool_result for each step:
+          step="call"   — model requested a tool call
+          step="result" — auto-generated result was injected
+          step="final"  — model's final text reply (or error message)
+        """
+        port = getattr(self, "_port", "8000")
+        base_url = f"http://localhost:{port}"
+        model = (self._current_entry.hf_model_repo
+                 if self._current_entry else "default")
+
+        def _run() -> None:
+            try:
+                for step, payload in _tc_run_session(base_url, model, tools, prompt):
+                    if step == "tool_call":
+                        rt = ToolRoundTrip(
+                            step="call",
+                            name=payload.name,
+                            arguments=payload.arguments,
+                            content="",
+                        )
+                    elif step == "tool_result":
+                        rt = ToolRoundTrip(step="result", name="", arguments="",
+                                           content=payload)
+                    else:
+                        rt = ToolRoundTrip(step="final", name="", arguments="",
+                                           content=payload)
+                    self._emit("on_tool_result", rt)
+            except Exception as exc:
+                self._emit("on_tool_result",
+                           ToolRoundTrip(step="final", name="", arguments="",
+                                         content=f"Error: {exc}"))
+
+        threading.Thread(target=_run, daemon=True).start()

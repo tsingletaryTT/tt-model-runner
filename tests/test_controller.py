@@ -166,3 +166,70 @@ def test_missing_callback_does_not_raise():
     ctrl = AppController()
     # No callbacks registered — _emit should silently do nothing
     ctrl._emit("on_log_line", "ignored")
+
+
+# ── Tool calls ────────────────────────────────────────────────────────────────
+
+_SAMPLE_TOOLS = [
+    {"type": "function", "function": {"name": "ping", "description": "test", "parameters": {}}}
+]
+
+
+def test_send_tool_call_emits_tool_result_callbacks():
+    """send_tool_call() runs in a background thread and emits on_tool_result for each step."""
+    import time
+    from controller import ToolRoundTrip
+    from tool_client import ToolCall as _TC
+    from unittest.mock import patch
+
+    ctrl, view = make_controller()
+    results = []
+    ctrl.on_tool_result = lambda r: results.append(r)
+    ctrl._port = "8000"
+    ctrl._current_entry = MagicMock()
+    ctrl._current_entry.hf_model_repo = "test-model"
+
+    def _fake_run(base_url, model, tools, prompt):
+        yield ("tool_call", _TC(id="c1", name="ping", arguments="{}"))
+        yield ("tool_result", '{"pong": true}')
+        yield ("final", "Done!")
+
+    with patch("controller._tc_run_session", _fake_run):
+        ctrl.send_tool_call(_SAMPLE_TOOLS, "ping")
+        for _ in range(50):           # wait up to 2.5s for background thread
+            if len(results) >= 3:
+                break
+            time.sleep(0.05)
+
+    assert len(results) == 3
+    assert results[0].step == "call"
+    assert results[0].name == "ping"
+    assert results[1].step == "result"
+    assert results[1].content == '{"pong": true}'
+    assert results[2].step == "final"
+    assert results[2].content == "Done!"
+
+
+def test_send_tool_call_emits_error_on_exception():
+    """HTTP errors are caught and emitted as a final step with error message."""
+    import time
+    from unittest.mock import patch
+
+    ctrl, _ = make_controller()
+    results = []
+    ctrl.on_tool_result = lambda r: results.append(r)
+    ctrl._port = "8000"
+
+    def _raise(*args, **kwargs):
+        raise RuntimeError("connection refused")
+        yield  # make it a generator
+
+    with patch("controller._tc_run_session", _raise):
+        ctrl.send_tool_call(_SAMPLE_TOOLS, "hello")
+        for _ in range(50):
+            if results:
+                break
+            time.sleep(0.05)
+
+    assert results and results[0].step == "final"
+    assert "connection refused" in results[0].content
