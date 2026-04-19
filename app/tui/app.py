@@ -75,15 +75,17 @@ class TuiApp(App[None]):
             else self.call_from_thread(fn, *a)
         )
 
-        self._ctrl.on_state_changed  = self._on_state_changed
-        self._ctrl.on_log_line       = self._on_log_line
-        self._ctrl.on_progress       = self._on_progress
-        self._ctrl.on_substage       = self._on_substage
-        self._ctrl.on_catalog_loaded = self._on_catalog_loaded
-        self._ctrl.on_cache_scanned  = lambda _info: None
-        self._ctrl.on_bench_progress = self._on_bench_progress
-        self._ctrl.on_bench_result   = self._on_bench_result
-        self._ctrl.on_tool_result    = self._on_tool_result
+        self._ctrl.on_state_changed   = self._on_state_changed
+        self._ctrl.on_log_line        = self._on_log_line
+        self._ctrl.on_progress        = self._on_progress
+        self._ctrl.on_substage        = self._on_substage
+        self._ctrl.on_catalog_loaded  = self._on_catalog_loaded
+        self._ctrl.on_cache_scanned   = lambda _info: None
+        self._ctrl.on_bench_progress  = self._on_bench_progress
+        self._ctrl.on_bench_result    = self._on_bench_result
+        self._ctrl.on_tool_result     = self._on_tool_result
+        self._ctrl.on_hardware_status = self._on_hardware_status
+        self._ctrl.on_running_servers = self._on_running_servers
 
         self._set_ready_tabs_enabled(False)
 
@@ -185,3 +187,21 @@ class TuiApp(App[None]):
             tab = tabs.get_tab(tab_id)
             if tab is not None:
                 tab.disabled = not enabled
+
+    def _on_hardware_status(self, chips: list) -> None:
+        """Show chip telemetry summary as an info log line."""
+        if not chips:
+            return
+        parts = []
+        for c in chips:
+            temp = f"{c.temp_c:.0f}°C" if c.temp_c is not None else "?"
+            clk  = f"{c.aiclk_mhz}MHz" if c.aiclk_mhz else ""
+            parts.append(f"#{c.index} {c.board_type}  {temp}  {clk}".strip())
+        self.query_one(LogPane).append_line("HW  " + "  |  ".join(parts))
+
+    def _on_running_servers(self, servers: list) -> None:
+        """Log a reconnect hint when a running TT server is detected on startup."""
+        for s in servers:
+            self.query_one(LogPane).append_line(
+                f"⚡ Detected running server: {s.container_name} on port {s.port}"
+            )

@@ -77,6 +77,7 @@ class ConfigPanel(Gtk.Box):
         self._docker_images: List[DockerImage] = []
         self._preview_source: Optional[int] = None
         self._inhibit_signals: bool = False   # suppress change callbacks while updating UI
+        self._arch_scan_model: str = ""       # hf_model_repo of in-flight arch scan
         self._build()
 
     # ------------------------------------------------------------------ build
@@ -129,9 +130,19 @@ class ConfigPanel(Gtk.Box):
         self._strip_timing = Gtk.Label(label="")
         self._strip_timing.add_css_class("muted")
         self._strip_timing.set_halign(Gtk.Align.START)
-        self._strip_timing.set_margin_bottom(6)
+        self._strip_timing.set_margin_bottom(2)
         self._strip_timing.set_visible(False)
         inner.append(self._strip_timing)
+
+        # Architecture facts row — shown only when model is in HF cache
+        # e.g. "80 layers · 64 heads / 8 KV · ctx 131072 · vocab 128256"
+        self._strip_arch = Gtk.Label(label="")
+        self._strip_arch.add_css_class("muted")
+        self._strip_arch.set_halign(Gtk.Align.START)
+        self._strip_arch.set_margin_bottom(6)
+        self._strip_arch.set_ellipsize(Pango.EllipsizeMode.END)
+        self._strip_arch.set_visible(False)
+        inner.append(self._strip_arch)
 
         inner.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
 
@@ -441,6 +452,10 @@ class ConfigPanel(Gtk.Box):
         self._strip_timing.set_text(timing_text)
         self._strip_timing.set_visible(bool(timing_text))
 
+        # Architecture facts — kick off background scan of HF cache
+        self._strip_arch.set_visible(False)
+        self._scan_arch_async(entry)
+
         # Rebuild use-case chips
         self._populate_use_cases(entry)
 
@@ -459,6 +474,41 @@ class ConfigPanel(Gtk.Box):
         # Refresh docker images in background
         self._refresh_docker_images(entry.docker_image)
         self._update_preview()
+
+    # -------------------------------------------------------- arch facts scan
+
+    def _scan_arch_async(self, entry: ModelEntry) -> None:
+        """Kick off a background scan_model_cache; update _strip_arch when done."""
+        from hf_cache import scan_model_cache
+        hf_repo = entry.hf_model_repo
+        self._arch_scan_model = hf_repo
+
+        def _run():
+            info = scan_model_cache(hf_repo)
+            GLib.idle_add(self._on_arch_scanned, hf_repo, info)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _on_arch_scanned(self, hf_repo: str, info) -> None:
+        """Called on GTK thread after arch scan completes."""
+        if self._entry is None or self._entry.hf_model_repo != hf_repo:
+            return  # model changed while scan was in flight
+        if not info.is_cached or info.arch is None:
+            return
+        a = info.arch
+        parts = []
+        if a.num_layers:
+            parts.append(f"{a.num_layers} layers")
+        if a.num_heads:
+            kv = f" / {a.num_kv_heads} KV" if a.num_kv_heads and a.num_kv_heads != a.num_heads else ""
+            parts.append(f"{a.num_heads}{kv} heads")
+        if a.context_length:
+            parts.append(f"ctx {a.context_length:,}")
+        if a.vocab_size:
+            parts.append(f"vocab {a.vocab_size:,}")
+        if parts:
+            self._strip_arch.set_text("  ·  ".join(parts))
+            self._strip_arch.set_visible(True)
 
     # ------------------------------------------------------------- use cases
 
