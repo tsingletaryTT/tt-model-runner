@@ -165,10 +165,22 @@ class Sidebar(Gtk.Box):
         hw_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         hw_box.set_margin_start(8); hw_box.set_margin_end(8)
         hw_box.set_margin_top(4);   hw_box.set_margin_bottom(4)
+        hw_header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
         hw_lbl = Gtk.Label(label="HARDWARE")
         hw_lbl.add_css_class("section-label")
         hw_lbl.set_halign(Gtk.Align.START)
-        hw_box.append(hw_lbl)
+        hw_lbl.set_hexpand(True)
+        hw_header.append(hw_lbl)
+        self._hw_refresh_btn = Gtk.Button(label="↻")
+        self._hw_refresh_btn.add_css_class("flat")
+        self._hw_refresh_btn.set_tooltip_text("Refresh chip telemetry (tt-smi -s)")
+        self._hw_refresh_btn.connect("clicked", self._on_hw_refresh_clicked)
+        hw_header.append(self._hw_refresh_btn)
+        hw_box.append(hw_header)
+        # Per-chip telemetry grid (hidden until data arrives)
+        self._chip_grid = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
+        self._chip_grid.set_visible(False)
+        hw_box.append(self._chip_grid)
         self._reset_btn = Gtk.Button(label="↺  Reset  (tt-smi -r)")
         self._reset_btn.add_css_class("destructive-action")
         self._reset_btn.set_hexpand(True)
@@ -347,6 +359,47 @@ class Sidebar(Gtk.Box):
     def _on_reset_clicked(self, btn):
         if self._on_reset:
             self._on_reset()
+
+    def _on_hw_refresh_clicked(self, _btn):
+        pass   # MainWindow wires this to ctrl.refresh_hardware_status
+
+    def update_hardware_status(self, chips: list) -> None:
+        """Populate the per-chip telemetry grid from a List[ChipStatus]."""
+        while child := self._chip_grid.get_first_child():
+            self._chip_grid.remove(child)
+        for chip in chips:
+            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+            row.set_margin_start(2)
+            bt = (chip.board_type or "?").upper()
+            id_lbl = Gtk.Label(label=f"#{chip.index} {bt}")
+            id_lbl.set_width_chars(10)
+            id_lbl.set_xalign(0.0)
+            id_lbl.add_css_class("muted")
+            row.append(id_lbl)
+            if chip.temp_c is not None:
+                t = chip.temp_c
+                temp_lbl = Gtk.Label(label=f"{t:.0f}°C")
+                temp_lbl.set_width_chars(6)
+                temp_lbl.set_xalign(0.0)
+                # Colour-code: green <65, yellow <80, red >=80
+                if t >= 80:
+                    temp_lbl.set_css_classes(["hf-warn"])
+                elif t >= 65:
+                    temp_lbl.add_css_class("muted")
+                row.append(temp_lbl)
+            if chip.aiclk_mhz is not None:
+                clk_lbl = Gtk.Label(label=f"{chip.aiclk_mhz}MHz")
+                clk_lbl.add_css_class("muted")
+                clk_lbl.set_width_chars(8)
+                clk_lbl.set_xalign(0.0)
+                row.append(clk_lbl)
+            if chip.fw_version:
+                fw_lbl = Gtk.Label(label=chip.fw_version)
+                fw_lbl.add_css_class("muted")
+                fw_lbl.set_ellipsize(Pango.EllipsizeMode.END)
+                row.append(fw_lbl)
+            self._chip_grid.append(row)
+        self._chip_grid.set_visible(bool(chips))
 
     def refresh_git_info(self, branch: str, sha: str) -> None:
         """Update the git branch/commit label below the repo entry."""
@@ -1192,6 +1245,12 @@ class MainWindow(Gtk.ApplicationWindow):
         controller.on_bench_result   = self._on_bench_result
         controller.on_tool_result    = self._on_tool_result
         controller.on_running_servers = self._on_running_servers_detected
+        controller.on_hardware_status = self._on_hardware_status
+
+        # Connect the ↻ chip-telemetry refresh button to the controller.
+        self._sidebar._hw_refresh_btn.connect(
+            "clicked", lambda _: self._ctrl.refresh_hardware_status()
+        )
 
         # Auto-discover and load the inference-server repo on startup.
         # Prefer the path saved from the last session; fall back to well-known
@@ -1265,6 +1324,10 @@ class MainWindow(Gtk.ApplicationWindow):
             self._sidebar.refresh_git_info(branch, sha)
 
         self._ctrl.pull_repo(on_complete=_after)
+
+    def _on_hardware_status(self, chips: list) -> None:
+        """Update the sidebar chip-telemetry grid when tt-smi data arrives."""
+        self._sidebar.update_hardware_status(chips)
 
     def _on_running_servers_detected(self, servers: list) -> None:
         """Show a banner when already-running TT inference containers are found."""

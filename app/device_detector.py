@@ -4,6 +4,7 @@
 import json
 import re
 import subprocess
+from dataclasses import dataclass
 from typing import List, Optional
 
 # Map board_type (from tt-smi) to model_spec DeviceType names
@@ -25,6 +26,16 @@ _SUPERSET_INCLUDES = {
     "T3K":    ["P150", "N150", "P150X4"],
     "N300":   ["N150"],
 }
+
+
+@dataclass
+class ChipStatus:
+    """Per-chip telemetry snapshot from tt-smi -s."""
+    index: int
+    board_type: str
+    temp_c: Optional[float]        # ASIC temperature in °C
+    aiclk_mhz: Optional[int]       # AI clock in MHz
+    fw_version: str
 
 
 def board_type_to_device(board_type: str) -> Optional[str]:
@@ -76,5 +87,78 @@ def detect_devices() -> List[str]:
             ["tt-smi", "-s"], capture_output=True, text=True, timeout=10
         )
         return detect_devices_from_json(out.stdout)
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return []
+
+
+def _extract_temp(telemetry: dict) -> Optional[float]:
+    """Pull ASIC temperature from a telemetry dict (handles multiple tt-smi schema variants)."""
+    for key in ("asic_temperature", "board_temperature", "smbus_tx_data"):
+        val = telemetry.get(key)
+        if isinstance(val, (int, float)):
+            return float(val)
+        if isinstance(val, dict):
+            # tt-smi 5.x nests data under smbus_tx_data
+            for inner_key in ("asic_temperature", "board_temperature", "local_temperature"):
+                inner = val.get(inner_key)
+                if isinstance(inner, (int, float)):
+                    return float(inner)
+    return None
+
+
+def _extract_aiclk(telemetry: dict) -> Optional[int]:
+    """Pull AI clock MHz from a telemetry dict."""
+    for key in ("aiclk", "ai_clk", "clock"):
+        val = telemetry.get(key)
+        if isinstance(val, (int, float)):
+            return int(val)
+    # Also search inside nested sub-dicts (e.g. smbus_tx_data in tt-smi 5.x)
+    for val in telemetry.values():
+        if isinstance(val, dict):
+            for inner_key in ("aiclk", "ai_clk"):
+                inner = val.get(inner_key)
+                if isinstance(inner, (int, float)):
+                    return int(inner)
+    return None
+
+
+def get_chip_statuses(json_str: str) -> List[ChipStatus]:
+    """Parse tt-smi -s JSON and return per-chip telemetry snapshots."""
+    try:
+        data = json.loads(json_str)
+    except json.JSONDecodeError:
+        return []
+
+    chips = []
+    for idx, entry in enumerate(data.get("device_info", [])):
+        board_info = entry.get("board_info") if isinstance(entry.get("board_info"), dict) else {}
+        bt = board_info.get("board_type") or entry.get("board_type", "unknown")
+
+        telemetry = entry.get("telemetry", {})
+        if not isinstance(telemetry, dict):
+            telemetry = {}
+
+        fw_status = entry.get("fw_status", {})
+        if not isinstance(fw_status, dict):
+            fw_status = {}
+        fw_ver = fw_status.get("fw_version") or fw_status.get("version") or entry.get("fw_version", "")
+
+        chips.append(ChipStatus(
+            index=idx,
+            board_type=bt,
+            temp_c=_extract_temp(telemetry),
+            aiclk_mhz=_extract_aiclk(telemetry),
+            fw_version=str(fw_ver),
+        ))
+    return chips
+
+
+def get_chip_statuses_live() -> List[ChipStatus]:
+    """Run tt-smi -s and return per-chip telemetry. Returns [] on failure."""
+    try:
+        out = subprocess.run(
+            ["tt-smi", "-s"], capture_output=True, text=True, timeout=10
+        )
+        return get_chip_statuses(out.stdout)
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return []

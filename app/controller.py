@@ -22,7 +22,7 @@ from typing import Callable, List, Optional
 from app_settings import settings as _settings
 from compat_catalog import CompatCatalog, load_async as _compat_load_async
 from dev_image_launcher import DevImageLauncher, DevLaunchConfig
-from device_detector import detect_devices
+from device_detector import ChipStatus, detect_devices, get_chip_statuses_live
 from health_worker import HealthWorker
 from hf_cache import ModelCacheInfo, scan_model_cache
 from launch_options import LaunchOptions
@@ -247,6 +247,7 @@ class AppController:
         self.on_bench_result: Optional[Callable] = None          # (BenchResult,)
         self.on_tool_result: Optional[Callable] = None           # (ToolRoundTrip,)
         self.on_running_servers: Optional[Callable] = None       # (List[RunningServer],)
+        self.on_hardware_status: Optional[Callable] = None       # (List[ChipStatus],)
 
     # ── Read-only properties for views ──────────────────────────────────────
 
@@ -299,6 +300,10 @@ class AppController:
             if not devices:
                 self._emit("on_log_line", "⚠ tt-smi not found — showing all devices")
             self._emit("on_catalog_loaded", self._catalog, compatible)
+            # Emit live chip telemetry for the hardware status widget.
+            chips = get_chip_statuses_live()
+            if chips:
+                self._emit("on_hardware_status", chips)
             # Scan for already-running servers now that we have device/catalog context.
             servers = _parse_running_servers()
             if servers:
@@ -515,6 +520,13 @@ class AppController:
             if on_complete:
                 self._dispatch(on_complete, success, summary)
 
+        threading.Thread(target=_run, daemon=True).start()
+
+    def refresh_hardware_status(self) -> None:
+        """Re-run tt-smi -s in a background thread and emit on_hardware_status."""
+        def _run():
+            chips = get_chip_statuses_live()
+            self._emit("on_hardware_status", chips)
         threading.Thread(target=_run, daemon=True).start()
 
     def scan_running_servers(self) -> None:
