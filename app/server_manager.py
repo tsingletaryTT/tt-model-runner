@@ -348,15 +348,8 @@ class ServerManager:
         self._stop_event.set()
         time.sleep(0.3)
 
-        new_config = LaunchConfig(
-            repo_path=self._config.repo_path,
-            model_name=self._config.model_name,
-            device=self._config.device,
-            port=self._config.port,
-            hf_token=self._config.hf_token,
-            no_auth=self._config.no_auth,
-            docker_image_override=resolved,
-        )
+        import dataclasses
+        new_config = dataclasses.replace(self._config, docker_image_override=resolved)
         # _auto_retry=True keeps _image_resolve_attempted=True to prevent a second loop
         self.launch(new_config, on_log_line, self._on_state_cb, _auto_retry=True)
 
