@@ -5,6 +5,7 @@
 All on_log_line / on_state callbacks are posted via GLib.idle_add — never
 called directly from the tail thread.
 """
+import logging
 import os
 import re
 import subprocess
@@ -13,6 +14,8 @@ import time
 from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 from typing import Callable, List, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -234,6 +237,7 @@ class ServerManager:
             env["HF_TOKEN"] = config.hf_token
 
         from worker import idle_add_once
+        log.info("launch: %s  (cwd=%s)", " ".join(cmd), config.repo_path)
         idle_add_once(on_log_line, f"$ {' '.join(cmd)}")
         idle_add_once(on_log_line, f"  cwd: {config.repo_path}")
 
@@ -271,6 +275,7 @@ class ServerManager:
                 line = line.rstrip("\n")
                 if not line:
                     continue
+                log.debug("[stderr] %s", line)
                 idle_add_once(on_log_line, f"[stderr] {line}")
                 self._check_line(line, on_log_line)
         except Exception:
@@ -292,6 +297,7 @@ class ServerManager:
                 failed_ref = next(g for g in m.groups() if g)
                 self._image_resolve_attempted = True
                 self._resolving_image = True
+                log.warning("image not found: %s — starting GHCR resolution", failed_ref)
                 idle_add_once(
                     on_log_line,
                     f"⚠ Image not found: {failed_ref} — querying GHCR for latest tag…",
@@ -331,12 +337,14 @@ class ServerManager:
 
         resolved = resolve_latest_tag(failed_ref, on_step=_step)
         if not resolved:
+            log.error("GHCR resolution failed for %s", failed_ref)
             idle_add_once(on_log_line, "✗ Could not resolve a newer tag from GHCR — check image manually")
             self._resolving_image = False
             if self._on_state_cb:
                 idle_add_once(self._on_state_cb, ServerState.ERROR)
             return
 
+        log.info("GHCR resolved %s → %s", failed_ref, resolved)
         idle_add_once(on_log_line, f"✓ Resolved → {resolved}")
         idle_add_once(on_log_line, "↺ Restarting launch with resolved image…")
 
@@ -464,12 +472,14 @@ class ServerManager:
 
                 new_state = self.parser.feed(line)
                 if new_state:
+                    log.debug("state→%s  (line: %s)", new_state.name, line[:120])
                     idle_add_once(on_state, new_state)
 
                 # Detect container name from "docker run ... --name <name>"
                 m = re.search(r'--name\s+(\S+)', line)
                 if m and not self._container_name:
                     self._container_name = m.group(1)
+                    log.info("container name: %s", self._container_name)
 
     def stop(self):
         """Stop the server. Non-blocking."""

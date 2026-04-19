@@ -1,7 +1,26 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 """Entry point for tt-model-runner-gui."""
+import logging
+import logging.handlers
 import sys
+from pathlib import Path
+
+_LOG_PATH = Path.home() / ".config" / "tt-runner-gui" / "app.log"
+_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
+    handlers=[
+        logging.handlers.RotatingFileHandler(
+            _LOG_PATH, maxBytes=2_000_000, backupCount=3, encoding="utf-8"
+        ),
+    ],
+)
+# Also surface WARNING+ to stderr so terminal users see issues
+logging.getLogger().addHandler(logging.StreamHandler(sys.stderr))
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+
 import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Pango", "1.0")
