@@ -105,6 +105,17 @@ class ConfigPanel(Gtk.Box):
         self._strip_desc.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
         self._strip_desc.set_visible(False)
         inner.append(self._strip_desc)
+
+        # Metadata row — compact single-line showing HF repo path, param count, disk requirement
+        # e.g. "meta-llama/Llama-3.3-70B-Instruct  ·  70B params  ·  ~141 GB disk"
+        self._strip_meta = Gtk.Label(label="")
+        self._strip_meta.add_css_class("muted")
+        self._strip_meta.set_halign(Gtk.Align.START)
+        self._strip_meta.set_margin_bottom(6)
+        self._strip_meta.set_ellipsize(Pango.EllipsizeMode.END)
+        self._strip_meta.set_visible(False)
+        inner.append(self._strip_meta)
+
         inner.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
 
         # --- Profile bar ---
@@ -370,6 +381,16 @@ class ConfigPanel(Gtk.Box):
         desc = get_model_description(entry.display_name)
         self._strip_desc.set_text(desc)
         self._strip_desc.set_visible(bool(desc))
+
+        # Populate compact metadata row: HF repo · param count · disk requirement
+        parts = [entry.hf_model_repo]
+        if entry.param_count:
+            parts.append(f"{entry.param_count:.0f}B params")
+        if entry.min_disk_gb:
+            parts.append(f"~{entry.min_disk_gb:.0f} GB disk")
+        meta_text = "  ·  ".join(parts)
+        self._strip_meta.set_text(meta_text)
+        self._strip_meta.set_visible(True)
 
         # Rebuild use-case chips
         self._populate_use_cases(entry)
