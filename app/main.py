@@ -116,8 +116,20 @@ class App(Gtk.Application):
         if not timing_path.exists():
             TimingStore(timing_path)  # writes bootstrap data to disk
 
+        # Wire up the background worker's dispatch function so it can safely
+        # schedule callbacks onto the GTK main loop from any thread.
+        import worker
+        worker.set_dispatch(GLib.idle_add)
+
+        # Build the application controller that owns all business logic.
+        # We pass GLib.idle_add so the controller (and anything it owns) can
+        # schedule UI updates from worker threads without coupling to GTK
+        # directly in their own modules.
+        from controller import AppController
+        controller = AppController(dispatch_fn=GLib.idle_add)
+
         from main_window import MainWindow
-        win = MainWindow(application=self)
+        win = MainWindow(controller=controller, application=self)
 
         provider = Gtk.CssProvider()
         provider.load_from_data(_CSS)
