@@ -197,20 +197,355 @@ class AppController:
 
     def load_repo(self, path: Path) -> None:
         """Parse model_spec.json and detect devices in a background thread."""
-        pass  # implemented in Task 6
+        spec = path / "model_spec.json"
+        if not spec.exists():
+            self._emit("on_log_line", f"⚠ model_spec.json not found at {path}")
+            return
+        try:
+            self._catalog = ModelCatalog.load(spec)
+        except Exception as e:
+            self._emit("on_log_line", f"⚠ Failed to parse model_spec.json: {e}")
+            return
+
+        _settings.server_repo_path = str(path)
+        _settings.save()
+        self._emit("on_log_line",
+                   f"Loaded {len(self._catalog.all_entries())} model configurations from {spec}")
+
+        def _detect():
+            devices = detect_devices()
+            compatible = devices if devices else self._catalog.all_device_types()
+            if not devices:
+                self._emit("on_log_line", "⚠ tt-smi not found — showing all devices")
+            self._emit("on_catalog_loaded", self._catalog, compatible)
+
+        threading.Thread(target=_detect, daemon=True).start()
 
     def select_model(self, entry: ModelEntry) -> None:
         """Called when user selects a model; triggers HF cache scan."""
-        pass  # implemented in Task 6
+        self._current_entry = entry
+        self._cache_info = None
+
+        def _scan():
+            info = scan_model_cache(entry.hf_model_repo)
+            self._cache_info = info
+            self._emit("on_cache_scanned", info)
+
+        threading.Thread(target=_scan, daemon=True).start()
+
+    def _read_hf_token(self, repo_path: Path) -> Optional[str]:
+        """Read HF_TOKEN from environment or .env file in repo_path."""
+        token = os.environ.get("HF_TOKEN", "")
+        if token:
+            return token
+        env_file = repo_path / ".env"
+        if env_file.exists():
+            for line in env_file.read_text(errors="replace").splitlines():
+                if line.startswith("HF_TOKEN="):
+                    token = line.split("=", 1)[1].strip().strip('"').strip("'")
+                    if token:
+                        return token
+        return None
 
     def launch(self, entry: ModelEntry, port: str,
                options: Optional[LaunchOptions] = None) -> None:
         """Start the inference server for the given model entry."""
-        pass  # implemented in Task 6
+        if self._state not in (ServerState.IDLE, ServerState.ERROR):
+            return
+        self._current_entry = entry
+        if options:
+            self._options = options
+
+        repo_path = Path(_settings.server_repo_path)
+        if not (repo_path / "run.py").exists():
+            self._emit("on_log_line", f"⚠ run.py not found at {repo_path}")
+            return
+
+        hf_token = self._read_hf_token(repo_path)
+        if not hf_token:
+            self._emit("on_log_line",
+                       "⚠ HF_TOKEN not found in environment or .env — launch may fail")
+
+        config = LaunchConfig(
+            repo_path=repo_path,
+            model_name=entry.display_name,
+            device=entry.device_type,
+            port=port,
+            hf_token=hf_token,
+            no_auth=True,
+            options=self._options,
+            inference_engine=entry.inference_engine,
+        )
+
+        self._emit("on_log_line",
+                   f"▶ Launching {entry.display_name} on {entry.device_type} · port {port}")
+        self._transition(ServerState.LAUNCHING)
+
+        self._health_worker = HealthWorker(
+            port=port,
+            on_ready=self._on_health_ready,
+            on_lost=self._on_health_lost,
+            engine="media" if entry.inference_engine == "media" else "vllm",
+        )
+        self._health_worker.start()
+        self._server_mgr.launch(config, self._handle_log_line, self._on_server_state)
 
     def stop(self) -> None:
         """Stop the running server."""
-        pass  # implemented in Task 6
+        self._transition(ServerState.STOPPING)
+        if self._health_worker:
+            self._health_worker.stop()
+            self._health_worker = None
+        self._server_mgr.stop()
+        t = threading.Timer(10.0, self._force_idle)
+        t.daemon = True
+        t.start()
+
+    def _force_idle(self) -> None:
+        """Fallback: transition to IDLE if still stuck in STOPPING after timeout."""
+        if self._state == ServerState.STOPPING:
+            self._transition(ServerState.IDLE)
+
+    def _handle_log_line(self, line: str) -> None:
+        """Forward a log line to views and update state/substage from it."""
+        self._emit("on_log_line", line)
+        new_state = self._server_mgr.parser.feed(line)
+        if new_state:
+            self._transition(new_state)
+
+        if self._state == ServerState.LOADING:
+            substage = self._server_mgr.parser.last_substage
+            if substage:
+                stepper = self._build_stepper_text(substage)
+                if substage != self._tour_substage:
+                    self._tour_substage = substage
+                    self._tour_card_idx = 0
+                left, right = self._build_tour_content(substage)
+                cards = TOUR_CARDS.get(substage, [])
+                total = len(cards)
+                dots = ("  ".join("●" if i == self._tour_card_idx else "○"
+                                  for i in range(total)) if total > 1 else "")
+                self._emit("on_substage", stepper, left, right, dots)
+
+    def _on_server_state(self, state: ServerState) -> None:
+        """Callback from ServerManager when a state change is detected in the log."""
+        self._transition(state)
+
+    def _on_health_ready(self, models: list) -> None:
+        """Called by HealthWorker when the server's health endpoint returns 200."""
+        if self._state in (ServerState.LOADING, ServerState.LAUNCHING,
+                           ServerState.PULLING_IMAGE):
+            self._transition(ServerState.READY)
+            mstr = ", ".join(models) if models else "ready"
+            port = _settings.last_port
+            self._emit("on_state_changed", ServerState.READY,
+                       f"localhost:{port}  ·  {mstr}")
+            if self._load_start and self._current_entry:
+                dur = time.monotonic() - self._load_start
+                self._timing.record_load(
+                    self._current_entry.hf_model_repo,
+                    self._current_entry.device_type,
+                    dur, cold=False,
+                )
+
+    def _on_health_lost(self) -> None:
+        """Called by HealthWorker when health endpoint stops responding after READY."""
+        if self._state == ServerState.READY:
+            self._transition(ServerState.ERROR)
+            self._emit("on_log_line",
+                       "⚠ Health check lost — server may have crashed")
+
+    def _transition(self, state: ServerState) -> None:
+        """Transition to a new state, emit on_state_changed, and manage timers."""
+        if state == self._state:
+            return
+        self._state = state
+
+        info = ""
+        if self._current_entry:
+            port = _settings.last_port
+            info = (f"localhost:{port}  ·  {self._current_entry.display_name}"
+                    f"  ·  {self._current_entry.device_type}")
+
+        self._emit("on_state_changed", state, info)
+
+        if state == ServerState.LOADING:
+            self._load_start = time.monotonic()
+            self._tour_card_idx = 0
+            self._tour_substage = None
+            self._start_progress_ticker()
+            self._start_tour_timer()
+        elif state in (ServerState.READY, ServerState.ERROR,
+                       ServerState.IDLE, ServerState.STOPPING):
+            self._stop_progress_ticker()
+            self._stop_tour_timer()
+
+    def _start_progress_ticker(self) -> None:
+        """Start the 1-second repeating timer that emits on_progress during LOADING."""
+        self._stop_progress_ticker()
+
+        def _loop():
+            if self._state != ServerState.LOADING:
+                return
+            self._progress_tick()
+            self._progress_timer = threading.Timer(1.0, _loop)
+            self._progress_timer.daemon = True
+            self._progress_timer.start()
+
+        self._progress_timer = threading.Timer(1.0, _loop)
+        self._progress_timer.daemon = True
+        self._progress_timer.start()
+
+    def _stop_progress_ticker(self) -> None:
+        """Cancel the progress ticker if it is running."""
+        if self._progress_timer:
+            self._progress_timer.cancel()
+            self._progress_timer = None
+
+    def _start_tour_timer(self) -> None:
+        """Start the 12-second repeating timer that rotates tour cards during LOADING."""
+        self._stop_tour_timer()
+
+        def _loop():
+            if self._state != ServerState.LOADING:
+                return
+            substage = self._tour_substage or ""
+            cards = TOUR_CARDS.get(substage, [])
+            if len(cards) > 1:
+                self._tour_card_idx = (self._tour_card_idx + 1) % len(cards)
+                left, right = self._build_tour_content(substage)
+                dots = "  ".join(
+                    "●" if i == self._tour_card_idx else "○"
+                    for i in range(len(cards))
+                )
+                self._emit("on_substage",
+                           self._build_stepper_text(substage), left, right, dots)
+            self._tour_timer = threading.Timer(12.0, _loop)
+            self._tour_timer.daemon = True
+            self._tour_timer.start()
+
+        self._tour_timer = threading.Timer(12.0, _loop)
+        self._tour_timer.daemon = True
+        self._tour_timer.start()
+
+    def _stop_tour_timer(self) -> None:
+        """Cancel the tour card rotation timer if it is running."""
+        if self._tour_timer:
+            self._tour_timer.cancel()
+            self._tour_timer = None
+
+    def _progress_tick(self) -> None:
+        """Emit on_progress based on the best available progress signal."""
+        if self._state != ServerState.LOADING or not self._current_entry:
+            return
+        elapsed = time.monotonic() - (self._load_start or time.monotonic())
+        parser = self._server_mgr.parser
+
+        # Highest priority: deterministic trace capture progress (0–10 captures)
+        if parser.trace_capture_count > 0:
+            frac = parser.trace_capture_count / 10.0
+            remaining = (10 - parser.trace_capture_count) * 3
+            self._emit("on_progress", frac,
+                       f"Capturing traces {parser.trace_capture_count}/10"
+                       f" · ~{remaining:.0f}s remaining")
+            return
+
+        # Next: warmup progress from WAN-style tqdm "N/total" lines
+        if parser.warmup_n is not None and parser.warmup_total:
+            frac = parser.warmup_n / parser.warmup_total
+            est = self._timing.estimate_substage(
+                self._current_entry.hf_model_repo,
+                self._current_entry.device_type, "warmup",
+            )
+            label = f"Warmup {parser.warmup_n}/{parser.warmup_total}"
+            if est.seconds:
+                per_step = est.seconds / parser.warmup_total
+                remaining = per_step * (parser.warmup_total - parser.warmup_n)
+                label += f" · ~{remaining:.0f}s remaining · {est.source}"
+            self._emit("on_progress", frac, label)
+            return
+
+        # Fallback: time-based estimate from TimingStore
+        est = self._timing.estimate_load(
+            self._current_entry.hf_model_repo,
+            self._current_entry.device_type,
+            cold=False,
+            size_gb=self._current_entry.min_disk_gb or 10.0,
+            family=self._current_entry.family,
+        )
+        if est.seconds and est.seconds > 0:
+            frac = min(elapsed / est.seconds, 0.95)
+            remaining = max(est.seconds - elapsed, 0)
+            m, s = divmod(int(remaining), 60)
+            ts = f"{m}m {s}s" if m else f"{s}s"
+            self._emit("on_progress", frac, f"~{ts} remaining · {est.source}")
+        else:
+            self._emit("on_progress", -1.0, "")
+
+    def _build_stepper_text(self, substage: str) -> str:
+        """Build a pipeline stepper string marking completed (✓), active (●), and pending (○) stages."""
+        if not self._current_entry:
+            return ""
+        stages = (MEDIA_STAGES if self._current_entry.inference_engine == "media"
+                  else VLLM_STAGES)
+        parts = []
+        found_active = False
+        for s in stages:
+            lbl = STAGE_LABELS.get(s, s)
+            if s == substage:
+                parts.append(f"● {lbl}")
+                found_active = True
+            elif not found_active:
+                parts.append(f"✓ {lbl}")
+            else:
+                parts.append(f"○ {lbl}")
+        return "  ──  ".join(parts)
+
+    def _build_tour_left(self, entry: ModelEntry) -> str:
+        """Build the left panel content of the tour panel: model facts and cache info."""
+        ci = self._cache_info
+        lines = [f"📁 {entry.hf_model_repo}"]
+        if ci and ci.is_cached:
+            lines.append("  ✓ cached locally")
+            if ci.safetensors:
+                gb = ci.total_bytes / 1e9
+                lines.append(f"  {len(ci.safetensors)} shards · {gb:.1f} GB")
+            else:
+                other_gb = ci.total_bytes / 1e9
+                if other_gb > 0:
+                    lines.append(f"  {other_gb:.1f} GB total")
+            a = ci.arch
+            if a and a.num_layers:
+                lines.append(f"  {a.num_layers} layers · hidden={a.hidden_size}")
+                if a.num_kv_heads and a.num_kv_heads != a.num_heads:
+                    lines.append(f"  GQA: {a.num_heads}Q / {a.num_kv_heads}KV heads")
+                elif a.num_heads:
+                    lines.append(f"  {a.num_heads} heads · head_dim={a.head_dim}")
+                if a.context_length:
+                    lines.append(f"  ctx={a.context_length:,} tokens")
+        elif ci and not ci.is_cached:
+            lines.append("  ○ not in local HF cache")
+            if entry.min_disk_gb:
+                lines.append(f"  ~{entry.min_disk_gb:.0f} GB on disk")
+        else:
+            if entry.min_disk_gb:
+                lines.append(f"  ~{entry.min_disk_gb:.0f} GB on disk")
+            if isinstance(entry.param_count, (int, float)) and entry.param_count:
+                lines.append(f"  {entry.param_count:.0f}B parameters")
+        lines.append(f"  Engine: {entry.inference_engine}")
+        lines.append(f"  Status: {entry.status}")
+        return "\n".join(lines)
+
+    def _build_tour_content(self, substage: Optional[str]) -> tuple:
+        """Return (left_text, right_text) for the tour panel given the current substage."""
+        entry = self._current_entry
+        if not entry:
+            return ("", "")
+        left = self._build_tour_left(entry)
+        cards = TOUR_CARDS.get(substage or "", [])
+        right = (cards[self._tour_card_idx % len(cards)]
+                 if cards else "Loading model onto Tenstorrent hardware…")
+        return (left, right)
 
     def get_options(self) -> LaunchOptions:
         return self._options
