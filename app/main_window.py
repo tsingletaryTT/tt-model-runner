@@ -407,6 +407,22 @@ class MainPanel(Gtk.Box):
         self.append(self._tour_rev)
         self.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
 
+        # ── Ready-state tab bar ───────────────────────────────────────────────
+        # Shown only when state == READY to switch between logs/tools/bench pages.
+        self._tab_bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        self._tab_bar.set_margin_start(8); self._tab_bar.set_margin_end(8)
+        self._tab_bar.set_margin_top(3);   self._tab_bar.set_margin_bottom(3)
+        self._tab_btns: dict = {}
+        for tab_id, tab_label in [("logs", "Logs"), ("tools", "Tools"), ("bench", "Bench")]:
+            btn = Gtk.ToggleButton(label=tab_label)
+            btn.add_css_class("log-filter-btn")
+            btn.connect("toggled", self._on_tab_toggled, tab_id)
+            self._tab_bar.append(btn)
+            self._tab_btns[tab_id] = btn
+        self._tab_bar.set_visible(False)
+        self.append(self._tab_bar)
+        self.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+
         # Stack — holds welcome / config / logs pages.
         # The log filter toolbar and log text view live inside the "logs" page
         # so they are only visible when a server is actively running.
@@ -482,6 +498,84 @@ class MainPanel(Gtk.Box):
         log_scroll.set_child(self._log_view)
         logs_box.append(log_scroll)
         self._stack.add_named(logs_box, "logs")
+
+        # ── Tools page ────────────────────────────────────────────────────────
+        # Two-column layout: left = editable tool definition JSON, right = prompt
+        # entry + Send button + round-trip output view.
+        tools_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        tools_box.set_margin_start(12); tools_box.set_margin_end(12)
+        tools_box.set_margin_top(8);    tools_box.set_margin_bottom(8)
+
+        # Hint label shown when tool use was not enabled at launch.
+        self._tool_hint = Gtk.Label(
+            label="Tool use was not enabled at launch.\nRe-launch with 🔧 Tool use toggled on."
+        )
+        self._tool_hint.add_css_class("muted")
+        self._tool_hint.set_justify(Gtk.Justification.CENTER)
+
+        # Two-column area fills the remaining vertical space.
+        tools_cols = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        tools_cols.set_vexpand(True)
+
+        # Left column: editable tool-definition JSON (pre-filled with weather example).
+        left_col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        left_col.set_hexpand(True)
+        tool_def_lbl = Gtk.Label(label="TOOL DEFINITION (JSON)")
+        tool_def_lbl.add_css_class("muted")
+        tool_def_lbl.set_halign(Gtk.Align.START)
+        left_col.append(tool_def_lbl)
+        self._tool_def_buf = Gtk.TextBuffer()
+        self._tool_def_buf.set_text(
+            '[\n  {\n    "type": "function",\n'
+            '    "function": {\n'
+            '      "name": "get_weather",\n'
+            '      "description": "Get current weather for a city",\n'
+            '      "parameters": {\n'
+            '        "type": "object",\n'
+            '        "properties": {"city": {"type": "string"}},\n'
+            '        "required": ["city"]\n'
+            '      }\n    }\n  }\n]'
+        )
+        tool_def_view = Gtk.TextView(buffer=self._tool_def_buf)
+        tool_def_view.set_monospace(True)
+        tool_def_view.add_css_class("log-view")
+        tool_def_scroll = Gtk.ScrolledWindow()
+        tool_def_scroll.set_vexpand(True)
+        tool_def_scroll.set_child(tool_def_view)
+        left_col.append(tool_def_scroll)
+        tools_cols.append(left_col)
+
+        # Right column: prompt entry, send button, and round-trip output viewer.
+        right_col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        right_col.set_hexpand(True)
+        prompt_lbl = Gtk.Label(label="PROMPT")
+        prompt_lbl.add_css_class("muted")
+        prompt_lbl.set_halign(Gtk.Align.START)
+        right_col.append(prompt_lbl)
+        self._tool_prompt_entry = Gtk.Entry()
+        self._tool_prompt_entry.set_placeholder_text("What's the weather in Austin?")
+        right_col.append(self._tool_prompt_entry)
+        self._tool_send_btn = Gtk.Button(label="▶ Send")
+        self._tool_send_btn.add_css_class("suggested-action")
+        right_col.append(self._tool_send_btn)
+        output_lbl = Gtk.Label(label="ROUND-TRIP")
+        output_lbl.add_css_class("muted")
+        output_lbl.set_halign(Gtk.Align.START)
+        right_col.append(output_lbl)
+        self._tool_output_buf = Gtk.TextBuffer()
+        tool_output_view = Gtk.TextView(buffer=self._tool_output_buf)
+        tool_output_view.set_editable(False)
+        tool_output_view.set_monospace(True)
+        tool_output_view.add_css_class("log-view")
+        tool_output_scroll = Gtk.ScrolledWindow()
+        tool_output_scroll.set_vexpand(True)
+        tool_output_scroll.set_child(tool_output_view)
+        right_col.append(tool_output_scroll)
+        tools_cols.append(right_col)
+
+        tools_box.append(self._tool_hint)
+        tools_box.append(tools_cols)
+        self._stack.add_named(tools_box, "tools")
 
         self.append(self._stack)
 
@@ -567,6 +661,12 @@ class MainPanel(Gtk.Box):
         self._progress_rev.set_reveal_child(active and state != ServerState.READY)
         self._tour_rev.set_reveal_child(loading)
 
+        # Show tab bar only when READY; default to Logs tab when first entering READY.
+        ready = (state == ServerState.READY)
+        self._tab_bar.set_visible(ready)
+        if ready:
+            self._update_tab_buttons("logs")
+
         if state in (ServerState.LAUNCHING, ServerState.PULLING_IMAGE):
             if not self._pulse_source:
                 self._pulse_source = GLib.timeout_add(120, self._pulse_tick)
@@ -635,6 +735,63 @@ class MainPanel(Gtk.Box):
         dots = "  ".join("●" if i == idx else "○" for i in range(total))
         self._tour_dots.set_text(dots)
 
+    # ---------------------------------------------------------------- tab navigation
+
+    def show_tools(self) -> None:
+        """Switch to the tools tab page."""
+        self._stack.set_visible_child_name("tools")
+        self._update_tab_buttons("tools")
+
+    def show_bench(self) -> None:
+        """Switch to the bench tab page (placeholder — implemented in Task 7)."""
+        self._stack.set_visible_child_name("bench")
+        self._update_tab_buttons("bench")
+
+    def show_logs_tab(self) -> None:
+        """Switch to logs page via tab (only updates the tab highlight)."""
+        self._stack.set_visible_child_name("logs")
+        self._update_tab_buttons("logs")
+
+    def _update_tab_buttons(self, active_id: str) -> None:
+        """Set exactly one tab button as active, suppressing toggled signals
+        to avoid recursive calls."""
+        for tid, btn in self._tab_btns.items():
+            btn.handler_block_by_func(self._on_tab_toggled)
+            btn.set_active(tid == active_id)
+            btn.handler_unblock_by_func(self._on_tab_toggled)
+
+    def _on_tab_toggled(self, btn: Gtk.ToggleButton, tab_id: str) -> None:
+        """Handle a tab toggle button click — switch the stack page and update
+        the button highlights."""
+        if not btn.get_active():
+            return
+        self._stack.set_visible_child_name(tab_id)
+        self._update_tab_buttons(tab_id)
+
+    def set_tool_use_hint_visible(self, visible: bool) -> None:
+        """Show/hide the 'tool use not enabled' hint in the tools page."""
+        self._tool_hint.set_visible(visible)
+
+    def append_tool_result(self, rt) -> None:
+        """Append a ToolRoundTrip step to the round-trip output buffer.
+
+        Each step type is rendered differently:
+          - 'call':   outgoing tool call with name and arguments
+          - 'result': tool result returned to the model
+          - other:    final assistant message (after all tool turns)
+        """
+        buf = self._tool_output_buf
+        end = buf.get_end_iter()
+        if buf.get_char_count() > 0:
+            buf.insert(end, "\n")
+            end = buf.get_end_iter()
+        if rt.step == "call":
+            buf.insert(end, f"→ tool_call: {rt.name}({rt.arguments})")
+        elif rt.step == "result":
+            buf.insert(end, f"← tool result: {rt.content}")
+        else:
+            buf.insert(end, f"→ final: {rt.content}")
+
 
 class MainWindow(Gtk.ApplicationWindow):
     """Thin GTK view wired to an AppController.
@@ -682,7 +839,7 @@ class MainWindow(Gtk.ApplicationWindow):
         controller.on_cache_scanned  = lambda info: None   # no cache UI in this view
         controller.on_bench_progress = self._panel.append_log
         controller.on_bench_result   = lambda r: None
-        controller.on_tool_result    = lambda r: None
+        controller.on_tool_result    = self._on_tool_result
 
         # Auto-discover and load the inference-server repo on startup.
         # Prefer the path saved from the last session; fall back to well-known
@@ -723,6 +880,9 @@ class MainWindow(Gtk.ApplicationWindow):
                 self._panel.show_welcome()
         elif state == ServerState.LAUNCHING:
             self._panel.show_logs()
+        elif state == ServerState.READY:
+            # Wire the Send button on first READY transition (idempotent).
+            self._wire_tool_send()
 
     def _on_progress(self, fraction: float, label: str) -> None:
         """Update the progress bar.  fraction < 0 triggers an indeterminate pulse."""
@@ -778,3 +938,52 @@ class MainWindow(Gtk.ApplicationWindow):
         if self._ctrl.state not in (ServerState.IDLE, ServerState.ERROR):
             self._ctrl.stop()
         return False
+
+    # ── Tool-use tab helpers ──────────────────────────────────────────────────
+
+    def _on_tool_result(self, rt) -> None:
+        """Append a ToolRoundTrip step to the tools output buffer.
+
+        Called via controller.on_tool_result which is dispatched through
+        GLib.idle_add so this always runs on the GTK main thread.
+        """
+        self._panel.append_tool_result(rt)
+
+    def _wire_tool_send(self) -> None:
+        """Connect the Send button in the Tools page to send_tool_call().
+
+        This method is idempotent — subsequent calls after the first READY
+        transition are no-ops, guarded by _tool_send_wired.
+        """
+        if getattr(self, "_tool_send_wired", False):
+            return
+        self._tool_send_wired = True
+
+        def _on_send(_btn):
+            import json
+            # Parse the tool definition from the editable JSON text view.
+            try:
+                tools = json.loads(
+                    self._panel._tool_def_buf.get_text(
+                        self._panel._tool_def_buf.get_start_iter(),
+                        self._panel._tool_def_buf.get_end_iter(),
+                        False,  # include_hidden_chars
+                    )
+                )
+            except json.JSONDecodeError as e:
+                self._panel.append_log(f"⚠ Invalid tool JSON: {e}")
+                return
+            prompt = self._panel._tool_prompt_entry.get_text().strip()
+            if not prompt:
+                return
+            # Clear previous round-trip output before sending.
+            self._panel._tool_output_buf.set_text("")
+            # Show or hide the "tool use not enabled" hint based on current opts.
+            opts = self._panel.get_options()
+            if opts is not None:
+                self._panel.set_tool_use_hint_visible(not opts.tool_use_enabled)
+                if not opts.tool_use_enabled:
+                    return
+            self._ctrl.send_tool_call(tools, prompt)
+
+        self._panel._tool_send_btn.connect("clicked", _on_send)
