@@ -26,6 +26,7 @@ from gi.repository import GLib, Gtk, Pango
 
 from app_settings import settings as _settings
 from device_detector import detect_devices
+from hf_cache import ModelCacheInfo, scan_model_cache
 from model_catalog import ModelCatalog, ModelEntry
 from server_manager import LaunchConfig, ServerManager, ServerState
 from health_worker import HealthWorker
@@ -79,19 +80,67 @@ _LOG_COLORS = {
     "CRITICAL": "#FF6B6B",
 }
 
-_TOUR_EDU = {
-    "engine_init":    "TT Metal opens PCIe connections to each Tenstorrent chip and verifies firmware. No model weights loaded yet — this is pure hardware bring-up.",
-    "device_setup":   "Tensor parallelism: weight matrices are sharded column-wise across chips via Ethernet fabric. Each chip holds 1/N of every weight tensor.",
-    "loading_weights":"Weight shards stream from disk into each chip's DRAM. Reading is sequential per shard — the bottleneck is PCIe bandwidth (~7 GB/s per chip).",
-    "kv_cache":       "KV cache blocks are pre-allocated in SRAM. For a 32k context window, K and V each need [32768 × head_dim] × num_layers tokens of space.",
-    "api_startup":    "The HTTP server starts accepting requests. The model is on-device but not yet JIT-compiled for every context length.",
-    "trace_capture":  "vLLM JIT-compiles a separate execution graph for each of 10 context lengths (128 → 65408 tokens). After this, every inference reuses a pre-compiled trace — zero recompile overhead.",
-    "device_init":    "The media server initializes the device mesh and allocates shared memory pools across all dies.",
-    "mesh_created":   "A 2D mesh of Tenstorrent chips is established. Activations flow over the on-package fabric rather than through host DRAM.",
-    "cache_loading":  "Pre-compiled TT Metal kernel binaries are loaded from tensor cache on disk. Much faster than re-compiling kernels from scratch.",
-    "model_loaded":   "All model components (transformer, text encoder, VAE) are resident on-chip and ready for warmup.",
-    "warmup":         "Warmup runs 2 full denoising passes to JIT-compile TT Metal kernels and capture execution traces. One-time cost per boot — subsequent inferences are fast.",
-    "warmup_complete":"Warmup complete! Waiting for health check to confirm the server is accepting requests.",
+_TOUR_CARDS: dict = {
+    "engine_init": [
+        "TT Metal opens PCIe connections to each Tenstorrent chip and verifies firmware. No model weights loaded yet — this is pure hardware bring-up.",
+        "Each Tenstorrent chip has 108 Tensix cores in a 12×9 grid. Each core has 1.5 MB of local SRAM and a dedicated matrix/vector compute unit that runs independently.",
+        "An embedded RISC-V management CPU on each chip handles DMA scheduling, Ethernet link setup, and power management while Tensix cores later run inference.",
+    ],
+    "device_setup": [
+        "Tensor parallelism: weight matrices are sharded column-wise across chips via Ethernet fabric. Each chip holds 1/N of every weight tensor.",
+        "The Ethernet links between chips run at 100 Gb/s. An allreduce across 4 chips takes ~1 µs — far less than a single transformer layer's compute time.",
+        "Column-parallel sharding means each chip computes attention for a different subset of heads. With GQA the KV heads are fewer, reducing KV replication cost.",
+    ],
+    "loading_weights": [
+        "Weight shards stream from disk into each chip's DRAM via PCIe (~7 GB/s per chip). The bottleneck is disk→DRAM transfer, not computation.",
+        "Weights arrive as bfloat16 (2 bytes/element). The chips support on-the-fly quantization to int8 to halve DRAM bandwidth during actual inference.",
+        "Attention weight matrices (Q, K, V, O_proj) are column-sharded across chips. Each chip's Q_proj is [hidden × (hidden÷N)] where N is the chip count.",
+    ],
+    "kv_cache": [
+        "KV cache is pre-allocated in chip SRAM before the first token. Accessing SRAM takes <1 µs vs. ~100 ns for DRAM — critical for fast autoregressive decode.",
+        "Each layer needs 2 × context_length × head_dim × num_kv_heads elements for K and V. With GQA the KV tensor is much smaller than the full attention map.",
+        "Paged KV attention divides the cache into fixed-size blocks (e.g., 16 tokens each), avoiding fragmentation and enabling efficient batch scheduling.",
+    ],
+    "api_startup": [
+        "The HTTP server starts accepting connections. The model is fully on-device but execution graphs haven't been JIT-compiled for every context length yet.",
+        "vLLM uses continuous batching: new requests join the decode batch mid-generation, keeping hardware utilization high even with uneven arrival rates.",
+        "The vLLM scheduler can preempt a partially-decoded sequence and swap it out when memory is needed — enabling fair multi-tenant serving without starvation.",
+    ],
+    "trace_capture": [
+        "vLLM JIT-compiles a separate execution graph for each of 10 context lengths (128→65408 tokens). After capture, every inference replays a pre-built trace.",
+        "Trace capture = graph compilation: TT Metal unrolls every op into a static kernel-dispatch sequence. At inference time there is zero Python GIL overhead.",
+        "Each of the 10 traces is specialized for its sequence length — the compiler tiles and schedules operations differently for a 128-token vs. 65408-token batch.",
+    ],
+    "device_init": [
+        "The media server initializes the device mesh and allocates shared memory pools across all dies. This is the first time the hardware is exercised.",
+        "On a Galaxy (8× P150), the mesh is 8 chips in a ring topology. Each chip sees a unified virtual address space backed by its own 12 GB LPDDR5 DRAM.",
+        "Device init checks firmware versions and calibrates thermal sensors. If any chip is above the thermal threshold, the server refuses to start.",
+    ],
+    "mesh_created": [
+        "A 2D chip mesh is established. Activations flow over the on-package Ethernet fabric rather than through host DRAM — reducing round-trip latency by ~100×.",
+        "The mesh topology determines model partitioning. For video: spatial encoder on one chip set, temporal decoder on another, pipelined across the fabric.",
+        "Collective operations (AllReduce, AllGather) use ring algorithms that saturate the Ethernet links without touching host memory.",
+    ],
+    "cache_loading": [
+        "Pre-compiled TT Metal kernel binaries are loaded from disk cache. A cache hit avoids LLVM compilation — saving minutes per model load on first boot.",
+        "The tensor cache keys on op type + tensor shape + data type + chip generation. A Wormhole kernel binary won't be used on Blackhole — different ISA.",
+        "The cache is invalidated on firmware update to prevent ABI mismatches. After an upgrade the first load is slower; subsequent loads are fast again.",
+    ],
+    "model_loaded": [
+        "All model components — transformer, text encoder, and VAE decoder — are resident on-chip and ready for the warmup pass.",
+        "For diffusion models the pipeline is: text encoder (CLIP or T5) → denoising U-Net or DiT → VAE decoder. All three sub-models are pre-loaded onto chips.",
+        "The VAE decoder is the final inference step, converting a latent 64×64 tensor into a 1024×1024 pixel image. It's the compute-heaviest part per output pixel.",
+    ],
+    "warmup": [
+        "Warmup runs 2 full denoising passes to JIT-compile TT Metal kernels and capture execution traces. One-time cost per boot; subsequent inferences are fast.",
+        "WAN 2.2 uses ~50 denoising timesteps per video. Each warmup pass compiles attention and FFN kernels for that specific resolution and batch size.",
+        "After warmup the compiled kernels are stored in SRAM. Subsequent inferences skip compilation and replay the recorded kernel dispatch sequence directly.",
+    ],
+    "warmup_complete": [
+        "Warmup complete! The server is now fully primed: kernels compiled, traces captured, KV cache allocated. Waiting for health check.",
+        "The health endpoint (/tt-liveness or /v1/models) returns 200 once the server thread is ready — this guard prevents routing traffic before the model is live.",
+        "First inference will be nearly as fast as steady-state. Compile-time overhead was paid during warmup; the hot path is now pure kernel replay.",
+    ],
 }
 
 
@@ -357,6 +406,10 @@ class Sidebar(Gtk.Box):
         return self._port_entry.get_text() or "8000"
 
 
+_LOG_LEVELS_ORDERED = ["DEBUG", "INFO", "WARN", "ERROR"]
+_MAX_LOG_ENTRIES = 5000
+
+
 class MainPanel(Gtk.Box):
     """Right panel: status banner, sub-stage stepper, progress bar, tour panel, log view."""
 
@@ -364,6 +417,8 @@ class MainPanel(Gtk.Box):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self._auto_scroll = True
         self._pulse_source: Optional[int] = None
+        self._log_entries: list = []        # (line_text, level_str) tuples
+        self._hidden_levels: set = set()
         self._build()
 
     def _build(self):
@@ -433,12 +488,71 @@ class MainPanel(Gtk.Box):
         self._tour_right.set_margin_start(8); self._tour_right.set_margin_end(6); self._tour_right.set_margin_top(4)
         self._tour_right.set_hexpand(True)
         tour_inner.append(self._tour_right)
+        # Tour dot indicator (card N of M)
+        tour_dots_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        tour_dots_box.set_halign(Gtk.Align.CENTER)
+        tour_dots_box.set_margin_top(2); tour_dots_box.set_margin_bottom(4)
+        self._tour_dots = Gtk.Label(label="")
+        self._tour_dots.add_css_class("muted")
+        tour_dots_box.append(self._tour_dots)
         tour_outer.append(tour_inner)
+        tour_outer.append(tour_dots_box)
         self._tour_rev.set_child(tour_outer)
         self.append(self._tour_rev)
         self.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
 
-        # Log view
+        # Stack — holds welcome / config / logs pages.
+        # The log filter toolbar and log text view live inside the "logs" page
+        # so they are only visible when a server is actively running.
+        self._stack = Gtk.Stack()
+        self._stack.set_vexpand(True)
+        self._stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
+        self._stack.set_transition_duration(150)
+
+        # ── Welcome page ─────────────────────────────────────────────────────
+        # Shown on startup before the user selects a model.
+        welcome_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        welcome_box.set_valign(Gtk.Align.CENTER)
+        welcome_box.set_halign(Gtk.Align.CENTER)
+        welcome_lbl = Gtk.Label(label="Select a model to configure and launch")
+        welcome_lbl.add_css_class("muted")
+        welcome_box.append(welcome_lbl)
+        self._stack.add_named(welcome_box, "welcome")
+
+        # ── Config page ───────────────────────────────────────────────────────
+        # Created lazily on first show_config() call to avoid importing GTK
+        # widgets before the window is fully constructed.
+        self._config_panel = None
+
+        # ── Logs page ─────────────────────────────────────────────────────────
+        # Contains the filter toolbar and the scrollable log text view.
+        # Shown automatically when the server is launched.
+        logs_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+
+        # Log filter toolbar
+        filter_bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        filter_bar.set_margin_start(8); filter_bar.set_margin_end(8)
+        filter_bar.set_margin_top(3);   filter_bar.set_margin_bottom(3)
+        filter_lbl = Gtk.Label(label="Filter:")
+        filter_lbl.add_css_class("muted")
+        filter_bar.append(filter_lbl)
+        self._filter_btns: dict = {}
+        for lvl in _LOG_LEVELS_ORDERED:
+            btn = Gtk.ToggleButton(label=lvl)
+            btn.set_active(True)
+            btn.add_css_class("log-filter-btn")
+            btn.connect("toggled", self._on_filter_toggled, lvl)
+            filter_bar.append(btn)
+            self._filter_btns[lvl] = btn
+        self._log_count_lbl = Gtk.Label(label="")
+        self._log_count_lbl.add_css_class("muted")
+        self._log_count_lbl.set_hexpand(True)
+        self._log_count_lbl.set_halign(Gtk.Align.END)
+        filter_bar.append(self._log_count_lbl)
+        logs_box.append(filter_bar)
+        logs_box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+
+        # Log text view inside a scrolled window
         log_scroll = Gtk.ScrolledWindow()
         log_scroll.set_vexpand(True)
         log_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
@@ -460,7 +574,39 @@ class MainPanel(Gtk.Box):
         self._vadj.connect("changed",       self._on_adj_changed)
 
         log_scroll.set_child(self._log_view)
-        self.append(log_scroll)
+        logs_box.append(log_scroll)
+        self._stack.add_named(logs_box, "logs")
+
+        self.append(self._stack)
+
+    # ---------------------------------------------------------------- stack navigation
+
+    def show_welcome(self) -> None:
+        """Switch the main content area to the welcome splash page."""
+        self._stack.set_visible_child_name("welcome")
+
+    def show_config(self, entry, on_options_changed) -> None:
+        """Switch to the config page, creating ConfigPanel lazily on first call.
+
+        The ConfigPanel import is deferred here so that the widget is only
+        constructed after the full GTK window hierarchy is in place.
+        """
+        from config_panel import ConfigPanel
+        if self._config_panel is None:
+            self._config_panel = ConfigPanel(on_options_changed)
+            self._stack.add_named(self._config_panel, "config")
+        self._config_panel.set_model(entry)
+        self._stack.set_visible_child_name("config")
+
+    def show_logs(self) -> None:
+        """Switch the main content area to the live log view."""
+        self._stack.set_visible_child_name("logs")
+
+    def get_options(self):
+        """Return the current LaunchOptions from ConfigPanel, or None if not yet created."""
+        if self._config_panel is not None:
+            return self._config_panel.get_options()
+        return None
 
     def _on_scroll(self, adj):
         self._auto_scroll = adj.get_value() >= adj.get_upper() - adj.get_page_size() - 10
@@ -469,26 +615,37 @@ class MainPanel(Gtk.Box):
         if self._auto_scroll:
             adj.set_value(adj.get_upper() - adj.get_page_size())
 
-    def append_log(self, line: str):
+    def _detect_level(self, line: str) -> str:
         import re
-        buf = self._log_buf
-        end = buf.get_end_iter()
-
-        level_tag = None
         for lvl in ("ERROR", "CRITICAL", "WARN", "WARNING", "INFO", "DEBUG"):
             if re.search(rf'\b{lvl}\b', line):
-                level_tag = f"lvl_{lvl}"
-                break
+                # Normalise WARNING→WARN, CRITICAL→ERROR for filter purposes
+                return "ERROR" if lvl == "CRITICAL" else ("WARN" if lvl == "WARNING" else lvl)
+        return ""
 
+    def _insert_line_to_buffer(self, line: str, level: str):
+        buf = self._log_buf
+        end = buf.get_end_iter()
         if buf.get_char_count() > 0:
             buf.insert(end, "\n")
             end = buf.get_end_iter()
-
         start_off = end.get_offset()
         buf.insert(end, line)
-        if level_tag:
+        tag_name = f"lvl_{level}" if level else None
+        if tag_name:
             s = buf.get_iter_at_offset(start_off)
-            buf.apply_tag_by_name(level_tag, s, buf.get_end_iter())
+            buf.apply_tag_by_name(tag_name, s, buf.get_end_iter())
+
+    def append_log(self, line: str):
+        level = self._detect_level(line)
+        # Store (capped at _MAX_LOG_ENTRIES)
+        self._log_entries.append((line, level))
+        if len(self._log_entries) > _MAX_LOG_ENTRIES:
+            self._log_entries = self._log_entries[-_MAX_LOG_ENTRIES:]
+        # Only insert if this level isn't hidden
+        if level not in self._hidden_levels:
+            self._insert_line_to_buffer(line, level)
+        self._update_log_count()
 
     def set_state(self, state: ServerState, info: str = ""):
         label, css_class = _STATE_LABELS.get(state, ("?", "pill-idle"))
@@ -536,7 +693,41 @@ class MainPanel(Gtk.Box):
 
     def clear_log(self):
         self._log_buf.set_text("")
+        self._log_entries.clear()
         self._auto_scroll = True
+        self._update_log_count()
+
+    def _rebuild_log_buffer(self):
+        self._log_buf.set_text("")
+        self._auto_scroll = True
+        for line, level in self._log_entries:
+            if level not in self._hidden_levels:
+                self._insert_line_to_buffer(line, level)
+        self._update_log_count()
+
+    def _update_log_count(self):
+        visible = sum(
+            1 for _, lvl in self._log_entries if lvl not in self._hidden_levels
+        )
+        total = len(self._log_entries)
+        if visible == total:
+            self._log_count_lbl.set_text(f"{total} lines")
+        else:
+            self._log_count_lbl.set_text(f"{visible}/{total} lines")
+
+    def _on_filter_toggled(self, btn, level: str):
+        if btn.get_active():
+            self._hidden_levels.discard(level)
+        else:
+            self._hidden_levels.add(level)
+        self._rebuild_log_buffer()
+
+    def update_tour_dots(self, idx: int, total: int):
+        if total <= 1:
+            self._tour_dots.set_text("")
+            return
+        dots = "  ".join("●" if i == idx else "○" for i in range(total))
+        self._tour_dots.set_text(dots)
 
 
 class MainWindow(Gtk.ApplicationWindow):
@@ -553,9 +744,13 @@ class MainWindow(Gtk.ApplicationWindow):
         self._timing = TimingStore(_TIMING_PATH)
         self._catalog: Optional[ModelCatalog] = None
         self._current_entry: Optional[ModelEntry] = None
+        self._cache_info: Optional[ModelCacheInfo] = None
         self._state = ServerState.IDLE
         self._load_start: Optional[float] = None
         self._progress_source: Optional[int] = None
+        self._tour_card_idx: int = 0
+        self._tour_card_source: Optional[int] = None
+        self._tour_substage: Optional[str] = None
 
         paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
         paned.set_position(_settings.sidebar_width)
@@ -620,9 +815,49 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def _on_model_select(self, entry: ModelEntry):
         self._current_entry = entry
+        self._cache_info = None
         self._panel._banner_info.set_text(
             f"{entry.display_name}  ·  {entry.device_type}  ·  {entry.inference_engine}"
         )
+        # Show the configuration panel so the user can review/change launch
+        # options before hitting Launch.  ConfigPanel is created lazily on
+        # the first call and reused for subsequent model selections.
+        self._panel.show_config(entry, self._on_options_changed)
+
+        repo = entry.hf_model_repo
+        def _scan():
+            info = scan_model_cache(repo)
+            idle_add_once(self._on_cache_scanned, info)
+        threading.Thread(target=_scan, daemon=True).start()
+
+    def _on_options_changed(self, options) -> None:
+        """Called by ConfigPanel whenever any option widget changes value.
+
+        Currently a no-op — options are read at launch time via
+        self._panel.get_options().  Kept as an extension point for live
+        validation or command-preview updates in MainWindow.
+        """
+        pass
+
+    def _on_cache_scanned(self, info: ModelCacheInfo):
+        self._cache_info = info
+        # If tour is visible right now, refresh the left panel with real data
+        if self._state == ServerState.LOADING and self._tour_substage:
+            self._panel.set_tour(*self._build_tour_content(self._tour_substage))
+
+    def _read_hf_token(self, repo_path: Path) -> Optional[str]:
+        """Read HF_TOKEN from environment first, then repo .env file."""
+        token = os.environ.get("HF_TOKEN", "")
+        if token:
+            return token
+        env_file = repo_path / ".env"
+        if env_file.exists():
+            for line in env_file.read_text(errors="replace").splitlines():
+                if line.startswith("HF_TOKEN="):
+                    token = line.split("=", 1)[1].strip().strip('"').strip("'")
+                    if token:
+                        return token
+        return None
 
     def _on_launch(self, entry: ModelEntry, port: str):
         if self._state not in (ServerState.IDLE, ServerState.ERROR):
@@ -633,17 +868,32 @@ class MainWindow(Gtk.ApplicationWindow):
             self._panel.append_log(f"⚠ run.py not found at {repo_path}")
             return
 
+        hf_token = self._read_hf_token(repo_path)
+        if not hf_token:
+            self._panel.append_log("⚠ HF_TOKEN not found in environment or .env — launch may fail")
+
+        # Collect any options the user configured in ConfigPanel (may be None
+        # if the user never selected a model and went straight to launch via
+        # keyboard shortcut — in that case server_manager falls back to
+        # sensible defaults).
+        options = self._panel.get_options()
+
         config = LaunchConfig(
             repo_path=repo_path,
-            model_name=entry.hf_model_repo,
+            model_name=entry.display_name,  # run.py --model expects short name e.g. "Wan2.2-T2V-A14B-Diffusers"
             device=entry.device_type,
             port=port,
-            hf_token=os.environ.get("HF_TOKEN"),
+            hf_token=hf_token,
             no_auth=True,
+            options=options,
+            inference_engine=entry.inference_engine,
         )
 
         self._panel.clear_log()
         self._panel.append_log(f"▶ Launching {entry.display_name} on {entry.device_type} · port {port}")
+        # Switch to the log view before transitioning state so the user sees
+        # output immediately rather than staying on the config page.
+        self._panel.show_logs()
         self._transition(ServerState.LAUNCHING)
 
         self._health_worker = HealthWorker(
@@ -675,6 +925,11 @@ class MainWindow(Gtk.ApplicationWindow):
             substage = self._server_mgr.parser.last_substage
             if substage:
                 self._panel.set_stepper(self._build_stepper_text(substage))
+                if substage != self._tour_substage:
+                    self._tour_substage = substage
+                    self._tour_card_idx = 0
+                cards = _TOUR_CARDS.get(substage, [])
+                self._panel.update_tour_dots(self._tour_card_idx, len(cards))
                 self._panel.set_tour(*self._build_tour_content(substage))
 
     def _on_server_state(self, state: ServerState):
@@ -711,9 +966,28 @@ class MainWindow(Gtk.ApplicationWindow):
 
         if state == ServerState.LOADING:
             self._load_start = time.monotonic()
+            self._tour_card_idx = 0
+            self._tour_substage = None
             self._start_progress_ticker()
+            self._start_tour_timer()
         elif state in (ServerState.READY, ServerState.ERROR, ServerState.IDLE, ServerState.STOPPING):
             self._stop_progress_ticker()
+            self._stop_tour_timer()
+
+        # Stack navigation: return to the config page (or welcome if no model
+        # is selected) when the server reaches a terminal / idle state; keep
+        # the log view on all in-progress states so the user sees output.
+        if state in (ServerState.IDLE, ServerState.ERROR):
+            if self._current_entry:
+                self._panel.show_config(self._current_entry, self._on_options_changed)
+            else:
+                self._panel.show_welcome()
+        elif state == ServerState.LAUNCHING:
+            # show_logs() is called explicitly in _on_launch before _transition
+            # for the initial launch.  This branch handles the STOPPING→LAUNCHING
+            # re-launch edge-case where _on_launch is called again without an
+            # explicit show_logs() call preceding _transition.
+            self._panel.show_logs()
 
     def _start_progress_ticker(self):
         if not self._progress_source:
@@ -723,6 +997,27 @@ class MainWindow(Gtk.ApplicationWindow):
         if self._progress_source:
             GLib.source_remove(self._progress_source)
             self._progress_source = None
+
+    def _start_tour_timer(self):
+        if not self._tour_card_source:
+            self._tour_card_source = GLib.timeout_add(12000, self._advance_tour_card)
+
+    def _stop_tour_timer(self):
+        if self._tour_card_source:
+            GLib.source_remove(self._tour_card_source)
+            self._tour_card_source = None
+
+    def _advance_tour_card(self) -> bool:
+        if self._state != ServerState.LOADING:
+            self._tour_card_source = None
+            return False
+        substage = self._tour_substage or ""
+        cards = _TOUR_CARDS.get(substage, [])
+        if len(cards) > 1:
+            self._tour_card_idx = (self._tour_card_idx + 1) % len(cards)
+            self._panel.update_tour_dots(self._tour_card_idx, len(cards))
+            self._panel.set_tour(*self._build_tour_content(substage))
+        return True  # keep firing
 
     def _progress_tick(self) -> bool:
         if self._state != ServerState.LOADING or not self._current_entry:
@@ -788,20 +1083,51 @@ class MainWindow(Gtk.ApplicationWindow):
                 parts.append(f"○ {lbl}")
         return "  ──  ".join(parts)
 
-    def _build_tour_content(self, substage: Optional[str]):
+    def _build_tour_left(self, entry: ModelEntry) -> str:
+        ci = self._cache_info
+        lines = [f"📁 {entry.hf_model_repo}"]
+        if ci and ci.is_cached:
+            lines.append("  ✓ cached locally")
+            if ci.safetensors:
+                gb = ci.total_bytes / 1e9
+                lines.append(f"  {len(ci.safetensors)} shards · {gb:.1f} GB")
+            else:
+                other_gb = ci.total_bytes / 1e9
+                if other_gb > 0:
+                    lines.append(f"  {other_gb:.1f} GB total")
+            a = ci.arch
+            if a and a.num_layers:
+                lines.append(f"  {a.num_layers} layers · hidden={a.hidden_size}")
+                if a.num_kv_heads and a.num_kv_heads != a.num_heads:
+                    lines.append(f"  GQA: {a.num_heads}Q / {a.num_kv_heads}KV heads")
+                elif a.num_heads:
+                    lines.append(f"  {a.num_heads} heads · head_dim={a.head_dim}")
+                if a.context_length:
+                    lines.append(f"  ctx={a.context_length:,} tokens")
+        elif ci and not ci.is_cached:
+            lines.append("  ○ not in local HF cache")
+            if entry.min_disk_gb:
+                lines.append(f"  ~{entry.min_disk_gb:.0f} GB on disk")
+        else:
+            if entry.min_disk_gb:
+                lines.append(f"  ~{entry.min_disk_gb:.0f} GB on disk")
+            if entry.param_count:
+                lines.append(f"  {entry.param_count:.0f}B parameters")
+        lines.append(f"  Engine: {entry.inference_engine}")
+        lines.append(f"  Status: {entry.status}")
+        return "\n".join(lines)
+
+    def _build_tour_content(self, substage: Optional[str]) -> tuple:
         entry = self._current_entry
         if not entry:
             return ("", "")
-
-        left = f"📁 {entry.hf_model_repo}\n"
-        if entry.min_disk_gb:
-            left += f"  ~{entry.min_disk_gb:.0f} GB on disk\n"
-        if entry.param_count:
-            left += f"  {entry.param_count:.0f}B parameters\n"
-        left += f"  Engine: {entry.inference_engine}\n"
-        left += f"  Status: {entry.status}"
-
-        right = _TOUR_EDU.get(substage or "", "Loading model onto Tenstorrent hardware…")
+        left = self._build_tour_left(entry)
+        cards = _TOUR_CARDS.get(substage or "", [])
+        if not cards:
+            right = "Loading model onto Tenstorrent hardware…"
+        else:
+            idx = self._tour_card_idx % len(cards)
+            right = cards[idx]
         return (left, right)
 
     def _on_close(self, win):
