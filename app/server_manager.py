@@ -2,8 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Launch run.py, tail its log file, stop container.
 
-All on_log_line / on_state callbacks are posted via GLib.idle_add — never
-called directly from the tail thread.
+Callbacks (on_log_line, on_state) are called directly; callers are
+responsible for any thread-dispatching they need (e.g. wrapping with
+GLib.idle_add before passing to ServerManager.launch).
 """
 import logging
 import os
@@ -182,7 +183,7 @@ class ServerManager:
         on_state: Callable[[ServerState], None],
         _auto_retry: bool = False,
     ):
-        """Start run.py and begin tailing its log. All callbacks via GLib.idle_add."""
+        """Start run.py and begin tailing its log. Callbacks are called directly."""
         self._stop_event.clear()
         self.parser = LogParser()
         self._container_name = None
@@ -236,10 +237,9 @@ class ServerManager:
         if config.hf_token:
             env["HF_TOKEN"] = config.hf_token
 
-        from worker import idle_add_once
         log.info("launch: %s  (cwd=%s)", " ".join(cmd), config.repo_path)
-        idle_add_once(on_log_line, f"$ {' '.join(cmd)}")
-        idle_add_once(on_log_line, f"  cwd: {config.repo_path}")
+        on_log_line(f"$ {' '.join(cmd)}")
+        on_log_line(f"  cwd: {config.repo_path}")
 
         self._proc = subprocess.Popen(
             cmd,
@@ -267,7 +267,6 @@ class ServerManager:
 
     def _stderr_reader(self, proc: subprocess.Popen, on_log_line: Callable):
         """Forward stderr lines to the UI and pass them through auto-action checks."""
-        from worker import idle_add_once
         try:
             for line in proc.stderr:
                 if self._stop_event.is_set():
@@ -276,7 +275,7 @@ class ServerManager:
                 if not line:
                     continue
                 log.debug("[stderr] %s", line)
-                idle_add_once(on_log_line, f"[stderr] {line}")
+                on_log_line(f"[stderr] {line}")
                 self._check_line(line, on_log_line)
         except Exception:
             pass
@@ -288,8 +287,6 @@ class ServerManager:
         regardless of whether run.py emits them to its own log or to stderr.
         Guards prevent duplicate triggers.
         """
-        from worker import idle_add_once
-
         # --- Docker image not found ---
         if not self._image_resolve_attempted:
             m = self._IMAGE_NOT_FOUND_RE.search(line)
@@ -298,10 +295,7 @@ class ServerManager:
                 self._image_resolve_attempted = True
                 self._resolving_image = True
                 log.warning("image not found: %s — starting GHCR resolution", failed_ref)
-                idle_add_once(
-                    on_log_line,
-                    f"⚠ Image not found: {failed_ref} — querying GHCR for latest tag…",
-                )
+                on_log_line(f"⚠ Image not found: {failed_ref} — querying GHCR for latest tag…")
                 threading.Thread(
                     target=self._try_resolve_image,
                     args=(failed_ref, on_log_line),
@@ -317,10 +311,7 @@ class ServerManager:
                     package = self._MODULE_TO_PACKAGE.get(module, module)
                     self._installing_module = True
                     self._installed_modules.add(module)
-                    idle_add_once(
-                        on_log_line,
-                        f"⚠ Missing module '{module}' — installing {package}…",
-                    )
+                    on_log_line(f"⚠ Missing module '{module}' — installing {package}…")
                     threading.Thread(
                         target=self._try_install_module,
                         args=(module, package, on_log_line),
@@ -329,24 +320,20 @@ class ServerManager:
 
     def _try_resolve_image(self, failed_ref: str, on_log_line: Callable):
         """Background: resolve a better GHCR tag and restart the launch."""
-        from worker import idle_add_once
         from ghcr_resolver import resolve_latest_tag
 
-        def _step(msg: str):
-            idle_add_once(on_log_line, msg)
-
-        resolved = resolve_latest_tag(failed_ref, on_step=_step)
+        resolved = resolve_latest_tag(failed_ref, on_step=on_log_line)
         if not resolved:
             log.error("GHCR resolution failed for %s", failed_ref)
-            idle_add_once(on_log_line, "✗ Could not resolve a newer tag from GHCR — check image manually")
+            on_log_line("✗ Could not resolve a newer tag from GHCR — check image manually")
             self._resolving_image = False
             if self._on_state_cb:
-                idle_add_once(self._on_state_cb, ServerState.ERROR)
+                self._on_state_cb(ServerState.ERROR)
             return
 
         log.info("GHCR resolved %s → %s", failed_ref, resolved)
-        idle_add_once(on_log_line, f"✓ Resolved → {resolved}")
-        idle_add_once(on_log_line, "↺ Restarting launch with resolved image…")
+        on_log_line(f"✓ Resolved → {resolved}")
+        on_log_line("↺ Restarting launch with resolved image…")
 
         # Wait briefly for current process to fully exit
         if self._proc:
@@ -366,8 +353,6 @@ class ServerManager:
 
     def _try_install_module(self, module: str, package: str, on_log_line: Callable):
         """Background: pip-install a missing module then restart the launch."""
-        from worker import idle_add_once
-
         repo_path = self._config.repo_path if self._config else Path.cwd()
         try:
             result = subprocess.run(
@@ -378,18 +363,18 @@ class ServerManager:
                 timeout=120,
             )
             if result.returncode == 0:
-                idle_add_once(on_log_line, f"✓ Installed {package}")
+                on_log_line(f"✓ Installed {package}")
             else:
                 err = (result.stderr or result.stdout).strip().splitlines()[-1] if (result.stderr or result.stdout) else "unknown error"
-                idle_add_once(on_log_line, f"✗ pip install {package} failed: {err}")
+                on_log_line(f"✗ pip install {package} failed: {err}")
                 self._installing_module = False
                 return
         except Exception as exc:
-            idle_add_once(on_log_line, f"✗ pip install {package} error: {exc}")
+            on_log_line(f"✗ pip install {package} error: {exc}")
             self._installing_module = False
             return
 
-        idle_add_once(on_log_line, "↺ Restarting launch after module install…")
+        on_log_line("↺ Restarting launch after module install…")
 
         if self._proc:
             for _ in range(20):
@@ -423,11 +408,7 @@ class ServerManager:
             if self._proc and self._proc.poll() is not None:
                 rc = self._proc.returncode
                 if not self._resolving_image:
-                    from worker import idle_add_once
-                    idle_add_once(
-                        self._on_log_line,
-                        f"⚠ run.py exited with code {rc} before creating log file",
-                    )
+                    self._on_log_line(f"⚠ run.py exited with code {rc} before creating log file")
                 return None
             for ld in log_dirs:
                 if ld.exists():
@@ -444,13 +425,11 @@ class ServerManager:
         on_log_line: Callable,
         on_state: Callable,
     ):
-        from worker import idle_add_once
-
         log_path = self._find_log_file(repo_path)
         if log_path is None:
             if not self._resolving_image:
-                idle_add_once(on_log_line, "⚠ Log file not found — subprocess may have failed")
-                idle_add_once(on_state, ServerState.ERROR)
+                on_log_line("⚠ Log file not found — subprocess may have failed")
+                on_state(ServerState.ERROR)
             return
 
         self._log_path = log_path
@@ -461,19 +440,19 @@ class ServerManager:
                 if not line:
                     if self._proc and self._proc.poll() is not None:
                         if self._proc.returncode != 0:
-                            idle_add_once(on_state, ServerState.ERROR)
+                            on_state(ServerState.ERROR)
                         break
                     time.sleep(0.05)
                     continue
 
                 line = line.rstrip("\n")
-                idle_add_once(on_log_line, line)
+                on_log_line(line)
                 self._check_line(line, on_log_line)
 
                 new_state = self.parser.feed(line)
                 if new_state:
                     log.debug("state→%s  (line: %s)", new_state.name, line[:120])
-                    idle_add_once(on_state, new_state)
+                    on_state(new_state)
 
                 # Detect container name from "docker run ... --name <name>"
                 m = re.search(r'--name\s+(\S+)', line)
