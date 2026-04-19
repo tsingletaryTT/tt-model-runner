@@ -24,6 +24,15 @@ _USE_CASE_LABELS = {
     "smoke_test":        "Smoke",
 }
 
+# (checkbox widget id, LaunchOptions field name)
+_CHECKBOXES = [
+    ("tool-use-check",  "tool_use_enabled"),
+    ("dev-mode-check",  "dev_mode"),
+    ("no-timeout-check","disable_metal_timeout"),
+    ("skip-sw-check",   "skip_system_sw_validation"),
+    ("no-trace-check",  "disable_trace_capture"),
+]
+
 
 class ConfigPane(Widget):
     """Config tab: use-case selector, quick settings, command preview."""
@@ -59,6 +68,7 @@ class ConfigPane(Widget):
         self._entry: Optional["ModelEntry"] = None
         self._options = None
         self._on_options_changed: Optional[Callable] = None
+        self._syncing: bool = False   # suppress change callbacks during sync
 
     def compose(self) -> ComposeResult:
         yield Static("Select a model to configure", id="model-strip")
@@ -68,7 +78,11 @@ class ConfigPane(Widget):
         with Widget(id="quick-settings"):
             yield Input(placeholder="Context length (e.g. 131072)", id="ctx-input")
             yield Input(placeholder="Max concurrent seqs (e.g. 1)", id="seq-input")
-            yield Checkbox("Enable tool use", id="tool-use-check")
+            yield Checkbox("Enable tool use",         id="tool-use-check")
+            yield Checkbox("Dev mode",                id="dev-mode-check")
+            yield Checkbox("Disable TT timeout",      id="no-timeout-check")
+            yield Checkbox("Skip SW validation",      id="skip-sw-check")
+            yield Checkbox("Disable trace capture",   id="no-trace-check")
         yield Label("COMMAND PREVIEW")
         yield Static("", id="command-preview")
 
@@ -93,9 +107,12 @@ class ConfigPane(Widget):
 
         default_uc = use_cases[0]
         self._options = apply_preset(default_uc, entry)
+        self._sync_widgets_to_options()
         if self._on_options_changed and self._options:
             self._on_options_changed(self._options)
         self._update_preview()
+
+    # ---------------------------------------------------------------- event handlers
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         btn_id = event.button.id or ""
@@ -104,9 +121,78 @@ class ConfigPane(Widget):
             uc = btn_id[3:]
             if self._entry:
                 self._options = apply_preset(uc, self._entry)
+                self._sync_widgets_to_options()
                 self._update_preview()
                 if self._on_options_changed and self._options:
                     self._on_options_changed(self._options)
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if self._syncing or not self._options:
+            return
+        inp_id = event.input.id
+        text = event.value.strip()
+        if inp_id == "ctx-input":
+            if not text or text.lower() == "default":
+                self._options.max_model_len = None
+            else:
+                try:
+                    self._options.max_model_len = int(text)
+                except ValueError:
+                    return
+        elif inp_id == "seq-input":
+            if not text or text.lower() == "default":
+                self._options.max_num_seqs = None
+            else:
+                try:
+                    self._options.max_num_seqs = int(text)
+                except ValueError:
+                    return
+        else:
+            return
+        self._update_preview()
+        if self._on_options_changed:
+            self._on_options_changed(self._options)
+
+    def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
+        if self._syncing or not self._options:
+            return
+        cb_id = event.checkbox.id
+        val = event.value
+        for widget_id, attr in _CHECKBOXES:
+            if cb_id == widget_id:
+                setattr(self._options, attr, val)
+                break
+        self._update_preview()
+        if self._on_options_changed:
+            self._on_options_changed(self._options)
+
+    # ---------------------------------------------------------------- sync helpers
+
+    def _sync_widgets_to_options(self) -> None:
+        """Push self._options values into all input widgets without firing callbacks."""
+        if not self._options:
+            return
+        self._syncing = True
+        try:
+            # Numeric inputs
+            for inp_id, attr in [("ctx-input", "max_model_len"), ("seq-input", "max_num_seqs")]:
+                try:
+                    val = getattr(self._options, attr, None)
+                    self.query_one(f"#{inp_id}", Input).value = str(val) if val is not None else ""
+                except Exception:
+                    pass
+            # Checkboxes
+            for cb_id, attr in _CHECKBOXES:
+                try:
+                    self.query_one(f"#{cb_id}", Checkbox).value = bool(
+                        getattr(self._options, attr, False)
+                    )
+                except Exception:
+                    pass
+        finally:
+            self._syncing = False
+
+    # ---------------------------------------------------------------- preview
 
     def _update_preview(self) -> None:
         if not self._entry or not self._options:

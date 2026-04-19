@@ -389,6 +389,7 @@ def get_model_cards(
                     f"Device: {e.device_type}  ·  Status: {e.status}"
                 ),
                 "tag": "Model",
+                "model_id": e.model_name,   # used by AdUnit "Find in Rail" link
             })
 
     if compat_catalog and device_type:

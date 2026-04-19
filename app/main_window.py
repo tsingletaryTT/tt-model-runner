@@ -364,31 +364,60 @@ class Sidebar(Gtk.Box):
     def get_port(self) -> str:
         return self._port_entry.get_text() or "8000"
 
+    def select_model_by_id(self, model_key: str) -> None:
+        """Find model_key in the tree, select it, and scroll it into view."""
+        def _find_leaf(store, parent=None):
+            it = store.iter_children(parent)
+            while it:
+                if store.get_value(it, 3):   # is_leaf
+                    if store.get_value(it, 1) == model_key:
+                        return it
+                else:
+                    found = _find_leaf(store, it)
+                    if found:
+                        return found
+                it = store.iter_next(it)
+            return None
+
+        leaf_it = _find_leaf(self._tree_store)
+        if leaf_it is None:
+            return
+        path = self._tree_store.get_path(leaf_it)
+        self._tree_view.expand_to_path(path)
+        self._tree_view.get_selection().select_iter(leaf_it)
+        self._tree_view.scroll_to_cell(path, None, False, 0.0, 0.0)
+
 
 _LOG_LEVELS_ORDERED = ["DEBUG", "INFO", "WARN", "ERROR"]
 _MAX_LOG_ENTRIES = 5000
 
 
 class AdUnit(Gtk.Box):
-    """Rotating 'Did you know?' card widget shown at the bottom of the main panel.
+    """Rotating 'Did you know?' card at the bottom of the main panel.
 
-    Auto-advances every 8 seconds.  Click › to advance manually.
-    Call set_cards(list_of_dicts) to populate; each dict has 'headline', 'body', 'tag'.
+    Auto-advances every 8 s.
+    - Click the card body to pause; click again (outside the rail link) to advance + resume.
+    - Cards with a model_id show a '→ Rail' button that selects the model in the sidebar.
+    - '›' / '▶' button always advances (and resumes if paused).
     """
     _INTERVAL_MS = 8000
 
     def __init__(self):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.add_css_class("ad-unit")
+        self.set_margin_bottom(12)
         self._cards: list = []
         self._idx: int = 0
         self._timer: Optional[int] = None
+        self._paused: bool = False
+        self._current_model_id: Optional[str] = None
+        self._on_select_model: Optional[callable] = None
         self._build()
 
     def _build(self):
         inner = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         inner.set_margin_start(10); inner.set_margin_end(10)
-        inner.set_margin_top(5);    inner.set_margin_bottom(5)
+        inner.set_margin_top(6);    inner.set_margin_bottom(8)
 
         self._tag = Gtk.Label(label="")
         self._tag.add_css_class("pill")
@@ -410,18 +439,42 @@ class AdUnit(Gtk.Box):
         text_box.append(self._body)
         inner.append(text_box)
 
-        next_btn = Gtk.Button(label="›")
-        next_btn.add_css_class("flat")
-        next_btn.set_valign(Gtk.Align.CENTER)
-        next_btn.connect("clicked", lambda _: self._advance())
-        inner.append(next_btn)
+        # Rail-link button — visible only for cards with a model_id
+        self._find_btn = Gtk.Button(label="→ Rail")
+        self._find_btn.add_css_class("flat")
+        self._find_btn.set_valign(Gtk.Align.CENTER)
+        self._find_btn.set_visible(False)
+        self._find_btn.set_tooltip_text("Select this model in the sidebar")
+        self._find_btn.connect("clicked", self._on_find_clicked)
+        inner.append(self._find_btn)
+
+        # Advance button — shows ▶ when paused, › when playing
+        self._adv_btn = Gtk.Button(label="›")
+        self._adv_btn.add_css_class("flat")
+        self._adv_btn.set_valign(Gtk.Align.CENTER)
+        self._adv_btn.connect("clicked", lambda _: self._advance())
+        inner.append(self._adv_btn)
+
+        # Click on body (labels / empty space) pauses; second click advances + resumes.
+        # Button clicks are claimed by the buttons themselves and do NOT fire this gesture.
+        gesture = Gtk.GestureClick.new()
+        gesture.connect("pressed", self._on_body_pressed)
+        inner.add_controller(gesture)
 
         self.append(inner)
+
+    def set_on_select_model(self, callback: Optional[callable]) -> None:
+        self._on_select_model = callback
+        self._find_btn.set_visible(
+            bool(self._current_model_id and self._on_select_model)
+        )
 
     def set_cards(self, cards: list) -> None:
         """Replace the card pool and show the first card immediately."""
         self._cards = cards or []
         self._idx = 0
+        self._paused = False
+        self._adv_btn.set_label("›")
         self._show_current()
         self._restart_timer()
 
@@ -430,6 +483,8 @@ class AdUnit(Gtk.Box):
             self._headline.set_markup("<b>Did you know?</b>")
             self._body.set_text("Loading recommendations…")
             self._tag.set_text("")
+            self._current_model_id = None
+            self._find_btn.set_visible(False)
             return
         card = self._cards[self._idx % len(self._cards)]
         headline = card.get("headline", "")
@@ -438,21 +493,45 @@ class AdUnit(Gtk.Box):
         self._headline.set_markup(f"<b>{headline_esc}</b>")
         self._body.set_text(card.get("body", ""))
         self._tag.set_text(card.get("tag", ""))
+        self._current_model_id = card.get("model_id")
+        self._find_btn.set_visible(
+            bool(self._current_model_id and self._on_select_model)
+        )
 
     def _advance(self) -> None:
         if self._cards:
             self._idx = (self._idx + 1) % len(self._cards)
+        self._paused = False
+        self._adv_btn.set_label("›")
         self._show_current()
         self._restart_timer()
 
     def _restart_timer(self) -> None:
         if self._timer is not None:
             GLib.source_remove(self._timer)
-        self._timer = GLib.timeout_add(self._INTERVAL_MS, self._on_timer)
+            self._timer = None
+        if not self._paused:
+            self._timer = GLib.timeout_add(self._INTERVAL_MS, self._on_timer)
 
     def _on_timer(self) -> bool:
         self._advance()
         return False  # one-shot; _advance restarts it
+
+    def _on_body_pressed(self, gesture, n_press, x, y) -> None:
+        if not self._paused:
+            # First click: pause — stop the timer, signal paused state via button label
+            self._paused = True
+            if self._timer is not None:
+                GLib.source_remove(self._timer)
+                self._timer = None
+            self._adv_btn.set_label("▶")
+        else:
+            # Second click: advance to next card + resume auto-advance
+            self._advance()
+
+    def _on_find_clicked(self, _btn) -> None:
+        if self._current_model_id and self._on_select_model:
+            self._on_select_model(self._current_model_id)
 
 
 class MainPanel(Gtk.Box):
@@ -1004,6 +1083,9 @@ class MainPanel(Gtk.Box):
         """Update the rotating ad unit card pool."""
         self._ad_unit.set_cards(cards)
 
+    def set_ad_select_model_callback(self, callback) -> None:
+        self._ad_unit.set_on_select_model(callback)
+
     def append_tool_result(self, rt) -> None:
         """Append a ToolRoundTrip step to the round-trip output buffer.
 
@@ -1172,6 +1254,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self._sidebar.load_catalog(catalog, compatible)
         branch, sha = self._ctrl.get_repo_git_info()
         self._sidebar.refresh_git_info(branch, sha)
+        self._panel.set_ad_select_model_callback(self._sidebar.select_model_by_id)
         self._refresh_ad_unit()
 
     # ── User action handlers (called from Sidebar widgets) ────────────────────

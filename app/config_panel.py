@@ -188,6 +188,23 @@ class ConfigPanel(Gtk.Box):
         self._workflow_entry.connect("changed", self._on_any_change)
         gen_row.append(self._workflow_entry)
         inner.append(gen_row)
+
+        # Troubleshooting row — always visible so users can act on validation failures
+        trouble_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        trouble_row.set_margin_bottom(6)
+        self._skip_sw_check = Gtk.CheckButton(label="Skip SW validation")
+        self._skip_sw_check.set_tooltip_text(
+            "--skip-system-sw-validation: bypass firmware/KMD version checks"
+        )
+        self._skip_sw_check.connect("toggled", self._on_any_change)
+        trouble_row.append(self._skip_sw_check)
+        self._no_trace_check = Gtk.CheckButton(label="Disable trace capture")
+        self._no_trace_check.set_tooltip_text(
+            "--disable-trace-capture: skip JIT trace compilation (faster startup, slower inference)"
+        )
+        self._no_trace_check.connect("toggled", self._on_any_change)
+        trouble_row.append(self._no_trace_check)
+        inner.append(trouble_row)
         inner.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
 
         # --- Docker image picker ---
@@ -273,14 +290,6 @@ class ConfigPanel(Gtk.Box):
         self._image_user_entry.set_hexpand(True)
         self._image_user_entry.connect("changed", self._on_any_change)
         _adv_row(adv_grid, 7, "Image user (UID)", self._image_user_entry)
-
-        self._skip_sw_check = Gtk.CheckButton(label="Skip SW validation")
-        self._skip_sw_check.connect("toggled", self._on_any_change)
-        adv_grid.attach(self._skip_sw_check, 0, 8, 2, 1)
-
-        self._no_trace_check = Gtk.CheckButton(label="Disable trace capture")
-        self._no_trace_check.connect("toggled", self._on_any_change)
-        adv_grid.attach(self._no_trace_check, 0, 9, 2, 1)
 
         exp.set_child(adv_grid)
         inner.append(exp)
