@@ -1,0 +1,83 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+"""BenchPane — Bench tab for the Textual TUI."""
+from __future__ import annotations
+
+from textual.app import ComposeResult
+from textual.widget import Widget
+from textual.widgets import Button, Checkbox, DataTable, Label, RichLog, Select
+
+_MODES = [("smoke-test", "smoke-test"), ("ci-nightly", "ci-nightly"),
+          ("ci-long", "ci-long")]
+
+
+class BenchPane(Widget):
+    """Bench tab: run config, live output, results table."""
+
+    DEFAULT_CSS = """
+    BenchPane {
+        height: 100%;
+        layout: vertical;
+        padding: 0 1;
+    }
+    #bench-config-row {
+        height: 3;
+        layout: horizontal;
+    }
+    #bench-live-log {
+        height: 1fr;
+        border: solid $primary-darken-2;
+    }
+    #bench-results {
+        height: 10;
+    }
+    """
+
+    def compose(self) -> ComposeResult:
+        with Widget(id="bench-config-row"):
+            yield Label("Mode: ")
+            yield Select(_MODES, value="smoke-test", id="bench-mode")
+            yield Checkbox("Concurrency sweeps", id="bench-sweeps")
+            yield Checkbox("Percentile report",  id="bench-pct")
+            yield Button("▶ Run Benchmark", id="bench-run-btn", variant="success")
+        yield Label("LIVE OUTPUT")
+        yield RichLog(id="bench-live-log", highlight=False, markup=False)
+        yield Label("RESULTS")
+        yield DataTable(id="bench-results")
+
+    def on_mount(self) -> None:
+        table = self.query_one("#bench-results", DataTable)
+        table.add_columns("Pass", "ISL", "OSL", "Con", "TTFT ms",
+                          "TPS", "E2EL ms", "Req/s", "Timestamp")
+
+    def append_progress(self, line: str) -> None:
+        self.query_one("#bench-live-log", RichLog).write(line)
+
+    def append_result(self, result) -> None:
+        icon = {"PASS": "✓", "BELOW_TARGET": "⚠", "FAIL": "✗"}.get(
+            result.tier_pass, "?"
+        )
+        table = self.query_one("#bench-results", DataTable)
+        table.add_row(
+            f"{icon} {result.tier_pass}",
+            str(result.isl),
+            str(result.osl),
+            str(result.concurrency),
+            f"{result.mean_ttft_ms:.0f}",
+            f"{result.mean_tps:.1f}",
+            f"{result.mean_e2el_ms:.0f}",
+            f"{result.request_throughput:.2f}",
+            result.timestamp,
+        )
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id != "bench-run-btn":
+            return
+        mode   = self.query_one("#bench-mode", Select).value or "smoke-test"
+        sweeps = self.query_one("#bench-sweeps", Checkbox).value
+        pct    = self.query_one("#bench-pct", Checkbox).value
+        self.query_one("#bench-live-log", RichLog).clear()
+        app_ctrl = getattr(self.app, "_ctrl", None)
+        if app_ctrl:
+            app_ctrl.run_benchmark(mode=mode, concurrency_sweeps=sweeps,
+                                   percentile_report=pct)
