@@ -36,6 +36,15 @@ def get_model_description(display_name: str) -> str:
     return _DESCRIPTIONS.get(display_name, "")
 
 from docker_images import DockerImage, scan_local_images
+from timing_store import TimingStore
+
+_timing_store: Optional["TimingStore"] = None
+
+def _get_timing_store() -> "TimingStore":
+    global _timing_store
+    if _timing_store is None:
+        _timing_store = TimingStore()
+    return _timing_store
 from launch_options import (
     LaunchOptions, MODEL_TYPE_USE_CASES, USE_CASE_LABELS,
     apply_preset, build_extra_args, detect_tool_parser,
@@ -111,10 +120,18 @@ class ConfigPanel(Gtk.Box):
         self._strip_meta = Gtk.Label(label="")
         self._strip_meta.add_css_class("muted")
         self._strip_meta.set_halign(Gtk.Align.START)
-        self._strip_meta.set_margin_bottom(6)
+        self._strip_meta.set_margin_bottom(2)
         self._strip_meta.set_ellipsize(Pango.EllipsizeMode.END)
         self._strip_meta.set_visible(False)
         inner.append(self._strip_meta)
+
+        # Timing estimate row — "Est. load: ~8 min  (warm, 4 samples)"
+        self._strip_timing = Gtk.Label(label="")
+        self._strip_timing.add_css_class("muted")
+        self._strip_timing.set_halign(Gtk.Align.START)
+        self._strip_timing.set_margin_bottom(6)
+        self._strip_timing.set_visible(False)
+        inner.append(self._strip_timing)
 
         inner.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
 
@@ -359,6 +376,33 @@ class ConfigPanel(Gtk.Box):
 
     # --------------------------------------------------------------- model set
 
+    @staticmethod
+    def _make_timing_label(entry) -> str:
+        """Build a human-readable load-time estimate string for entry, or ''."""
+        try:
+            ts = _get_timing_store()
+            size_gb = entry.min_disk_gb or 0.0
+            result = ts.estimate_load(
+                hf_repo=entry.hf_model_repo,
+                device=entry.device_type,
+                cold=False,
+                size_gb=size_gb,
+                family=entry.family,
+            )
+            if result.confidence == "none" or result.seconds is None:
+                return ""
+            secs = result.seconds
+            if secs < 60:
+                time_str = f"~{secs:.0f}s"
+            elif secs < 3600:
+                time_str = f"~{secs / 60:.0f} min"
+            else:
+                time_str = f"~{secs / 3600:.1f} h"
+            conf_tag = "" if result.confidence == "high" else f"  ({result.confidence} confidence)"
+            return f"Est. load: {time_str}{conf_tag}"
+        except Exception:
+            return ""
+
     def set_model(self, entry: ModelEntry) -> None:
         """Update the panel for a newly selected model entry."""
         self._entry = entry
@@ -391,6 +435,11 @@ class ConfigPanel(Gtk.Box):
         meta_text = "  ·  ".join(parts)
         self._strip_meta.set_text(meta_text)
         self._strip_meta.set_visible(True)
+
+        # Timing estimate — read from TimingStore (warm start, i.e. weights on NVMe)
+        timing_text = self._make_timing_label(entry)
+        self._strip_timing.set_text(timing_text)
+        self._strip_timing.set_visible(bool(timing_text))
 
         # Rebuild use-case chips
         self._populate_use_cases(entry)
