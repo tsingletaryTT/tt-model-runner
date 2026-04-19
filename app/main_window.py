@@ -577,6 +577,13 @@ class MainPanel(Gtk.Box):
         tools_box.append(tools_cols)
         self._stack.add_named(tools_box, "tools")
 
+        # ── Bench page placeholder (wired in Task 7) ─────────────────────────
+        bench_placeholder = Gtk.Label(
+            label="Benchmark runner — available after launch"
+        )
+        bench_placeholder.add_css_class("muted")
+        self._stack.add_named(bench_placeholder, "bench")
+
         self.append(self._stack)
 
     # ---------------------------------------------------------------- stack navigation
@@ -665,6 +672,7 @@ class MainPanel(Gtk.Box):
         ready = (state == ServerState.READY)
         self._tab_bar.set_visible(ready)
         if ready:
+            self._stack.set_visible_child_name("logs")
             self._update_tab_buttons("logs")
 
         if state in (ServerState.LAUNCHING, ServerState.PULLING_IMAGE):
