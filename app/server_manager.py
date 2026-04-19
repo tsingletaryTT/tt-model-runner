@@ -10,7 +10,7 @@ import re
 import subprocess
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
 from typing import Callable, List, Optional
@@ -111,6 +111,7 @@ class LaunchConfig:
     port: str = "8000"
     hf_token: Optional[str] = None
     no_auth: bool = True
+    docker_image_override: str = ""   # passed to --override-docker-image when set
 
 
 class ServerManager:
@@ -120,18 +121,31 @@ class ServerManager:
         self._stop_event = threading.Event()
         self._log_path: Optional[Path] = None
         self._container_name: Optional[str] = None
+        self._on_log_line: Optional[Callable] = None
         self.parser = LogParser()
+        # image auto-resolution state
+        self._config: Optional[LaunchConfig] = None
+        self._on_state_cb: Optional[Callable] = None
+        self._resolving_image: bool = False
+        self._image_resolve_attempted: bool = False
 
     def launch(
         self,
         config: LaunchConfig,
         on_log_line: Callable[[str], None],
         on_state: Callable[[ServerState], None],
+        _auto_retry: bool = False,
     ):
         """Start run.py and begin tailing its log. All callbacks via GLib.idle_add."""
         self._stop_event.clear()
         self.parser = LogParser()
         self._container_name = None
+        self._on_log_line = on_log_line
+        self._config = config
+        self._on_state_cb = on_state
+        self._resolving_image = False
+        if not _auto_retry:
+            self._image_resolve_attempted = False
 
         cmd = [
             "python3", "run.py",
@@ -139,21 +153,37 @@ class ServerManager:
             "--workflow", "server",
             "--docker-server",
             "--service-port", config.port,
+            "--tt-device", config.device.lower(),
         ]
         if config.no_auth:
             cmd.append("--no-auth")
+        if config.docker_image_override:
+            cmd += ["--override-docker-image", config.docker_image_override]
 
         env = dict(os.environ)
         if config.hf_token:
             env["HF_TOKEN"] = config.hf_token
+
+        from worker import idle_add_once
+        idle_add_once(on_log_line, f"$ {' '.join(cmd)}")
+        idle_add_once(on_log_line, f"  cwd: {config.repo_path}")
 
         self._proc = subprocess.Popen(
             cmd,
             cwd=str(config.repo_path),
             env=env,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
         )
+
+        # Forward stderr to UI so early crashes are visible
+        stderr_thread = threading.Thread(
+            target=self._stderr_reader,
+            args=(self._proc, on_log_line),
+            daemon=True,
+        )
+        stderr_thread.start()
 
         self._tail_thread = threading.Thread(
             target=self._tail_loop,
@@ -162,18 +192,119 @@ class ServerManager:
         )
         self._tail_thread.start()
 
-    def _find_log_file(self, repo_path: Path, timeout: float = 15.0) -> Optional[Path]:
-        log_dir = repo_path / "workflow_logs" / "run_logs"
+    # Pattern: Docker "not found" / "failed to resolve reference" with image ref
+    _IMAGE_NOT_FOUND_RE = re.compile(
+        r'failed to resolve reference\s+"([^"]+)".*not found'
+        r'|manifest unknown.*"([^"]+)"'
+        r'|Error response from daemon.*"([^"]+)".*not found',
+        re.I,
+    )
+
+    def _stderr_reader(self, proc: subprocess.Popen, on_log_line: Callable):
+        """Forward stderr lines to the UI until the process ends.
+
+        Also watches for Docker image-not-found errors and triggers auto-resolution.
+        """
+        from worker import idle_add_once
+        try:
+            for line in proc.stderr:
+                if self._stop_event.is_set():
+                    break
+                line = line.rstrip("\n")
+                if not line:
+                    continue
+                idle_add_once(on_log_line, f"[stderr] {line}")
+
+                # Check for image-not-found — only attempt once per launch
+                if not self._image_resolve_attempted:
+                    m = self._IMAGE_NOT_FOUND_RE.search(line)
+                    if m:
+                        failed_ref = next(g for g in m.groups() if g)
+                        self._image_resolve_attempted = True
+                        self._resolving_image = True
+                        idle_add_once(
+                            on_log_line,
+                            f"⚠ Image not found: {failed_ref} — querying GHCR for latest tag…",
+                        )
+                        t = threading.Thread(
+                            target=self._try_resolve_image,
+                            args=(failed_ref, on_log_line),
+                            daemon=True,
+                        )
+                        t.start()
+        except Exception:
+            pass
+
+    def _try_resolve_image(self, failed_ref: str, on_log_line: Callable):
+        """Background: resolve a better GHCR tag and restart the launch."""
+        from worker import idle_add_once
+        from ghcr_resolver import resolve_latest_tag
+
+        resolved = resolve_latest_tag(failed_ref)
+        if not resolved:
+            idle_add_once(on_log_line, "✗ Could not resolve a newer tag from GHCR — check image manually")
+            self._resolving_image = False
+            if self._on_state_cb:
+                idle_add_once(self._on_state_cb, ServerState.ERROR)
+            return
+
+        idle_add_once(on_log_line, f"✓ Resolved → {resolved}")
+        idle_add_once(on_log_line, "↺ Restarting launch with resolved image…")
+
+        # Wait briefly for current process to fully exit
+        if self._proc:
+            for _ in range(20):
+                if self._proc.poll() is not None:
+                    break
+                time.sleep(0.25)
+
+        # Stop old threads, then relaunch with the resolved image
+        self._stop_event.set()
+        time.sleep(0.3)
+
+        new_config = LaunchConfig(
+            repo_path=self._config.repo_path,
+            model_name=self._config.model_name,
+            device=self._config.device,
+            port=self._config.port,
+            hf_token=self._config.hf_token,
+            no_auth=self._config.no_auth,
+            docker_image_override=resolved,
+        )
+        # _auto_retry=True keeps _image_resolve_attempted=True to prevent a second loop
+        self.launch(new_config, on_log_line, self._on_state_cb, _auto_retry=True)
+
+    def _find_log_file(self, repo_path: Path, timeout: float = 20.0) -> Optional[Path]:
+        # Candidate log directories in preference order
+        log_dirs = [
+            repo_path / "workflow_logs" / "run_logs",
+            repo_path / "logs",
+            repo_path / "run_logs",
+        ]
+        before: dict = {}
+        for ld in log_dirs:
+            before[ld] = set(ld.glob("*.log")) if ld.exists() else set()
+
         deadline = time.monotonic() + timeout
-        before = set(log_dir.glob("run_*.log")) if log_dir.exists() else set()
         while time.monotonic() < deadline:
             if self._stop_event.is_set():
                 return None
-            if log_dir.exists():
-                current = set(log_dir.glob("run_*.log"))
-                new = current - before
-                if new:
-                    return max(new, key=lambda p: p.stat().st_mtime)
+            # Check if process exited early
+            if self._proc and self._proc.poll() is not None:
+                rc = self._proc.returncode
+                if not self._resolving_image:
+                    from worker import idle_add_once
+                    idle_add_once(
+                        self._on_log_line,
+                        f"⚠ run.py exited with code {rc} before creating log file",
+                    )
+                return None
+            for ld in log_dirs:
+                if ld.exists():
+                    current = set(ld.glob("*.log"))
+                    new = current - before[ld]
+                    if new:
+                        return max(new, key=lambda p: p.stat().st_mtime)
             time.sleep(0.5)
         return None
 
@@ -187,8 +318,9 @@ class ServerManager:
 
         log_path = self._find_log_file(repo_path)
         if log_path is None:
-            idle_add_once(on_log_line, "⚠ Log file not found after 15s — subprocess may have failed")
-            idle_add_once(on_state, ServerState.ERROR)
+            if not self._resolving_image:
+                idle_add_once(on_log_line, "⚠ Log file not found — subprocess may have failed")
+                idle_add_once(on_state, ServerState.ERROR)
             return
 
         self._log_path = log_path
