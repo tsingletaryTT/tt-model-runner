@@ -657,6 +657,13 @@ class MainPanel(Gtk.Box):
         self._banner_info.set_ellipsize(Pango.EllipsizeMode.END)
         banner.append(self._banner_info)
 
+        # "Restart" button — visible when READY or ERROR (and previous entry exists)
+        self._restart_btn = Gtk.Button(label="↺")
+        self._restart_btn.add_css_class("flat")
+        self._restart_btn.set_tooltip_text("Restart server with same model and options")
+        self._restart_btn.set_visible(False)
+        banner.append(self._restart_btn)
+
         # "Copy curl" button — only visible when READY
         self._copy_curl_btn = Gtk.Button(label="⧉ curl")
         self._copy_curl_btn.add_css_class("flat")
@@ -1050,6 +1057,8 @@ class MainPanel(Gtk.Box):
         ready = (state == ServerState.READY)
         self._tab_bar.set_visible(ready)
         self._copy_curl_btn.set_visible(ready)
+        # Restart button: show when READY or ERROR (so user can retry after failure)
+        self._restart_btn.set_visible(state in (ServerState.READY, ServerState.ERROR))
         if ready:
             self._stack.set_visible_child_name("logs")
             self._update_tab_buttons("logs")
@@ -1294,6 +1303,11 @@ class MainWindow(Gtk.ApplicationWindow):
         # Connect the ↻ chip-telemetry refresh button to the controller.
         self._sidebar._hw_refresh_btn.connect(
             "clicked", lambda _: self._ctrl.refresh_hardware_status()
+        )
+
+        # Connect the ↺ restart button to the controller.
+        self._panel._restart_btn.connect(
+            "clicked", lambda _: self._ctrl.restart()
         )
 
         # Auto-discover and load the inference-server repo on startup.

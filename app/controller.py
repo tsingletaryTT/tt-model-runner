@@ -436,6 +436,39 @@ class AppController:
         t.daemon = True
         t.start()
 
+    def restart(self) -> None:
+        """Stop the current server then relaunch with the same model and options.
+
+        Only valid when a model has been launched before (current_entry is set).
+        Skips the port pre-flight check since we own the container.
+        """
+        entry = self._current_entry
+        port = self._port
+        if not entry or not port:
+            self._emit("on_log_line", "⚠ Restart: no previous launch to replay")
+            return
+
+        self._emit("on_log_line", f"↺ Restarting {entry.display_name}…")
+
+        def _after_stop():
+            # Wait for state to settle then relaunch directly (no pre-flight)
+            import time as _time
+            deadline = _time.monotonic() + 15.0
+            while _time.monotonic() < deadline:
+                if self._state in (ServerState.IDLE, ServerState.ERROR):
+                    break
+                _time.sleep(0.5)
+            self._do_launch(entry, port)
+
+        # Stop first (async); then relaunch from the stop-wait thread
+        self._transition(ServerState.STOPPING)
+        if self._health_worker:
+            self._health_worker.stop()
+            self._health_worker = None
+        self._server_mgr.stop()
+        self._dev_launcher.stop()
+        threading.Thread(target=_after_stop, daemon=True).start()
+
     def _force_idle(self) -> None:
         """Fallback: transition to IDLE if still stuck in STOPPING after timeout."""
         if self._state == ServerState.STOPPING:
