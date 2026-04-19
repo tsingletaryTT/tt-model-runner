@@ -146,31 +146,6 @@ TOUR_CARDS: dict = {
 }
 
 
-@dataclass
-class ToolRoundTrip:
-    step: str        # "call" | "result" | "final"
-    name: str        # tool name (for "call" step)
-    arguments: str   # JSON string (for "call" step)
-    content: str     # result payload or final assistant text
-
-
-@dataclass
-class BenchResult:
-    model_name: str
-    device: str
-    timestamp: str
-    isl: int
-    osl: int
-    concurrency: int
-    mean_ttft_ms: float
-    p95_ttft_ms: Optional[float]
-    mean_tps: float
-    tps_decode: float
-    mean_e2el_ms: float
-    request_throughput: float
-    tier_pass: str   # "PASS" | "BELOW_TARGET" | "FAIL"
-
-
 class AppController:
     """Owns the inference server lifecycle.  Views register on_* callbacks."""
 
