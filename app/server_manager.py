@@ -115,6 +115,35 @@ class LaunchConfig:
 
 
 class ServerManager:
+    # Docker image-not-found patterns — capture the full image reference
+    _IMAGE_NOT_FOUND_RE = re.compile(
+        r'failed to resolve reference\s+"([^"]+)"'
+        r'|Error response from daemon[^"]*"([^"]+)".*not found'
+        r'|manifest unknown[^"]*"([^"]+)"',
+        re.I,
+    )
+
+    # ModuleNotFoundError / ImportError — capture the top-level module name
+    _MISSING_MODULE_RE = re.compile(
+        r"ModuleNotFoundError: No module named '([^'.]+)",
+        re.I,
+    )
+
+    # Map import names → pip package names where they differ
+    _MODULE_TO_PACKAGE: dict = {
+        "PIL": "Pillow",
+        "cv2": "opencv-python",
+        "yaml": "PyYAML",
+        "sklearn": "scikit-learn",
+        "bs4": "beautifulsoup4",
+        "Crypto": "pycryptodome",
+        "usb": "pyusb",
+        "serial": "pyserial",
+        "pkg_resources": "setuptools",
+        "distutils": "setuptools",
+        "skimage": "scikit-image",
+    }
+
     def __init__(self):
         self._proc: Optional[subprocess.Popen] = None
         self._tail_thread: Optional[threading.Thread] = None
@@ -123,11 +152,14 @@ class ServerManager:
         self._container_name: Optional[str] = None
         self._on_log_line: Optional[Callable] = None
         self.parser = LogParser()
-        # image auto-resolution state
+        # auto-action state — image resolution
         self._config: Optional[LaunchConfig] = None
         self._on_state_cb: Optional[Callable] = None
         self._resolving_image: bool = False
         self._image_resolve_attempted: bool = False
+        # auto-action state — missing deps
+        self._installed_modules: set = set()   # modules already pip-installed this session
+        self._installing_module: bool = False
 
     def launch(
         self,
@@ -144,8 +176,10 @@ class ServerManager:
         self._config = config
         self._on_state_cb = on_state
         self._resolving_image = False
+        self._installing_module = False
         if not _auto_retry:
             self._image_resolve_attempted = False
+            self._installed_modules = set()
 
         cmd = [
             "python3", "run.py",
@@ -192,19 +226,8 @@ class ServerManager:
         )
         self._tail_thread.start()
 
-    # Pattern: Docker "not found" / "failed to resolve reference" with image ref
-    _IMAGE_NOT_FOUND_RE = re.compile(
-        r'failed to resolve reference\s+"([^"]+)".*not found'
-        r'|manifest unknown.*"([^"]+)"'
-        r'|Error response from daemon.*"([^"]+)".*not found',
-        re.I,
-    )
-
     def _stderr_reader(self, proc: subprocess.Popen, on_log_line: Callable):
-        """Forward stderr lines to the UI until the process ends.
-
-        Also watches for Docker image-not-found errors and triggers auto-resolution.
-        """
+        """Forward stderr lines to the UI and pass them through auto-action checks."""
         from worker import idle_add_once
         try:
             for line in proc.stderr:
@@ -214,26 +237,54 @@ class ServerManager:
                 if not line:
                     continue
                 idle_add_once(on_log_line, f"[stderr] {line}")
-
-                # Check for image-not-found — only attempt once per launch
-                if not self._image_resolve_attempted:
-                    m = self._IMAGE_NOT_FOUND_RE.search(line)
-                    if m:
-                        failed_ref = next(g for g in m.groups() if g)
-                        self._image_resolve_attempted = True
-                        self._resolving_image = True
-                        idle_add_once(
-                            on_log_line,
-                            f"⚠ Image not found: {failed_ref} — querying GHCR for latest tag…",
-                        )
-                        t = threading.Thread(
-                            target=self._try_resolve_image,
-                            args=(failed_ref, on_log_line),
-                            daemon=True,
-                        )
-                        t.start()
+                self._check_line(line, on_log_line)
         except Exception:
             pass
+
+    def _check_line(self, line: str, on_log_line: Callable):
+        """Scan a log/stderr line for conditions that warrant automatic recovery.
+
+        Called from both _stderr_reader and _tail_loop so we catch errors
+        regardless of whether run.py emits them to its own log or to stderr.
+        Guards prevent duplicate triggers.
+        """
+        from worker import idle_add_once
+
+        # --- Docker image not found ---
+        if not self._image_resolve_attempted:
+            m = self._IMAGE_NOT_FOUND_RE.search(line)
+            if m:
+                failed_ref = next(g for g in m.groups() if g)
+                self._image_resolve_attempted = True
+                self._resolving_image = True
+                idle_add_once(
+                    on_log_line,
+                    f"⚠ Image not found: {failed_ref} — querying GHCR for latest tag…",
+                )
+                threading.Thread(
+                    target=self._try_resolve_image,
+                    args=(failed_ref, on_log_line),
+                    daemon=True,
+                ).start()
+
+        # --- Missing Python module ---
+        if not self._installing_module:
+            m = self._MISSING_MODULE_RE.search(line)
+            if m:
+                module = m.group(1)
+                if module not in self._installed_modules:
+                    package = self._MODULE_TO_PACKAGE.get(module, module)
+                    self._installing_module = True
+                    self._installed_modules.add(module)
+                    idle_add_once(
+                        on_log_line,
+                        f"⚠ Missing module '{module}' — installing {package}…",
+                    )
+                    threading.Thread(
+                        target=self._try_install_module,
+                        args=(module, package, on_log_line),
+                        daemon=True,
+                    ).start()
 
     def _try_resolve_image(self, failed_ref: str, on_log_line: Callable):
         """Background: resolve a better GHCR tag and restart the launch."""
@@ -273,6 +324,46 @@ class ServerManager:
         )
         # _auto_retry=True keeps _image_resolve_attempted=True to prevent a second loop
         self.launch(new_config, on_log_line, self._on_state_cb, _auto_retry=True)
+
+    def _try_install_module(self, module: str, package: str, on_log_line: Callable):
+        """Background: pip-install a missing module then restart the launch."""
+        from worker import idle_add_once
+
+        repo_path = self._config.repo_path if self._config else Path.cwd()
+        try:
+            result = subprocess.run(
+                ["python3", "-m", "pip", "install", "--quiet", package],
+                cwd=str(repo_path),
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            if result.returncode == 0:
+                idle_add_once(on_log_line, f"✓ Installed {package}")
+            else:
+                err = (result.stderr or result.stdout).strip().splitlines()[-1] if (result.stderr or result.stdout) else "unknown error"
+                idle_add_once(on_log_line, f"✗ pip install {package} failed: {err}")
+                self._installing_module = False
+                return
+        except Exception as exc:
+            idle_add_once(on_log_line, f"✗ pip install {package} error: {exc}")
+            self._installing_module = False
+            return
+
+        idle_add_once(on_log_line, "↺ Restarting launch after module install…")
+
+        if self._proc:
+            for _ in range(20):
+                if self._proc.poll() is not None:
+                    break
+                time.sleep(0.25)
+
+        self._stop_event.set()
+        time.sleep(0.3)
+        self._installing_module = False
+
+        if self._config and self._on_state_cb:
+            self.launch(self._config, on_log_line, self._on_state_cb, _auto_retry=True)
 
     def _find_log_file(self, repo_path: Path, timeout: float = 20.0) -> Optional[Path]:
         # Candidate log directories in preference order
@@ -338,6 +429,7 @@ class ServerManager:
 
                 line = line.rstrip("\n")
                 idle_add_once(on_log_line, line)
+                self._check_line(line, on_log_line)
 
                 new_state = self.parser.feed(line)
                 if new_state:
