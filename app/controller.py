@@ -586,7 +586,7 @@ class AppController:
           step="result" — auto-generated result was injected
           step="final"  — model's final text reply (or error message)
         """
-        port = getattr(self, "_port", "8000")
+        port = self._port or "8000"
         base_url = f"http://localhost:{port}"
         model = (self._current_entry.hf_model_repo
                  if self._current_entry else "default")
