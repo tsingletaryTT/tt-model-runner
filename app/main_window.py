@@ -559,6 +559,15 @@ class MainPanel(Gtk.Box):
         self._banner_info.set_halign(Gtk.Align.START)
         self._banner_info.set_ellipsize(Pango.EllipsizeMode.END)
         banner.append(self._banner_info)
+
+        # "Copy curl" button — only visible when READY
+        self._copy_curl_btn = Gtk.Button(label="⧉ curl")
+        self._copy_curl_btn.add_css_class("flat")
+        self._copy_curl_btn.set_tooltip_text("Copy a test curl command to clipboard")
+        self._copy_curl_btn.set_visible(False)
+        self._copy_curl_btn.connect("clicked", self._on_copy_curl)
+        banner.append(self._copy_curl_btn)
+
         self.append(banner)
         self.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
 
@@ -943,6 +952,7 @@ class MainPanel(Gtk.Box):
         # Show tab bar only when READY; default to Logs tab when first entering READY.
         ready = (state == ServerState.READY)
         self._tab_bar.set_visible(ready)
+        self._copy_curl_btn.set_visible(ready)
         if ready:
             self._stack.set_visible_child_name("logs")
             self._update_tab_buttons("logs")
@@ -1078,6 +1088,24 @@ class MainPanel(Gtk.Box):
             buf.insert(end, "\n")
             end = buf.get_end_iter()
         buf.insert(end, line)
+
+    def set_curl_context(self, port: str, model_repo: str) -> None:
+        """Store port and model for use in the copy-curl command."""
+        self._curl_port = port
+        self._curl_model = model_repo
+
+    def _on_copy_curl(self, _btn) -> None:
+        port = getattr(self, "_curl_port", "8000")
+        model = getattr(self, "_curl_model", "default")
+        cmd = (
+            f'curl http://localhost:{port}/v1/chat/completions \\\n'
+            f'  -H "Content-Type: application/json" \\\n'
+            f'  -d \'{{"model": "{model}", "messages": [{{"role": "user", "content": "Hello!"}}]}}\''
+        )
+        clipboard = self._log_view.get_clipboard()
+        clipboard.set(cmd)
+        self._copy_curl_btn.set_label("✓ copied")
+        GLib.timeout_add(2000, lambda: self._copy_curl_btn.set_label("⧉ curl") or False)
 
     def set_ad_cards(self, cards: list) -> None:
         """Update the rotating ad unit card pool."""
@@ -1218,6 +1246,11 @@ class MainWindow(Gtk.ApplicationWindow):
             # Wire the Send button and bench run button on first READY transition (idempotent).
             self._wire_tool_send()
             self._wire_bench_run()
+            # Give the copy-curl button the right port and model repo.
+            port = self._sidebar.get_port()
+            entry = self._ctrl.current_entry
+            model_repo = entry.hf_model_repo if entry else "default"
+            self._panel.set_curl_context(port, model_repo)
 
     def _on_device_select(self, device: str) -> None:
         """Rebuild the ad unit card pool when the user picks a different device."""
