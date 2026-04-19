@@ -74,6 +74,7 @@ class Sidebar(Gtk.Box):
         self._device_buttons: dict = {}
         self._locked = False
         self._launch_connected_to_launch = True
+        self._search_filter: str = ""
 
         self._build()
 
@@ -105,10 +106,21 @@ class Sidebar(Gtk.Box):
         self.append(rbox)
         self.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
 
-        # Model section label
-        ml_box = Gtk.Box(); ml_box.set_margin_start(8); ml_box.set_margin_top(6); ml_box.set_margin_bottom(2)
-        ml = Gtk.Label(label="MODEL"); ml.add_css_class("section-label"); ml.set_halign(Gtk.Align.START)
-        ml_box.append(ml); self.append(ml_box)
+        # Model section label + search
+        ml_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        ml_box.set_margin_start(8); ml_box.set_margin_end(8)
+        ml_box.set_margin_top(6); ml_box.set_margin_bottom(2)
+        ml_header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        ml = Gtk.Label(label="MODEL"); ml.add_css_class("section-label")
+        ml.set_halign(Gtk.Align.START); ml.set_hexpand(True)
+        ml_header.append(ml)
+        ml_box.append(ml_header)
+        self._search_entry = Gtk.SearchEntry()
+        self._search_entry.set_placeholder_text("Search models…")
+        self._search_entry.connect("search-changed", self._on_search_changed)
+        self._search_entry.connect("stop-search", lambda _: self._clear_search())
+        ml_box.append(self._search_entry)
+        self.append(ml_box)
 
         # Model tree
         scroll = Gtk.ScrolledWindow()
@@ -277,24 +289,55 @@ class Sidebar(Gtk.Box):
         self._rebuild_tree([device])
         self._on_device_select(device)
 
+    def _on_search_changed(self, entry: "Gtk.SearchEntry") -> None:
+        self._search_filter = entry.get_text().strip().lower()
+        if self._selected_device:
+            self._rebuild_tree([self._selected_device])
+        else:
+            self._rebuild_tree(None)
+
+    def _clear_search(self) -> None:
+        self._search_entry.set_text("")
+        self._search_filter = ""
+        if self._selected_device:
+            self._rebuild_tree([self._selected_device])
+        else:
+            self._rebuild_tree(None)
+
     def _rebuild_tree(self, filter_devices: Optional[List[str]]):
         self._tree_store.clear()
         if not self._catalog:
             return
         cat = self._catalog.get_compatible(filter_devices) if filter_devices else self._catalog
         tree = cat.get_tree()
+        search = getattr(self, "_search_filter", "")
         expanded = _settings.tree_expanded_types or ["LLM"]
         last_model = _settings.last_model
+        searching = bool(search)
 
         for type_name in _TYPE_ORDER:
             if type_name not in tree:
                 continue
             families = tree[type_name]
-            total = sum(len(v) for v in families.values())
+            # When searching, pre-filter entries so we can count visible leaves.
+            if searching:
+                filtered_families = {
+                    fam: [e for e in entries if search in e.display_name.lower()
+                          or search in fam.lower()]
+                    for fam, entries in families.items()
+                }
+                filtered_families = {f: e for f, e in filtered_families.items() if e}
+                if not filtered_families:
+                    continue
+                total = sum(len(v) for v in filtered_families.values())
+            else:
+                filtered_families = families
+                total = sum(len(v) for v in families.values())
+
             type_it = self._tree_store.append(
                 None, [f"{_TYPE_LABEL.get(type_name, type_name)} ({total})", "", "", False]
             )
-            for family, entries in sorted(families.items()):
+            for family, entries in sorted(filtered_families.items()):
                 fam_it = self._tree_store.append(type_it, [family, "", "", False])
                 for entry in entries:
                     leaf_it = self._tree_store.append(
@@ -302,8 +345,8 @@ class Sidebar(Gtk.Box):
                     )
                     if entry.model_name == last_model:
                         self._tree_view.get_selection().select_iter(leaf_it)
-            if type_name in expanded:
-                self._tree_view.expand_row(self._tree_store.get_path(type_it), False)
+            if searching or type_name in expanded:
+                self._tree_view.expand_row(self._tree_store.get_path(type_it), True)
 
     def _on_tree_selection(self, sel):
         model, it = sel.get_selected()
@@ -329,6 +372,7 @@ class Sidebar(Gtk.Box):
     def set_locked(self, locked: bool):
         self._locked = locked
         self._tree_view.set_sensitive(not locked)
+        self._search_entry.set_sensitive(not locked)
         self._repo_entry.set_sensitive(not locked)
         for btn in self._device_buttons.values():
             btn.set_sensitive(not locked)
