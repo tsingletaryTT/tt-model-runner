@@ -93,6 +93,8 @@ class ConfigPane(Widget):
 
         default_uc = use_cases[0]
         self._options = apply_preset(default_uc, entry)
+        if self._on_options_changed and self._options:
+            self._on_options_changed(self._options)
         self._update_preview()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:

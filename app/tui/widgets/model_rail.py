@@ -51,7 +51,11 @@ class ModelRail(Widget):
     selected_entry: Optional["ModelEntry"] = None
     port_value: str = "8000"
 
-    _entries: List["ModelEntry"] = []
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        # Instance-level list — avoids the mutable class-level default pitfall
+        # where all ModelRail instances would share the same list object.
+        self._entries: list = []
 
     def compose(self) -> ComposeResult:
         yield Static("[b]TT Model Runner[/b]", markup=True)
