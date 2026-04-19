@@ -54,10 +54,7 @@ class BenchResult:
     tier_pass: str   # "PASS" | "BELOW_TARGET" | "FAIL"
 
 
-try:
-    from tool_client import run_session as _tc_run_session
-except ImportError:
-    _tc_run_session = None  # tool_client.py not yet present; created in Task 2
+from tool_client import run_session as _tc_run_session
 
 _CONFIG_DIR = Path.home() / ".config" / "tt-runner-gui"
 _TIMING_PATH = _CONFIG_DIR / "timing.json"
