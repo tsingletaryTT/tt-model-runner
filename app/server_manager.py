@@ -326,7 +326,10 @@ class ServerManager:
         from worker import idle_add_once
         from ghcr_resolver import resolve_latest_tag
 
-        resolved = resolve_latest_tag(failed_ref)
+        def _step(msg: str):
+            idle_add_once(on_log_line, msg)
+
+        resolved = resolve_latest_tag(failed_ref, on_step=_step)
         if not resolved:
             idle_add_once(on_log_line, "✗ Could not resolve a newer tag from GHCR — check image manually")
             self._resolving_image = False

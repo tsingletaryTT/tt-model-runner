@@ -106,23 +106,42 @@ def _best_tag(tags: List[str], failed_tag: str) -> Optional[str]:
     return best if best != failed_tag else None
 
 
-def resolve_latest_tag(image_ref: str) -> Optional[str]:
+def resolve_latest_tag(
+    image_ref: str,
+    on_step: Optional[callable] = None,
+) -> Optional[str]:
     """Return a new image ref with the best available tag, or None on failure.
 
     Only handles ghcr.io. Returns None if resolution fails or the resolved tag
     is the same as the one that already failed.
+
+    on_step(msg): optional callback called with progress strings during resolution.
     """
+    def _step(msg: str):
+        if on_step:
+            on_step(msg)
+
     registry, image_path, failed_tag = parse_image_ref(image_ref)
     if not registry.endswith("ghcr.io"):
+        _step("✗ Not a ghcr.io image — cannot auto-resolve")
         return None
 
+    _step(f"  → Requesting GHCR pull token for {image_path}…")
     token = _get_ghcr_token(image_path)
     if not token:
+        _step("  ✗ Could not obtain GHCR token (repo may be private or rate-limited)")
         return None
 
+    _step(f"  → Listing available tags…")
     tags = _list_tags(image_path, token)
+    if not tags:
+        _step("  ✗ No tags returned from GHCR")
+        return None
+    _step(f"  → Found {len(tags)} tag(s); selecting best match for '{failed_tag}'…")
+
     best = _best_tag(tags, failed_tag)
     if not best:
+        _step(f"  ✗ No tag found that improves on '{failed_tag}'")
         return None
 
     return f"{registry}/{image_path}:{best}"
