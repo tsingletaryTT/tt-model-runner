@@ -1,0 +1,9 @@
+{
+  "mean_ttft_ms": 145.2,
+  "p95_ttft_ms": 312.0,
+  "mean_tps": 38.4,
+  "tps_decode_throughput": 42.1,
+  "mean_e2el_ms": 1820.5,
+  "request_throughput": 0.54,
+  "num_requests": 100
+}
