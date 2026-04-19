@@ -26,6 +26,39 @@ from model_catalog import ModelCatalog, ModelEntry
 from server_manager import LaunchConfig, ServerManager, ServerState
 from timing_store import TimingStore
 
+
+@dataclass
+class ToolRoundTrip:
+    """One step in a multi-turn tool-call exchange emitted via on_tool_result."""
+    step: str        # "call" | "result" | "final"
+    name: str        # tool function name (populated for "call" step)
+    arguments: str   # JSON string of arguments (populated for "call" step)
+    content: str     # result content or final assistant reply
+
+
+@dataclass
+class BenchResult:
+    """Parsed output from one benchmark configuration."""
+    model_name: str
+    device: str
+    timestamp: str
+    isl: int
+    osl: int
+    concurrency: int
+    mean_ttft_ms: float
+    p95_ttft_ms: Optional[float]
+    mean_tps: float
+    tps_decode: float
+    mean_e2el_ms: float
+    request_throughput: float
+    tier_pass: str   # "PASS" | "BELOW_TARGET" | "FAIL"
+
+
+try:
+    from tool_client import run_session as _tc_run_session
+except ImportError:
+    _tc_run_session = None  # filled in by Task 2
+
 _CONFIG_DIR = Path.home() / ".config" / "tt-runner-gui"
 _TIMING_PATH = _CONFIG_DIR / "timing.json"
 
@@ -252,6 +285,7 @@ class AppController:
         """Start the inference server for the given model entry."""
         if self._state not in (ServerState.IDLE, ServerState.ERROR):
             return
+        self._port = port
         self._current_entry = entry
         if options:
             self._options = options
