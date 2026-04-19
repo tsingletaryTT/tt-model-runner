@@ -285,6 +285,7 @@ class AppController:
             port=port,
             on_ready=self._on_health_ready,
             on_lost=self._on_health_lost,
+            dispatch_fn=self._dispatch,
             engine="media" if entry.inference_engine == "media" else "vllm",
         )
         self._health_worker.start()
