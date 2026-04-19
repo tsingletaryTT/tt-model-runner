@@ -83,11 +83,11 @@ def scan_local_images(spec_default: str = "") -> List[DockerImage]:
                 is_tt=True,
             ))
 
-    # Promote spec default to front if found, otherwise prepend placeholder
+    # Promote spec default to front if the exact tag is found locally,
+    # otherwise prepend a placeholder so the user can see what the spec wants.
     if spec_default:
-        spec_base = spec_default.split(":")[0]
         found_idx = next(
-            (i for i, img in enumerate(images) if img.repo_tag.split(":")[0] == spec_base),
+            (i for i, img in enumerate(images) if img.repo_tag == spec_default),
             None,
         )
         if found_idx is not None:
