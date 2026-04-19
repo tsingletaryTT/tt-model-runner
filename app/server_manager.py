@@ -29,6 +29,8 @@ class ServerState(Enum):
     PULLING_IMAGE = auto()
     LOADING = auto()
     READY = auto()
+    RUNNING = auto()   # dev-image script executing
+    DONE = auto()      # dev-image script exited cleanly (rc==0)
     ERROR = auto()
     STOPPING = auto()
 
@@ -439,7 +441,11 @@ class ServerManager:
                 line = f.readline()
                 if not line:
                     if self._proc and self._proc.poll() is not None:
-                        if self._proc.returncode != 0:
+                        rc = self._proc.returncode
+                        # Non-zero exit and no container started yet → hard error.
+                        # If we already have a container name, the docker-log tail
+                        # thread owns further monitoring; just exit this loop.
+                        if rc != 0 and not self._container_name:
                             on_state(ServerState.ERROR)
                         break
                     time.sleep(0.05)
@@ -459,6 +465,100 @@ class ServerManager:
                 if m and not self._container_name:
                     self._container_name = m.group(1)
                     log.info("container name: %s", self._container_name)
+                    # Switch log-following to the in-container server log so the
+                    # GUI keeps streaming output after run.py hands off to Docker.
+                    threading.Thread(
+                        target=self._tail_docker_log,
+                        args=(repo_path, on_log_line, on_state),
+                        daemon=True,
+                    ).start()
+
+    def _tail_docker_log(
+        self,
+        repo_path: Path,
+        on_log_line: Callable,
+        on_state: Callable,
+    ):
+        """Tail the in-container server log created under workflow_logs/docker_server/.
+
+        Called from _tail_loop as soon as the container name is detected.  Runs
+        until _stop_event is set.  Periodically checks whether the container is
+        still alive so we can surface a pre-READY crash that the HealthWorker
+        would otherwise miss (it only fires on_lost after _was_ready is True).
+        """
+        docker_log_dir = repo_path / "workflow_logs" / "docker_server"
+        # Only consider files created in the last 3 minutes — avoids picking up
+        # stale logs from earlier runs.
+        cutoff = time.time() - 180
+
+        deadline = time.monotonic() + 90.0
+        docker_log: Optional[Path] = None
+        while time.monotonic() < deadline and not self._stop_event.is_set():
+            if docker_log_dir.exists():
+                candidates = [
+                    p for p in docker_log_dir.glob("*.log")
+                    if p.stat().st_mtime >= cutoff
+                ]
+                if candidates:
+                    docker_log = max(candidates, key=lambda p: p.stat().st_mtime)
+                    break
+            time.sleep(0.5)
+
+        if docker_log is None:
+            if not self._stop_event.is_set():
+                on_log_line("⚠ Docker server log not found — container may not have started")
+                on_state(ServerState.ERROR)
+            return
+
+        on_log_line(f"↳ container log: {docker_log.name}")
+        log.info("tailing docker log: %s", docker_log)
+
+        # Use a fresh parser so the docker log doesn't share state with the
+        # outer run_logs parser running in _tail_loop.
+        docker_parser = LogParser()
+
+        last_container_check = time.monotonic()
+        # Check every 15 s while loading; expensive docker inspect avoided during idle.
+        container_check_interval = 15.0
+
+        with open(docker_log, "r", errors="replace") as f:
+            while not self._stop_event.is_set():
+                line = f.readline()
+                if not line:
+                    now = time.monotonic()
+                    if now - last_container_check >= container_check_interval:
+                        last_container_check = now
+                        # Only fire ERROR for an unexpected exit — not when the
+                        # user clicked Stop (stop_event already set by then).
+                        if (self._container_name
+                                and not self._stop_event.is_set()
+                                and not self._is_container_running(self._container_name)):
+                            on_log_line(
+                                f"⚠ Container {self._container_name} stopped unexpectedly")
+                            on_state(ServerState.ERROR)
+                            break
+                    time.sleep(0.1)
+                    continue
+
+                line = line.rstrip("\n")
+                on_log_line(line)
+                self._check_line(line, on_log_line)
+
+                new_state = docker_parser.feed(line)
+                if new_state:
+                    log.debug("docker state→%s  (line: %s)", new_state.name, line[:120])
+                    on_state(new_state)
+
+    def _is_container_running(self, container_name: str) -> bool:
+        """Return True if the named Docker container is currently running."""
+        try:
+            result = subprocess.run(
+                ["docker", "inspect", "--format={{.State.Running}}", container_name],
+                capture_output=True, text=True, timeout=5,
+            )
+            return result.stdout.strip() == "true"
+        except Exception:
+            return False
 
     def stop(self):
         """Stop the server. Non-blocking."""

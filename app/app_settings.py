@@ -14,6 +14,13 @@ _DEFAULTS = {
     "window_width": 1280,
     "window_height": 820,
     "sidebar_width": 290,
+    # Tracks the last successfully-initiated launch so cross-engine resets can be suggested.
+    "last_launched_engine": "",
+    "last_launched_model_display": "",
+    # Unix timestamp of the last LAUNCHING transition — used to detect reboots.
+    "last_launched_at": 0.0,
+    # Path to the tt-developer-image repo (for tt-forge/tt-metal model scripts).
+    "dev_image_repo_path": str(Path.home() / "code" / "tt-developer-image"),
 }
 
 

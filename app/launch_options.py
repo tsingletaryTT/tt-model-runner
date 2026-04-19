@@ -25,7 +25,7 @@ class LaunchOptions:
 
     # General flags
     dev_mode: bool = False
-    disable_metal_timeout: bool = False
+    disable_metal_timeout: bool = True
     disable_trace_capture: bool = False
 
     # Docker

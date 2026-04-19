@@ -24,9 +24,10 @@ def _llm_entry(**kw) -> ModelEntry:
 
 
 def test_defaults_produce_no_args():
+    # disable_metal_timeout defaults to True, so --disable-metal-timeout is always emitted.
     entry = _llm_entry()
     opts = LaunchOptions()
-    assert build_extra_args(opts, entry) == []
+    assert build_extra_args(opts, entry) == ["--disable-metal-timeout"]
 
 
 def test_chat_preset_no_vllm_args():

@@ -36,6 +36,8 @@ _STATE_LABELS = {
     ServerState.PULLING_IMAGE: ("PULLING IMAGE", "pill-loading"),
     ServerState.LOADING:       ("LOADING",       "pill-loading"),
     ServerState.READY:         ("READY",         "pill-ready"),
+    ServerState.RUNNING:       ("RUNNING",       "pill-loading"),
+    ServerState.DONE:          ("DONE",          "pill-ready"),
     ServerState.ERROR:         ("ERROR",         "pill-error"),
     ServerState.STOPPING:      ("STOPPING",      "pill-stopping"),
 }
@@ -53,7 +55,8 @@ _LOG_COLORS = {
 class Sidebar(Gtk.Box):
     """Left sidebar: repo path picker, model tree, device toggles, port, launch/stop, HF status."""
 
-    def __init__(self, on_launch, on_stop, on_model_select, on_device_select, on_repo_change):
+    def __init__(self, on_launch, on_stop, on_model_select, on_device_select, on_repo_change,
+                 on_reset=None, on_pull=None):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.set_size_request(290, -1)
 
@@ -62,6 +65,8 @@ class Sidebar(Gtk.Box):
         self._on_model_select = on_model_select
         self._on_device_select = on_device_select
         self._on_repo_change = on_repo_change
+        self._on_reset = on_reset
+        self._on_pull = on_pull
 
         self._catalog: Optional[ModelCatalog] = None
         self._selected_entry: Optional[ModelEntry] = None
@@ -84,7 +89,19 @@ class Sidebar(Gtk.Box):
         saved = _settings.server_repo_path
         if saved: self._repo_entry.set_text(str(saved))
         self._repo_entry.connect("activate", lambda e: self._trigger_repo_change())
-        rbox.append(self._repo_entry)
+        self._repo_entry.set_hexpand(True)
+        repo_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        repo_row.append(self._repo_entry)
+        self._pull_btn = Gtk.Button(label="↑")
+        self._pull_btn.set_tooltip_text("git pull — update inference-server repo to latest")
+        self._pull_btn.connect("clicked", lambda _: self._on_pull() if self._on_pull else None)
+        repo_row.append(self._pull_btn)
+        rbox.append(repo_row)
+        self._git_info_label = Gtk.Label(label="")
+        self._git_info_label.add_css_class("muted")
+        self._git_info_label.set_halign(Gtk.Align.START)
+        self._git_info_label.set_margin_start(2)
+        rbox.append(self._git_info_label)
         self.append(rbox)
         self.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
 
@@ -142,6 +159,26 @@ class Sidebar(Gtk.Box):
         self._launch_btn.connect("clicked", self._on_launch_clicked)
         btnbox.append(self._launch_btn)
         self.append(btnbox)
+        self.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+
+        # Hardware section
+        hw_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        hw_box.set_margin_start(8); hw_box.set_margin_end(8)
+        hw_box.set_margin_top(4);   hw_box.set_margin_bottom(4)
+        hw_lbl = Gtk.Label(label="HARDWARE")
+        hw_lbl.add_css_class("section-label")
+        hw_lbl.set_halign(Gtk.Align.START)
+        hw_box.append(hw_lbl)
+        self._reset_btn = Gtk.Button(label="↺  Reset  (tt-smi -r)")
+        self._reset_btn.add_css_class("destructive-action")
+        self._reset_btn.set_hexpand(True)
+        self._reset_btn.set_tooltip_text(
+            "Reset all TT devices. Required when switching between model families "
+            "(e.g. LLM → video)."
+        )
+        self._reset_btn.connect("clicked", self._on_reset_clicked)
+        hw_box.append(self._reset_btn)
+        self.append(hw_box)
         self.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
 
         # HF token status
@@ -284,6 +321,8 @@ class Sidebar(Gtk.Box):
         for btn in self._device_buttons.values():
             btn.set_sensitive(not locked)
         self._port_entry.set_sensitive(not locked)
+        self._reset_btn.set_sensitive(not locked)
+        self._pull_btn.set_sensitive(not locked)
 
         if locked:
             self._launch_btn.set_label("■  Stop Server")
@@ -305,8 +344,22 @@ class Sidebar(Gtk.Box):
     def _on_stop_clicked(self, btn):
         self._on_stop()
 
+    def _on_reset_clicked(self, btn):
+        if self._on_reset:
+            self._on_reset()
+
+    def refresh_git_info(self, branch: str, sha: str) -> None:
+        """Update the git branch/commit label below the repo entry."""
+        if branch or sha:
+            self._git_info_label.set_text(f"  {branch}  @{sha}" if branch else f"  @{sha}")
+        else:
+            self._git_info_label.set_text("")
+
     def get_selected_entry(self) -> Optional[ModelEntry]:
         return self._selected_entry
+
+    def get_selected_device(self) -> Optional[str]:
+        return self._selected_device
 
     def get_port(self) -> str:
         return self._port_entry.get_text() or "8000"
@@ -314,6 +367,92 @@ class Sidebar(Gtk.Box):
 
 _LOG_LEVELS_ORDERED = ["DEBUG", "INFO", "WARN", "ERROR"]
 _MAX_LOG_ENTRIES = 5000
+
+
+class AdUnit(Gtk.Box):
+    """Rotating 'Did you know?' card widget shown at the bottom of the main panel.
+
+    Auto-advances every 8 seconds.  Click › to advance manually.
+    Call set_cards(list_of_dicts) to populate; each dict has 'headline', 'body', 'tag'.
+    """
+    _INTERVAL_MS = 8000
+
+    def __init__(self):
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        self.add_css_class("ad-unit")
+        self._cards: list = []
+        self._idx: int = 0
+        self._timer: Optional[int] = None
+        self._build()
+
+    def _build(self):
+        inner = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        inner.set_margin_start(10); inner.set_margin_end(10)
+        inner.set_margin_top(5);    inner.set_margin_bottom(5)
+
+        self._tag = Gtk.Label(label="")
+        self._tag.add_css_class("pill")
+        self._tag.add_css_class("pill-idle")
+        self._tag.set_valign(Gtk.Align.START)
+        inner.append(self._tag)
+
+        text_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        text_box.set_hexpand(True)
+        self._headline = Gtk.Label()
+        self._headline.set_halign(Gtk.Align.START)
+        self._headline.set_markup("<b>Loading…</b>")
+        text_box.append(self._headline)
+        self._body = Gtk.Label(label="")
+        self._body.add_css_class("muted")
+        self._body.set_halign(Gtk.Align.START)
+        self._body.set_wrap(True)
+        self._body.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+        text_box.append(self._body)
+        inner.append(text_box)
+
+        next_btn = Gtk.Button(label="›")
+        next_btn.add_css_class("flat")
+        next_btn.set_valign(Gtk.Align.CENTER)
+        next_btn.connect("clicked", lambda _: self._advance())
+        inner.append(next_btn)
+
+        self.append(inner)
+
+    def set_cards(self, cards: list) -> None:
+        """Replace the card pool and show the first card immediately."""
+        self._cards = cards or []
+        self._idx = 0
+        self._show_current()
+        self._restart_timer()
+
+    def _show_current(self) -> None:
+        if not self._cards:
+            self._headline.set_markup("<b>Did you know?</b>")
+            self._body.set_text("Loading recommendations…")
+            self._tag.set_text("")
+            return
+        card = self._cards[self._idx % len(self._cards)]
+        headline = card.get("headline", "")
+        # Escape Pango markup special characters in the headline text
+        headline_esc = headline.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        self._headline.set_markup(f"<b>{headline_esc}</b>")
+        self._body.set_text(card.get("body", ""))
+        self._tag.set_text(card.get("tag", ""))
+
+    def _advance(self) -> None:
+        if self._cards:
+            self._idx = (self._idx + 1) % len(self._cards)
+        self._show_current()
+        self._restart_timer()
+
+    def _restart_timer(self) -> None:
+        if self._timer is not None:
+            GLib.source_remove(self._timer)
+        self._timer = GLib.timeout_add(self._INTERVAL_MS, self._on_timer)
+
+    def _on_timer(self) -> bool:
+        self._advance()
+        return False  # one-shot; _advance restarts it
 
 
 class MainPanel(Gtk.Box):
@@ -635,6 +774,11 @@ class MainPanel(Gtk.Box):
 
         self.append(self._stack)
 
+        # Always-on ad unit at the bottom of the main panel
+        self.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+        self._ad_unit = AdUnit()
+        self.append(self._ad_unit)
+
     # ---------------------------------------------------------------- stack navigation
 
     def show_welcome(self) -> None:
@@ -856,6 +1000,10 @@ class MainPanel(Gtk.Box):
             end = buf.get_end_iter()
         buf.insert(end, line)
 
+    def set_ad_cards(self, cards: list) -> None:
+        """Update the rotating ad unit card pool."""
+        self._ad_unit.set_cards(cards)
+
     def append_tool_result(self, rt) -> None:
         """Append a ToolRoundTrip step to the round-trip output buffer.
 
@@ -902,8 +1050,10 @@ class MainWindow(Gtk.ApplicationWindow):
             on_launch=self._on_launch_clicked,
             on_stop=lambda: self._ctrl.stop(),
             on_model_select=self._on_model_select,
-            on_device_select=lambda d: None,
+            on_device_select=self._on_device_select,
             on_repo_change=self._on_repo_change,
+            on_reset=self._on_hardware_reset,
+            on_pull=self._on_pull_repo,
         )
         paned.set_start_child(self._sidebar)
         paned.set_resize_start_child(False)
@@ -954,20 +1104,54 @@ class MainWindow(Gtk.ApplicationWindow):
         self._panel.set_state(state, info)
         self._sidebar.set_locked(state not in (ServerState.IDLE, ServerState.ERROR))
 
-        # Navigate the main-panel stack: show config (or welcome) when idle/error,
-        # show logs as soon as a launch begins.
-        if state in (ServerState.IDLE, ServerState.ERROR):
+        # Navigate the main-panel stack based on the new state.
+        if state == ServerState.IDLE:
+            # Back to config so the user can adjust settings and re-launch.
             entry = self._ctrl.current_entry
             if entry:
                 self._panel.show_config(entry, self._on_options_changed)
             else:
                 self._panel.show_welcome()
+        elif state == ServerState.ERROR:
+            # Keep the logs visible so the user can read the failure output.
+            # The ERROR pill in the banner already signals the bad state.
+            self._panel.show_logs()
         elif state == ServerState.LAUNCHING:
+            # Clear stale logs from the previous run before streaming new ones.
+            self._panel.clear_log()
+            self._panel.show_logs()
+        elif state in (ServerState.RUNNING,):
+            self._panel.show_logs()
+        elif state in (ServerState.DONE,):
             self._panel.show_logs()
         elif state == ServerState.READY:
             # Wire the Send button and bench run button on first READY transition (idempotent).
             self._wire_tool_send()
             self._wire_bench_run()
+
+    def _on_device_select(self, device: str) -> None:
+        """Rebuild the ad unit card pool when the user picks a different device."""
+        self._refresh_ad_unit()
+
+    def _on_pull_repo(self) -> None:
+        """Run git pull on the inference-server repo and refresh the git info label."""
+        self._panel.show_logs()
+
+        def _after(success: bool, summary: str) -> None:
+            branch, sha = self._ctrl.get_repo_git_info()
+            self._sidebar.refresh_git_info(branch, sha)
+
+        self._ctrl.pull_repo(on_complete=_after)
+
+    def _refresh_ad_unit(self) -> None:
+        """Rebuild the AdUnit card pool from the current catalog + compat catalog."""
+        from ad_facts import get_all_cards
+        cards = get_all_cards(
+            self._ctrl.catalog,
+            self._sidebar.get_selected_device(),
+            self._ctrl.compat_catalog,
+        )
+        self._panel.set_ad_cards(cards)
 
     def _on_progress(self, fraction: float, label: str) -> None:
         """Update the progress bar.  fraction < 0 triggers an indeterminate pulse."""
@@ -986,14 +1170,70 @@ class MainWindow(Gtk.ApplicationWindow):
     def _on_catalog_loaded(self, catalog: ModelCatalog, compatible: list) -> None:
         """Populate the sidebar tree and device buttons when the catalog is ready."""
         self._sidebar.load_catalog(catalog, compatible)
+        branch, sha = self._ctrl.get_repo_git_info()
+        self._sidebar.refresh_git_info(branch, sha)
+        self._refresh_ad_unit()
 
     # ── User action handlers (called from Sidebar widgets) ────────────────────
 
     def _on_launch_clicked(self, entry: ModelEntry, port: str) -> None:
         """Collect current options from the config panel and ask the controller
-        to start the server."""
-        options = self._panel.get_options()
-        self._ctrl.launch(entry, port, options)
+        to start the server.  If the engine family changed since the last launch,
+        show a dialog recommending tt-smi -r first."""
+        warning = self._ctrl.needs_reset_warning(entry)
+        if warning:
+            old_engine, new_engine, old_model = warning
+            self._show_reset_warning_dialog(entry, port, old_engine, new_engine, old_model)
+        else:
+            self._ctrl.launch(entry, port, self._panel.get_options())
+
+    def _show_reset_warning_dialog(self, entry: ModelEntry, port: str,
+                                   old_engine: str, new_engine: str,
+                                   old_model: str) -> None:
+        """Warn that the inference engine changed and a hardware reset is recommended."""
+        dialog = Gtk.MessageDialog(
+            transient_for=self,
+            modal=True,
+            message_type=Gtk.MessageType.WARNING,
+            text="Hardware reset recommended",
+        )
+        dialog.format_secondary_text(
+            f"Last launch used the '{old_engine}' engine  ({old_model}).\n"
+            f"Switching to '{new_engine}' — running tt-smi -r first is\n"
+            f"strongly recommended to avoid hangs or device errors."
+        )
+        dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
+        dialog.add_button("Launch Anyway", Gtk.ResponseType.REJECT)
+        reset_btn = dialog.add_button("↺  Reset & Launch", Gtk.ResponseType.ACCEPT)
+        reset_btn.add_css_class("suggested-action")
+        dialog.set_default_response(Gtk.ResponseType.ACCEPT)
+
+        def _on_response(dlg, resp: int) -> None:
+            dlg.destroy()
+            if resp == Gtk.ResponseType.ACCEPT:
+                self._do_reset_and_launch(entry, port)
+            elif resp == Gtk.ResponseType.REJECT:
+                self._ctrl.launch(entry, port, self._panel.get_options())
+            # CANCEL → do nothing
+
+        dialog.connect("response", _on_response)
+        dialog.present()
+
+    def _do_reset_and_launch(self, entry: ModelEntry, port: str) -> None:
+        """Run tt-smi -r then immediately launch the server on completion."""
+        self._panel.show_logs()
+        opts = self._panel.get_options()
+
+        def _after_reset(success: bool) -> None:
+            # Launch regardless of reset success — logs already show any error.
+            self._ctrl.launch(entry, port, opts)
+
+        self._ctrl.reset_hardware(on_complete=_after_reset)
+
+    def _on_hardware_reset(self) -> None:
+        """Called from the sidebar Reset button — run tt-smi -r and stream output."""
+        self._panel.show_logs()
+        self._ctrl.reset_hardware()
 
     def _on_model_select(self, entry: ModelEntry) -> None:
         """Tell the controller a new model was selected and update the banner

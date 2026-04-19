@@ -12,6 +12,7 @@ Threading discipline:
 """
 import json
 import os
+import subprocess
 import threading
 import time
 from dataclasses import dataclass
@@ -19,6 +20,8 @@ from pathlib import Path
 from typing import Callable, List, Optional
 
 from app_settings import settings as _settings
+from compat_catalog import CompatCatalog, load_async as _compat_load_async
+from dev_image_launcher import DevImageLauncher, DevLaunchConfig
 from device_detector import detect_devices
 from health_worker import HealthWorker
 from hf_cache import ModelCacheInfo, scan_model_cache
@@ -166,6 +169,14 @@ class AppController:
         self._tour_substage: Optional[str] = None
         self._options = LaunchOptions()
         self._port: Optional[str] = None
+        self._last_error_hint: str = ""   # last error-ish log line, shown in ERROR banner
+        self._compat_catalog: Optional[CompatCatalog] = None
+        self._dev_launcher = DevImageLauncher()
+
+        # Fetch compatibility catalog in the background — updates _compat_catalog when done.
+        def _on_compat(cat: Optional[CompatCatalog]) -> None:
+            self._compat_catalog = cat
+        _compat_load_async(_on_compat)
 
         # Callbacks — views set these after construction; None = ignored
         self.on_state_changed: Optional[Callable] = None   # (ServerState, str)
@@ -191,6 +202,10 @@ class AppController:
     @property
     def catalog(self) -> Optional[ModelCatalog]:
         return self._catalog
+
+    @property
+    def compat_catalog(self) -> Optional[CompatCatalog]:
+        return self._compat_catalog
 
     # ── Internal helpers ────────────────────────────────────────────────────
 
@@ -300,12 +315,13 @@ class AppController:
         self._server_mgr.launch(config, self._handle_log_line, self._on_server_state)
 
     def stop(self) -> None:
-        """Stop the running server."""
+        """Stop the running server or dev-image script."""
         self._transition(ServerState.STOPPING)
         if self._health_worker:
             self._health_worker.stop()
             self._health_worker = None
         self._server_mgr.stop()
+        self._dev_launcher.stop()
         t = threading.Timer(10.0, self._force_idle)
         t.daemon = True
         t.start()
@@ -315,9 +331,159 @@ class AppController:
         if self._state == ServerState.STOPPING:
             self._transition(ServerState.IDLE)
 
+    # ── Hardware utilities ────────────────────────────────────────────────────
+
+    def _rebooted_since_last_launch(self) -> bool:
+        """Return True if the machine was rebooted after the last launch.
+
+        A reboot leaves the TT devices in a clean state so tt-smi -r is not
+        needed.  Suspends/sleeps do NOT reset the devices — only a full reboot
+        does.  We detect this by comparing the persisted launch timestamp against
+        the current system boot time read from /proc/uptime.
+        """
+        last_at = _settings.last_launched_at
+        if not last_at:
+            return True  # no history → assume clean
+        try:
+            uptime_secs = float(Path("/proc/uptime").read_text().split()[0])
+            boot_time = time.time() - uptime_secs
+            return boot_time > last_at
+        except OSError:
+            return False  # can't tell → be conservative (warn)
+
+    def needs_reset_warning(self, entry: ModelEntry) -> Optional[tuple]:
+        """Return (old_engine, new_engine, old_display) if engines differ, else None.
+
+        Returns None when a reboot has occurred since the last launch — the
+        devices are already in a clean state and tt-smi -r is unnecessary.
+        """
+        if self._rebooted_since_last_launch():
+            return None  # clean boot, no reset needed
+        last_engine = _settings.last_launched_engine
+        if last_engine and last_engine != entry.inference_engine:
+            old_display = _settings.last_launched_model_display or "previous model"
+            return (last_engine, entry.inference_engine, old_display)
+        return None
+
+    def reset_hardware(self, on_complete: Optional[Callable[[bool], None]] = None) -> None:
+        """Run tt-smi -r in a background thread, streaming output via on_log_line.
+
+        on_complete(success) is dispatched on the UI event loop when the
+        subprocess exits.  success is True iff returncode == 0.
+        """
+        def _run() -> None:
+            self._emit("on_log_line", "⟳ Resetting TT hardware (tt-smi -r)…")
+            success = False
+            try:
+                proc = subprocess.Popen(
+                    ["tt-smi", "-r"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                )
+                for line in proc.stdout:
+                    self._emit("on_log_line", line.rstrip("\n"))
+                rc = proc.wait()
+                if rc == 0:
+                    self._emit("on_log_line", "✓ Hardware reset complete")
+                    success = True
+                else:
+                    self._emit("on_log_line", f"✗ tt-smi -r exited with code {rc}")
+            except FileNotFoundError:
+                self._emit("on_log_line", "✗ tt-smi not found — is it on PATH?")
+            except Exception as exc:
+                self._emit("on_log_line", f"✗ tt-smi -r error: {exc}")
+            if on_complete:
+                self._dispatch(on_complete, success)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def get_repo_git_info(self, path: Optional[Path] = None) -> tuple:
+        """Return (branch, short_hash) for the server repo, or ('', '') on failure."""
+        repo = path or Path(_settings.server_repo_path)
+        try:
+            branch = subprocess.check_output(
+                ["git", "-C", str(repo), "rev-parse", "--abbrev-ref", "HEAD"],
+                stderr=subprocess.DEVNULL, text=True,
+            ).strip()
+            sha = subprocess.check_output(
+                ["git", "-C", str(repo), "rev-parse", "--short", "HEAD"],
+                stderr=subprocess.DEVNULL, text=True,
+            ).strip()
+            return (branch, sha)
+        except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+            return ("", "")
+
+    def pull_repo(self, on_complete: Optional[Callable[[bool, str], None]] = None) -> None:
+        """Run 'git pull' on the configured server repo in a background thread.
+
+        Streams output via on_log_line.
+        on_complete(success, summary) is dispatched on the UI event loop when done.
+        """
+        repo_path = Path(_settings.server_repo_path)
+
+        def _run() -> None:
+            self._emit("on_log_line", f"⟳ git pull in {repo_path}…")
+            success, summary = False, ""
+            try:
+                proc = subprocess.Popen(
+                    ["git", "-C", str(repo_path), "pull"],
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                )
+                lines = []
+                for line in proc.stdout:
+                    stripped = line.rstrip("\n")
+                    self._emit("on_log_line", stripped)
+                    lines.append(stripped)
+                rc = proc.wait()
+                if rc == 0:
+                    summary = lines[-1] if lines else "Already up to date."
+                    self._emit("on_log_line", f"✓ git pull complete: {summary}")
+                    success = True
+                else:
+                    summary = f"exit code {rc}"
+                    self._emit("on_log_line", f"✗ git pull exited with code {rc}")
+            except FileNotFoundError:
+                summary = "git not found"
+                self._emit("on_log_line", "✗ git not found — is it on PATH?")
+            except Exception as exc:
+                summary = str(exc)
+                self._emit("on_log_line", f"✗ git pull error: {exc}")
+            if on_complete:
+                self._dispatch(on_complete, success, summary)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def launch_dev_image(self, model_id: str, software_stack: str) -> None:
+        """Launch a model script via the tt-developer-image Docker container.
+
+        model_id: compatibility.json entry id (e.g. "bge-large-en-v1-5")
+        software_stack: "tt-forge" | "tt-metal" | "tt-vllm"
+
+        State machine: IDLE/ERROR/DONE → LAUNCHING → RUNNING → DONE or ERROR.
+        """
+        if self._state not in (ServerState.IDLE, ServerState.ERROR, ServerState.DONE):
+            return
+        dev_repo = Path(_settings.dev_image_repo_path)
+        config = DevLaunchConfig(
+            dev_image_repo=dev_repo,
+            model_id=model_id,
+            software_stack=software_stack,
+        )
+        self._emit("on_log_line",
+                   f"▶ Dev image launch: {model_id} via {software_stack}")
+        self._transition(ServerState.LAUNCHING)
+        self._dev_launcher.launch(config, self._handle_log_line, self._on_server_state)
+
     def _handle_log_line(self, line: str) -> None:
         """Forward a log line to views and update state/substage from it."""
         self._emit("on_log_line", line)
+        # Keep the last actionable error message for the ERROR state banner.
+        import re as _re
+        if _re.search(r'ERROR|failed|✗|⚠.*[Cc]ontainer|exit.*code\s*[1-9]', line):
+            stripped = line.strip()
+            if stripped and not _re.search(r'error_handler|on_error|ErrorHandler', stripped):
+                self._last_error_hint = stripped[:120]
         new_state = self._server_mgr.parser.feed(line)
         if new_state:
             self._transition(new_state)
@@ -380,6 +546,9 @@ class AppController:
 
         if info_override:
             info = info_override
+        elif state == ServerState.ERROR and self._last_error_hint:
+            # Surface the last error line so the user doesn't have to scroll logs.
+            info = self._last_error_hint
         elif self._current_entry:
             port = _settings.last_port
             info = (f"localhost:{port}  ·  {self._current_entry.display_name}"
@@ -389,16 +558,32 @@ class AppController:
 
         self._emit("on_state_changed", state, info)
 
-        if state == ServerState.LOADING:
+        if state == ServerState.LAUNCHING:
+            # Persist launch metadata for cross-engine reset warnings and reboot detection.
+            self._last_error_hint = ""   # fresh slate for the new run
+            if self._current_entry:
+                _settings.last_launched_engine = self._current_entry.inference_engine
+                _settings.last_launched_model_display = self._current_entry.display_name
+            _settings.last_launched_at = time.time()
+            _settings.save()
+        elif state == ServerState.LOADING:
             self._load_start = time.monotonic()
             self._tour_card_idx = 0
             self._tour_substage = None
             self._start_progress_ticker()
             self._start_tour_timer()
         elif state in (ServerState.READY, ServerState.ERROR,
-                       ServerState.IDLE, ServerState.STOPPING):
+                       ServerState.IDLE, ServerState.STOPPING, ServerState.DONE):
             self._stop_progress_ticker()
             self._stop_tour_timer()
+            if state == ServerState.ERROR:
+                # Kill monitoring threads so ghost log lines don't appear after
+                # the failure.  _server_mgr.stop() sets _stop_event (silencing
+                # the tail threads) and sends docker stop (no-op if already gone).
+                if self._health_worker:
+                    self._health_worker.stop()
+                    self._health_worker = None
+                self._server_mgr.stop()
 
     def _start_progress_ticker(self) -> None:
         """Start the 1-second repeating timer that emits on_progress during LOADING."""
