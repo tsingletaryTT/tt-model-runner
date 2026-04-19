@@ -410,7 +410,9 @@ class ServerManager:
             if self._proc and self._proc.poll() is not None:
                 rc = self._proc.returncode
                 if not self._resolving_image:
-                    self._on_log_line(f"⚠ run.py exited with code {rc} before creating log file")
+                    self._on_log_line(
+                        f"✗ run.py exited with code {rc} — see [stderr] lines above for details"
+                    )
                 return None
             for ld in log_dirs:
                 if ld.exists():
@@ -430,7 +432,12 @@ class ServerManager:
         log_path = self._find_log_file(repo_path)
         if log_path is None:
             if not self._resolving_image:
-                on_log_line("⚠ Log file not found — subprocess may have failed")
+                # If the process already exited, _find_log_file already emitted a
+                # specific message with the exit code and stderr. Only emit the
+                # generic fallback when the 20s timeout expired but the process is
+                # still running (e.g. a log-directory misconfiguration).
+                if self._proc is None or self._proc.poll() is None:
+                    on_log_line("⚠ Log file not found — subprocess may have failed")
                 on_state(ServerState.ERROR)
             return
 
