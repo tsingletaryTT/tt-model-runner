@@ -239,7 +239,6 @@ def test_send_tool_call_emits_error_on_exception():
 
 def test_run_benchmark_emits_bench_progress_and_result():
     """run_benchmark() must emit on_bench_progress lines and on_bench_result."""
-    import time
     from controller import BenchResult
     from unittest.mock import patch, MagicMock
 
@@ -271,10 +270,6 @@ def test_run_benchmark_emits_bench_progress_and_result():
 
     with patch("benchmark_runner.BenchmarkRunner", FakeRunner):
         ctrl.run_benchmark(mode="smoke-test")
-        for _ in range(50):
-            if progress_lines and results:
-                break
-            time.sleep(0.05)
 
     assert "Running…" in progress_lines
     assert len(results) == 1

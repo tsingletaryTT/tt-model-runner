@@ -800,7 +800,7 @@ class MainPanel(Gtk.Box):
         self._update_tab_buttons("tools")
 
     def show_bench(self) -> None:
-        """Switch to the bench tab page (placeholder — implemented in Task 7)."""
+        """Switch to the bench tab page."""
         self._stack.set_visible_child_name("bench")
         self._update_tab_buttons("bench")
 
@@ -1105,8 +1105,9 @@ class MainWindow(Gtk.ApplicationWindow):
             mode = self._panel._bench_mode_combo.get_active_text() or "smoke-test"
             sweeps = self._panel._bench_sweeps_check.get_active()
             pct    = self._panel._bench_pct_check.get_active()
-            # Clear previous live output before starting a new run.
+            # Clear previous live output and results before starting a new run.
             self._panel._bench_log_buf.set_text("")
+            self._panel._bench_results_buf.set_text("")
             self._ctrl.run_benchmark(mode=mode, concurrency_sweeps=sweeps,
                                      percentile_report=pct)
 
