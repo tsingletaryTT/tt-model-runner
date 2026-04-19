@@ -57,7 +57,7 @@ class BenchResult:
 try:
     from tool_client import run_session as _tc_run_session
 except ImportError:
-    _tc_run_session = None  # filled in by Task 2
+    _tc_run_session = None  # tool_client.py not yet present; created in Task 2
 
 _CONFIG_DIR = Path.home() / ".config" / "tt-runner-gui"
 _TIMING_PATH = _CONFIG_DIR / "timing.json"
@@ -167,6 +167,7 @@ class AppController:
         self._tour_card_idx: int = 0
         self._tour_substage: Optional[str] = None
         self._options = LaunchOptions()
+        self._port: Optional[str] = None
 
         # Callbacks — views set these after construction; None = ignored
         self.on_state_changed: Optional[Callable] = None   # (ServerState, str)
