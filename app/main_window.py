@@ -75,6 +75,7 @@ class Sidebar(Gtk.Box):
         self._locked = False
         self._launch_connected_to_launch = True
         self._search_filter: str = ""
+        self._cached_repos: set = set()
 
         self._build()
 
@@ -251,6 +252,29 @@ class Sidebar(Gtk.Box):
         self._build_device_buttons(catalog.all_device_types(), compatible_devices)
         active = self._selected_device or (compatible_devices[0] if compatible_devices else None)
         self._rebuild_tree([active] if active else compatible_devices)
+        self._scan_hf_cache_async()
+
+    def _scan_hf_cache_async(self) -> None:
+        """Background scan of HF cache — updates tree with ✓ badges on completion."""
+        import threading
+        from hf_cache import scan_all_cached
+        if not self._catalog:
+            return
+        all_repos = {e.hf_model_repo for e in self._catalog.all_entries()}
+
+        def _run():
+            cached = scan_all_cached(all_repos)
+            GLib.idle_add(self.set_cached_repos, cached)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def set_cached_repos(self, repos: set) -> None:
+        """Called on GTK thread after background HF cache scan completes."""
+        self._cached_repos = repos
+        if self._selected_device:
+            self._rebuild_tree([self._selected_device])
+        else:
+            self._rebuild_tree(None)
 
     def _build_device_buttons(self, all_devices: List[str], compatible: List[str]):
         while child := self._device_flow.get_first_child():
@@ -328,8 +352,11 @@ class Sidebar(Gtk.Box):
                     None, [f"RECENT ({len(recent_entries)})", "", "", False]
                 )
                 for entry in recent_entries:
+                    label = entry.display_name
+                    if entry.hf_model_repo in self._cached_repos:
+                        label += "  ✓"
                     leaf_it = self._tree_store.append(
-                        rec_it, [entry.display_name, entry.model_name, entry.device_type, True]
+                        rec_it, [label, entry.model_name, entry.device_type, True]
                     )
                     if entry.model_name == last_model:
                         self._tree_view.get_selection().select_iter(leaf_it)
@@ -360,8 +387,11 @@ class Sidebar(Gtk.Box):
             for family, entries in sorted(filtered_families.items()):
                 fam_it = self._tree_store.append(type_it, [family, "", "", False])
                 for entry in entries:
+                    label = entry.display_name
+                    if entry.hf_model_repo in self._cached_repos:
+                        label += "  ✓"
                     leaf_it = self._tree_store.append(
-                        fam_it, [entry.display_name, entry.model_name, entry.device_type, True]
+                        fam_it, [label, entry.model_name, entry.device_type, True]
                     )
                     if entry.model_name == last_model:
                         self._tree_view.get_selection().select_iter(leaf_it)

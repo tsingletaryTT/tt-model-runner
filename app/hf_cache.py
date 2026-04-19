@@ -89,6 +89,11 @@ def _parse_arch(config_path: Path) -> Optional[ArchFacts]:
     return a
 
 
+def scan_all_cached(hf_repos) -> set:
+    """Return the subset of hf_repos that have a local HF cache snapshot. Fast disk check only."""
+    return {repo for repo in hf_repos if _find_snapshot(repo) is not None}
+
+
 def scan_model_cache(hf_repo: str) -> ModelCacheInfo:
     """Scan HF cache for model files and architecture facts. Call from a worker thread."""
     info = ModelCacheInfo(hf_repo=hf_repo)
