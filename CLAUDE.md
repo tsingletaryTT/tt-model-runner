@@ -9,22 +9,37 @@ Out of scope: prompt submission, completions, evals, multi-host.
 ## Entrypoints
 
 - `./run`        — GTK4 GUI
-- `./run --tui`  — Textual TUI (Plan 2)
+- `./run --tui`  — Textual TUI (same AppController, different view)
 
 ## Architecture: AppController + thin views
+
+Key modules:
+- `app/controller.py` — AppController: state machine, all domain logic, no UI imports
+- `app/tool_client.py` — Synchronous httpx multi-turn tool-call session
+- `app/benchmark_runner.py` — Wraps `tt-inference-server/run.py --workflow benchmarks`
+- `app/tui/` — Textual TUI package: app.py, widgets/
 
 `app/controller.py` owns all business logic:
 - State machine (IDLE → LAUNCHING → PULLING_IMAGE → LOADING → READY, ERROR, STOPPING)
 - ServerManager lifecycle (launch / stop / tail logs)
 - HealthWorker (polls /v1/models or /tt-liveness)
 - TimingStore (progress estimates)
-- BenchmarkRunner (Plan 2)
-- ToolClient (Plan 2)
+- BenchmarkRunner
+- ToolClient
 
 Views (GTK `MainWindow`, Textual `TuiApp`) are thin:
 - Register `on_*` callbacks on the controller
 - Call controller public methods (`launch`, `stop`, `load_repo`, etc.)
 - Never reach into controller internals
+
+## Threading discipline
+
+All `on_*` callbacks dispatched via `AppController._emit` → `dispatch_fn`:
+- GTK: `GLib.idle_add`
+- TUI: `app.call_from_thread`
+- Tests: sync lambda
+
+Never call widget methods from background threads.
 
 ## Thread dispatch — the key seam
 
@@ -62,11 +77,11 @@ so the controller has no GTK dependency.
 
     app/
       controller.py      — AppController, ToolRoundTrip, BenchResult dataclasses
-      tool_client.py     — OpenAI tool-call HTTP client (Plan 2)
-      benchmark_runner.py — wraps run.py --workflow benchmarks (Plan 2)
-      tui/               — Textual TUI (Plan 2)
+      tool_client.py     — Synchronous httpx multi-turn tool-call session
+      benchmark_runner.py — wraps run.py --workflow benchmarks
+      tui/               — Textual TUI package: app.py, widgets/ (ModelRail, LogPane, ConfigPane, ToolPane, BenchPane)
       main.py            — GTK App entry + CSS; injects GLib.idle_add dispatch
-      tui_main.py        — TUI entry (Plan 2)
+      tui_main.py        — TUI entry; injects call_from_thread dispatch
       main_window.py     — Thin GTK view; Sidebar and MainPanel widgets unchanged
       config_panel.py    — ConfigPanel GTK widget (mostly unchanged)
       server_manager.py  — Launches run.py, tails log; no GLib dependency
