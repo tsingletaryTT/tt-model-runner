@@ -798,7 +798,7 @@ class MainPanel(Gtk.Box):
         elif rt.step == "result":
             buf.insert(end, f"← tool result: {rt.content}")
         else:
-            buf.insert(end, f"→ final: {rt.content}")
+            buf.insert(end, f"← final: {rt.content}")
 
 
 class MainWindow(Gtk.ApplicationWindow):

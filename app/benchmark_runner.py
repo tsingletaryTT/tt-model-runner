@@ -40,9 +40,6 @@ _METRIC_MAP = {
     "request_throughput": "request_throughput",
 }
 
-# Metrics where a higher value is better (used by _eval_tier to pick direction)
-_HIGHER_IS_BETTER = {"mean_tps", "tps_decode", "tps_decode_throughput", "request_throughput"}
-
 
 def _parse_filename(name: str) -> Optional[Dict]:
     """Extract isl/osl/concurrency from a benchmark filename.
@@ -270,6 +267,10 @@ class BenchmarkRunner:
                     except (TypeError, ValueError):
                         pass
 
+            # Alias so perf_targets can use the raw JSON key name too
+            if "tps_decode" in metrics:
+                metrics["tps_decode_throughput"] = metrics["tps_decode"]
+
             tier = _eval_tier(metrics, perf_targets)
             result = BenchResult(
                 model_name=model_name,
@@ -293,8 +294,8 @@ class BenchmarkRunner:
         """Append a BenchResult to the JSON history file.
 
         Creates the file and parent directories if they do not exist.
-        Existing history is loaded and the new result is appended, then
-        the whole list is written back atomically via write_text.
+        Appends the new result to the JSON history array and writes
+        the updated list back to the file via write_text.
 
         Args:
             result: The BenchResult to append.
