@@ -41,20 +41,27 @@ class HealthWorker(threading.Thread):
     def _check(self) -> Optional[List[str]]:
         if not _HAS_REQUESTS:
             return None
-        try:
-            if self._engine == "media":
-                r = _requests.get(
-                    f"http://localhost:{self._port}/tt-liveness", timeout=3)
+        base = f"http://localhost:{self._port}"
+        endpoints = []
+        if self._engine == "media":
+            endpoints = [("media", f"{base}/tt-liveness")]
+        elif self._engine == "auto":
+            # Try vLLM first (more common), then media server endpoint
+            endpoints = [("vllm", f"{base}/v1/models"), ("media", f"{base}/tt-liveness")]
+        else:
+            endpoints = [("vllm", f"{base}/v1/models")]
+
+        for kind, url in endpoints:
+            try:
+                r = _requests.get(url, timeout=3)
                 if r.status_code == 200:
-                    return [r.json().get("model", "unknown")]
-            else:
-                r = _requests.get(
-                    f"http://localhost:{self._port}/v1/models", timeout=3)
-                if r.status_code == 200:
-                    data = r.json()
-                    return [m.get("id", "unknown") for m in data.get("data", [])]
-        except Exception:
-            pass
+                    if kind == "media":
+                        return [r.json().get("model", "unknown")]
+                    else:
+                        data = r.json()
+                        return [m.get("id", "unknown") for m in data.get("data", [])]
+            except Exception:
+                pass
         return None
 
     def run(self):

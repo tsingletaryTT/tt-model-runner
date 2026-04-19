@@ -40,6 +40,9 @@ class ViewContract(ABC):
     @abstractmethod
     def on_tool_result(self, result): ...
 
+    @abstractmethod
+    def on_running_servers(self, servers: list): ...
+
 
 class GtkViewStub(ViewContract):
     def on_state_changed(self, state, info): pass
@@ -51,6 +54,7 @@ class GtkViewStub(ViewContract):
     def on_bench_progress(self, line): pass
     def on_bench_result(self, result): pass
     def on_tool_result(self, result): pass
+    def on_running_servers(self, servers): pass
 
 
 class TuiViewStub(ViewContract):
@@ -63,6 +67,7 @@ class TuiViewStub(ViewContract):
     def on_bench_progress(self, line): pass
     def on_bench_result(self, result): pass
     def on_tool_result(self, result): pass
+    def on_running_servers(self, servers): pass
 
 
 def test_gtk_stub_satisfies_contract():

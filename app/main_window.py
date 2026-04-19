@@ -1124,9 +1124,14 @@ class MainWindow(Gtk.ApplicationWindow):
             **kwargs,
         )
         self._ctrl = controller
+        self._running_server_bar: Optional[Gtk.InfoBar] = None
+
+        # Outer vertical box: optional running-server banner + paned content
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
 
         paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
         paned.set_position(_settings.sidebar_width)
+        paned.set_vexpand(True)
 
         self._sidebar = Sidebar(
             on_launch=self._on_launch_clicked,
@@ -1142,7 +1147,9 @@ class MainWindow(Gtk.ApplicationWindow):
 
         self._panel = MainPanel()
         paned.set_end_child(self._panel)
-        self.set_child(paned)
+        outer.append(paned)
+        self.set_child(outer)
+        self._outer = outer
         self.connect("close-request", self._on_close)
 
         # Register view callbacks so the controller can push updates to us.
@@ -1156,6 +1163,7 @@ class MainWindow(Gtk.ApplicationWindow):
         controller.on_bench_progress = self._on_bench_progress
         controller.on_bench_result   = self._on_bench_result
         controller.on_tool_result    = self._on_tool_result
+        controller.on_running_servers = self._on_running_servers_detected
 
         # Auto-discover and load the inference-server repo on startup.
         # Prefer the path saved from the last session; fall back to well-known
@@ -1224,6 +1232,55 @@ class MainWindow(Gtk.ApplicationWindow):
             self._sidebar.refresh_git_info(branch, sha)
 
         self._ctrl.pull_repo(on_complete=_after)
+
+    def _on_running_servers_detected(self, servers: list) -> None:
+        """Show a banner when already-running TT inference containers are found."""
+        if not servers:
+            return
+        # Only show if we're IDLE — don't interrupt an active launch
+        from server_manager import ServerState
+        if self._ctrl.state not in (ServerState.IDLE, ServerState.ERROR):
+            return
+        # Remove any previous bar
+        if self._running_server_bar:
+            self._outer.remove(self._running_server_bar)
+            self._running_server_bar = None
+
+        server = servers[0]   # show banner for the first/most-recent one
+        extra = f"  (+ {len(servers) - 1} more)" if len(servers) > 1 else ""
+        port = server.port or "8000"
+
+        bar = Gtk.InfoBar()
+        bar.set_message_type(Gtk.MessageType.INFO)
+        bar.set_show_close_button(True)
+        content = bar.get_content_area()
+        lbl = Gtk.Label()
+        lbl.set_markup(
+            f"<b>Running server detected</b>  ·  {server.container_name}  ·  "
+            f"port {port}  ·  {server.running_for}{extra}"
+        )
+        lbl.set_ellipsize(Pango.EllipsizeMode.END)
+        content.append(lbl)
+        reconnect_btn = bar.add_button("Reconnect", Gtk.ResponseType.ACCEPT)
+        reconnect_btn.add_css_class("suggested-action")
+
+        def _on_response(b, resp):
+            if resp == Gtk.ResponseType.ACCEPT:
+                self._do_reconnect(port, server.container_name)
+            self._outer.remove(b)
+            self._running_server_bar = None
+
+        bar.connect("response", _on_response)
+        # Insert banner at top (before the paned widget)
+        self._outer.prepend(bar)
+        self._running_server_bar = bar
+
+    def _do_reconnect(self, port: str, container_name: str) -> None:
+        """Reconnect to an existing inference server container."""
+        self._panel.clear_log()
+        self._panel.show_logs()
+        self._sidebar.set_locked(True)
+        self._ctrl.adopt_running_server(port, container_name)
 
     def _refresh_ad_unit(self) -> None:
         """Rebuild the AdUnit card pool from the current catalog + compat catalog."""

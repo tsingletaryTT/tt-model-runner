@@ -32,6 +32,64 @@ from timing_store import TimingStore
 
 
 @dataclass
+class RunningServer:
+    """A TT inference server container found via docker ps."""
+    container_name: str
+    image: str
+    port: str          # e.g. "8000"
+    running_for: str   # human-readable uptime, e.g. "7 hours ago"
+    state: str         # "running" | ...
+
+
+def _parse_running_servers() -> "List[RunningServer]":
+    """Scan docker ps for containers that look like TT inference servers.
+
+    Matches on container name prefix 'tt-inference-server' OR image containing
+    'tenstorrent' (covers both tt-media-inference-server and tt-vllm variants).
+    Returns a list of RunningServer instances (may be empty).
+    """
+    try:
+        result = subprocess.run(
+            ["docker", "ps", "--format", "{{json .}}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode != 0:
+            return []
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return []
+
+    servers = []
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        name = rec.get("Names", "")
+        image = rec.get("Image", "")
+        state = rec.get("State", "")
+        if not (name.startswith("tt-inference-server") or "tenstorrent" in image.lower()):
+            continue
+        ports_str = rec.get("Ports", "")
+        # Parse first host port from e.g. "0.0.0.0:8000->8000/tcp"
+        port = ""
+        import re as _re
+        m = _re.search(r':(\d+)->', ports_str)
+        if m:
+            port = m.group(1)
+        servers.append(RunningServer(
+            container_name=name,
+            image=image,
+            port=port,
+            running_for=rec.get("RunningFor", rec.get("Status", "unknown")),
+            state=state,
+        ))
+    return servers
+
+
+@dataclass
 class ToolRoundTrip:
     """One step in a multi-turn tool-call exchange emitted via on_tool_result."""
     step: str        # "call" | "result" | "final"
@@ -179,15 +237,16 @@ class AppController:
         _compat_load_async(_on_compat)
 
         # Callbacks — views set these after construction; None = ignored
-        self.on_state_changed: Optional[Callable] = None   # (ServerState, str)
-        self.on_log_line: Optional[Callable] = None         # (str,)
-        self.on_progress: Optional[Callable] = None         # (float, str)
-        self.on_substage: Optional[Callable] = None         # (str, str, str, str)
-        self.on_catalog_loaded: Optional[Callable] = None   # (ModelCatalog, List[str])
-        self.on_cache_scanned: Optional[Callable] = None    # (ModelCacheInfo,)
-        self.on_bench_progress: Optional[Callable] = None   # (str,)
-        self.on_bench_result: Optional[Callable] = None     # (BenchResult,)
-        self.on_tool_result: Optional[Callable] = None      # (ToolRoundTrip,)
+        self.on_state_changed: Optional[Callable] = None        # (ServerState, str)
+        self.on_log_line: Optional[Callable] = None              # (str,)
+        self.on_progress: Optional[Callable] = None              # (float, str)
+        self.on_substage: Optional[Callable] = None              # (str, str, str, str)
+        self.on_catalog_loaded: Optional[Callable] = None        # (ModelCatalog, List[str])
+        self.on_cache_scanned: Optional[Callable] = None         # (ModelCacheInfo,)
+        self.on_bench_progress: Optional[Callable] = None        # (str,)
+        self.on_bench_result: Optional[Callable] = None          # (BenchResult,)
+        self.on_tool_result: Optional[Callable] = None           # (ToolRoundTrip,)
+        self.on_running_servers: Optional[Callable] = None       # (List[RunningServer],)
 
     # ── Read-only properties for views ──────────────────────────────────────
 
@@ -240,6 +299,10 @@ class AppController:
             if not devices:
                 self._emit("on_log_line", "⚠ tt-smi not found — showing all devices")
             self._emit("on_catalog_loaded", self._catalog, compatible)
+            # Scan for already-running servers now that we have device/catalog context.
+            servers = _parse_running_servers()
+            if servers:
+                self._emit("on_running_servers", servers)
 
         threading.Thread(target=_detect, daemon=True).start()
 
@@ -453,6 +516,45 @@ class AppController:
                 self._dispatch(on_complete, success, summary)
 
         threading.Thread(target=_run, daemon=True).start()
+
+    def scan_running_servers(self) -> None:
+        """Scan for already-running TT inference containers in a background thread.
+
+        Emits on_running_servers(List[RunningServer]) on the UI event loop.
+        Called automatically at startup after the repo is loaded.
+        """
+        def _run():
+            servers = _parse_running_servers()
+            if servers:
+                self._emit("on_running_servers", servers)
+        threading.Thread(target=_run, daemon=True).start()
+
+    def adopt_running_server(self, port: str, container_name: str = "") -> None:
+        """Reconnect to an already-running inference server without launching a new one.
+
+        Transitions directly to LOADING state and starts the health worker so
+        the app reaches READY as soon as the health endpoint responds.
+        """
+        if self._state not in (ServerState.IDLE, ServerState.ERROR):
+            return
+        self._port = port
+        _settings.last_port = port
+        _settings.save()
+        if container_name:
+            self._server_mgr._container_name = container_name
+        banner = f"Reconnecting to existing server on port {port}"
+        if container_name:
+            banner += f" ({container_name})"
+        self._emit("on_log_line", f"⟳ {banner}")
+        self._transition(ServerState.LOADING)
+        self._health_worker = HealthWorker(
+            port=port,
+            on_ready=self._on_health_ready,
+            on_lost=self._on_health_lost,
+            dispatch_fn=self._dispatch,
+            engine="auto",   # tries /v1/models then /tt-liveness
+        )
+        self._health_worker.start()
 
     def launch_dev_image(self, model_id: str, software_stack: str) -> None:
         """Launch a model script via the tt-developer-image Docker container.

@@ -7,11 +7,33 @@ docker image picker, advanced fields, and a live command preview.
 """
 import json
 import threading
-from typing import Callable, List, Optional
+from pathlib import Path
+from typing import Callable, Dict, List, Optional
 
 import gi
 gi.require_version("Gtk", "4.0")
-from gi.repository import GLib, Gtk
+from gi.repository import GLib, Gtk, Pango
+
+# Load model descriptions from data/ at import time (once, cached).
+_DESCRIPTIONS: Dict[str, str] = {}
+_DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+
+def _load_descriptions() -> Dict[str, str]:
+    path = _DATA_DIR / "model-descriptions.json"
+    if not path.exists():
+        return {}
+    try:
+        raw = json.loads(path.read_text())
+        return {k: v for k, v in raw.items() if k != "_meta" and isinstance(v, str)}
+    except Exception:
+        return {}
+
+_DESCRIPTIONS = _load_descriptions()
+
+
+def get_model_description(display_name: str) -> str:
+    """Return the description for a model by its display name, or empty string."""
+    return _DESCRIPTIONS.get(display_name, "")
 
 from docker_images import DockerImage, scan_local_images
 from launch_options import (
@@ -73,6 +95,16 @@ class ConfigPanel(Gtk.Box):
         self._strip_badge.add_css_class("pill-idle")
         self._model_strip.append(self._strip_badge)
         inner.append(self._model_strip)
+
+        # Description label — shown when a description exists in data/model-descriptions.json
+        self._strip_desc = Gtk.Label(label="")
+        self._strip_desc.add_css_class("muted")
+        self._strip_desc.set_halign(Gtk.Align.START)
+        self._strip_desc.set_margin_bottom(4)
+        self._strip_desc.set_wrap(True)
+        self._strip_desc.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+        self._strip_desc.set_visible(False)
+        inner.append(self._strip_desc)
         inner.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
 
         # --- Profile bar ---
@@ -333,6 +365,11 @@ class ConfigPanel(Gtk.Box):
         }.get(badge_text, "pill-idle")
         self._strip_badge.set_text(badge_text)
         self._strip_badge.set_css_classes(["pill", badge_css])
+
+        # Show description if one exists for this model
+        desc = get_model_description(entry.display_name)
+        self._strip_desc.set_text(desc)
+        self._strip_desc.set_visible(bool(desc))
 
         # Rebuild use-case chips
         self._populate_use_cases(entry)
