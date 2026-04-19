@@ -1,21 +1,16 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Main application window: sidebar + main panel with full state machine.
+"""Main application window: sidebar + main panel (thin view over AppController).
+
+MainWindow is a pure GTK view.  It owns no business logic — all server
+lifecycle, device detection, and progress tracking live in AppController.
 
 Threading discipline (CRITICAL):
     GTK is single-threaded. Worker threads must NEVER touch widgets directly.
-    Every UI update from a thread must be posted via GLib.idle_add or idle_add_once.
-
-State machine:
-    IDLE → LAUNCHING → PULLING_IMAGE → LOADING → READY
-                                              ↘ ERROR
-           ↑                                        ↓
-           └──────────── STOPPING ─────────────────┘
+    AppController dispatches every on_* callback through GLib.idle_add so that
+    all widget updates happen on the GTK main thread.
 """
 import os
-import sys
-import threading
-import time
 from pathlib import Path
 from typing import List, Optional
 
@@ -25,16 +20,8 @@ gi.require_version("Pango", "1.0")
 from gi.repository import GLib, Gtk, Pango
 
 from app_settings import settings as _settings
-from device_detector import detect_devices
-from hf_cache import ModelCacheInfo, scan_model_cache
 from model_catalog import ModelCatalog, ModelEntry
-from server_manager import LaunchConfig, ServerManager, ServerState
-from health_worker import HealthWorker
-from timing_store import TimingStore
-from worker import idle_add_once
-
-_CONFIG_DIR = Path.home() / ".config" / "tt-runner-gui"
-_TIMING_PATH = _CONFIG_DIR / "timing.json"
+from server_manager import ServerState
 
 _TYPE_ORDER = ["LLM", "VLM", "IMAGE", "VIDEO", "AUDIO", "CNN", "EMBEDDING", "TTS"]
 _TYPE_LABEL = {
@@ -53,24 +40,6 @@ _STATE_LABELS = {
     ServerState.STOPPING:      ("STOPPING",      "pill-stopping"),
 }
 
-_STAGE_LABELS = {
-    "engine_init":    "Engine Init",
-    "device_setup":   "Device Mesh",
-    "loading_weights":"Weights",
-    "kv_cache":       "KV Cache",
-    "api_startup":    "API Server",
-    "trace_capture":  "Trace Capture",
-    "device_init":    "Device Init",
-    "mesh_created":   "Mesh",
-    "cache_loading":  "TT Cache",
-    "model_loaded":   "Model",
-    "warmup":         "Warmup",
-    "warmup_complete":"Warmup",
-}
-
-_VLLM_STAGES  = ["engine_init", "device_setup", "loading_weights", "kv_cache", "api_startup", "trace_capture"]
-_MEDIA_STAGES = ["device_init", "mesh_created", "loading_weights", "cache_loading", "model_loaded", "warmup"]
-
 _LOG_COLORS = {
     "DEBUG":    "#607D8B",
     "INFO":     "#E8F0F2",
@@ -78,69 +47,6 @@ _LOG_COLORS = {
     "WARNING":  "#F4C471",
     "ERROR":    "#FF6B6B",
     "CRITICAL": "#FF6B6B",
-}
-
-_TOUR_CARDS: dict = {
-    "engine_init": [
-        "TT Metal opens PCIe connections to each Tenstorrent chip and verifies firmware. No model weights loaded yet — this is pure hardware bring-up.",
-        "Each Tenstorrent chip has 108 Tensix cores in a 12×9 grid. Each core has 1.5 MB of local SRAM and a dedicated matrix/vector compute unit that runs independently.",
-        "An embedded RISC-V management CPU on each chip handles DMA scheduling, Ethernet link setup, and power management while Tensix cores later run inference.",
-    ],
-    "device_setup": [
-        "Tensor parallelism: weight matrices are sharded column-wise across chips via Ethernet fabric. Each chip holds 1/N of every weight tensor.",
-        "The Ethernet links between chips run at 100 Gb/s. An allreduce across 4 chips takes ~1 µs — far less than a single transformer layer's compute time.",
-        "Column-parallel sharding means each chip computes attention for a different subset of heads. With GQA the KV heads are fewer, reducing KV replication cost.",
-    ],
-    "loading_weights": [
-        "Weight shards stream from disk into each chip's DRAM via PCIe (~7 GB/s per chip). The bottleneck is disk→DRAM transfer, not computation.",
-        "Weights arrive as bfloat16 (2 bytes/element). The chips support on-the-fly quantization to int8 to halve DRAM bandwidth during actual inference.",
-        "Attention weight matrices (Q, K, V, O_proj) are column-sharded across chips. Each chip's Q_proj is [hidden × (hidden÷N)] where N is the chip count.",
-    ],
-    "kv_cache": [
-        "KV cache is pre-allocated in chip SRAM before the first token. Accessing SRAM takes <1 µs vs. ~100 ns for DRAM — critical for fast autoregressive decode.",
-        "Each layer needs 2 × context_length × head_dim × num_kv_heads elements for K and V. With GQA the KV tensor is much smaller than the full attention map.",
-        "Paged KV attention divides the cache into fixed-size blocks (e.g., 16 tokens each), avoiding fragmentation and enabling efficient batch scheduling.",
-    ],
-    "api_startup": [
-        "The HTTP server starts accepting connections. The model is fully on-device but execution graphs haven't been JIT-compiled for every context length yet.",
-        "vLLM uses continuous batching: new requests join the decode batch mid-generation, keeping hardware utilization high even with uneven arrival rates.",
-        "The vLLM scheduler can preempt a partially-decoded sequence and swap it out when memory is needed — enabling fair multi-tenant serving without starvation.",
-    ],
-    "trace_capture": [
-        "vLLM JIT-compiles a separate execution graph for each of 10 context lengths (128→65408 tokens). After capture, every inference replays a pre-built trace.",
-        "Trace capture = graph compilation: TT Metal unrolls every op into a static kernel-dispatch sequence. At inference time there is zero Python GIL overhead.",
-        "Each of the 10 traces is specialized for its sequence length — the compiler tiles and schedules operations differently for a 128-token vs. 65408-token batch.",
-    ],
-    "device_init": [
-        "The media server initializes the device mesh and allocates shared memory pools across all dies. This is the first time the hardware is exercised.",
-        "On a Galaxy (8× P150), the mesh is 8 chips in a ring topology. Each chip sees a unified virtual address space backed by its own 12 GB LPDDR5 DRAM.",
-        "Device init checks firmware versions and calibrates thermal sensors. If any chip is above the thermal threshold, the server refuses to start.",
-    ],
-    "mesh_created": [
-        "A 2D chip mesh is established. Activations flow over the on-package Ethernet fabric rather than through host DRAM — reducing round-trip latency by ~100×.",
-        "The mesh topology determines model partitioning. For video: spatial encoder on one chip set, temporal decoder on another, pipelined across the fabric.",
-        "Collective operations (AllReduce, AllGather) use ring algorithms that saturate the Ethernet links without touching host memory.",
-    ],
-    "cache_loading": [
-        "Pre-compiled TT Metal kernel binaries are loaded from disk cache. A cache hit avoids LLVM compilation — saving minutes per model load on first boot.",
-        "The tensor cache keys on op type + tensor shape + data type + chip generation. A Wormhole kernel binary won't be used on Blackhole — different ISA.",
-        "The cache is invalidated on firmware update to prevent ABI mismatches. After an upgrade the first load is slower; subsequent loads are fast again.",
-    ],
-    "model_loaded": [
-        "All model components — transformer, text encoder, and VAE decoder — are resident on-chip and ready for the warmup pass.",
-        "For diffusion models the pipeline is: text encoder (CLIP or T5) → denoising U-Net or DiT → VAE decoder. All three sub-models are pre-loaded onto chips.",
-        "The VAE decoder is the final inference step, converting a latent 64×64 tensor into a 1024×1024 pixel image. It's the compute-heaviest part per output pixel.",
-    ],
-    "warmup": [
-        "Warmup runs 2 full denoising passes to JIT-compile TT Metal kernels and capture execution traces. One-time cost per boot; subsequent inferences are fast.",
-        "WAN 2.2 uses ~50 denoising timesteps per video. Each warmup pass compiles attention and FFN kernels for that specific resolution and batch size.",
-        "After warmup the compiled kernels are stored in SRAM. Subsequent inferences skip compilation and replay the recorded kernel dispatch sequence directly.",
-    ],
-    "warmup_complete": [
-        "Warmup complete! The server is now fully primed: kernels compiled, traces captured, KV cache allocated. Waiting for health check.",
-        "The health endpoint (/tt-liveness or /v1/models) returns 200 once the server thread is ready — this guard prevents routing traffic before the model is live.",
-        "First inference will be nearly as fast as steady-state. Compile-time overhead was paid during warmup; the hot path is now pure kernel replay.",
-    ],
 }
 
 
@@ -731,36 +637,32 @@ class MainPanel(Gtk.Box):
 
 
 class MainWindow(Gtk.ApplicationWindow):
-    def __init__(self, **kwargs):
+    """Thin GTK view wired to an AppController.
+
+    MainWindow owns no business logic.  It builds the widget tree, registers
+    on_* callbacks on the controller, and translates user actions into
+    controller method calls.  All server lifecycle, device detection, timing,
+    and progress tracking live in AppController.
+    """
+
+    def __init__(self, controller, **kwargs):
         super().__init__(
             title="TT Model Runner",
             default_width=_settings.window_width,
             default_height=_settings.window_height,
             **kwargs,
         )
-
-        self._server_mgr = ServerManager()
-        self._health_worker: Optional[HealthWorker] = None
-        self._timing = TimingStore(_TIMING_PATH)
-        self._catalog: Optional[ModelCatalog] = None
-        self._current_entry: Optional[ModelEntry] = None
-        self._cache_info: Optional[ModelCacheInfo] = None
-        self._state = ServerState.IDLE
-        self._load_start: Optional[float] = None
-        self._progress_source: Optional[int] = None
-        self._tour_card_idx: int = 0
-        self._tour_card_source: Optional[int] = None
-        self._tour_substage: Optional[str] = None
+        self._ctrl = controller
 
         paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
         paned.set_position(_settings.sidebar_width)
 
         self._sidebar = Sidebar(
-            on_launch=self._on_launch,
-            on_stop=self._on_stop,
+            on_launch=self._on_launch_clicked,
+            on_stop=lambda: self._ctrl.stop(),
             on_model_select=self._on_model_select,
             on_device_select=lambda d: None,
-            on_repo_change=self._load_repo,
+            on_repo_change=self._on_repo_change,
         )
         paned.set_start_child(self._sidebar)
         paned.set_resize_start_child(False)
@@ -770,7 +672,21 @@ class MainWindow(Gtk.ApplicationWindow):
         self.set_child(paned)
         self.connect("close-request", self._on_close)
 
-        # Auto-discover repo on startup
+        # Register view callbacks so the controller can push updates to us.
+        # The panel exists at this point, so the log callback is safe to set.
+        controller.on_state_changed  = self._on_state_changed
+        controller.on_log_line       = self._panel.append_log
+        controller.on_progress       = self._on_progress
+        controller.on_substage       = self._on_substage
+        controller.on_catalog_loaded = self._on_catalog_loaded
+        controller.on_cache_scanned  = lambda info: None   # no cache UI in this view
+        controller.on_bench_progress = self._panel.append_log
+        controller.on_bench_result   = lambda r: None
+        controller.on_tool_result    = lambda r: None
+
+        # Auto-discover and load the inference-server repo on startup.
+        # Prefer the path saved from the last session; fall back to well-known
+        # checkout locations if the saved path is stale or absent.
         repo_path = None
         saved = _settings.server_repo_path
         if saved:
@@ -778,362 +694,87 @@ class MainWindow(Gtk.ApplicationWindow):
             if (p / "run.py").exists() and (p / "model_spec.json").exists():
                 repo_path = p
         if not repo_path:
-            repo_path = self._discover_repo()
+            for candidate in [
+                Path.home() / "code" / "tt-inference-server",
+                Path.home() / "tt-inference-server",
+            ]:
+                if (candidate / "run.py").exists() and (candidate / "model_spec.json").exists():
+                    repo_path = candidate
+                    break
         if repo_path:
             self._sidebar._repo_entry.set_text(str(repo_path))
-            GLib.idle_add(self._load_repo, repo_path)
+            GLib.idle_add(self._ctrl.load_repo, repo_path)
 
-    def _discover_repo(self) -> Optional[Path]:
-        for c in [Path.home() / "code" / "tt-inference-server", Path.home() / "tt-inference-server"]:
-            if (c / "run.py").exists() and (c / "model_spec.json").exists():
-                return c
-        return None
+    # ── Callbacks pushed by AppController ────────────────────────────────────
 
-    def _load_repo(self, path: Path) -> bool:
-        spec = path / "model_spec.json"
-        if not spec.exists():
-            self._panel.append_log(f"⚠ model_spec.json not found at {path}")
-            return False
-        try:
-            self._catalog = ModelCatalog.load(spec)
-        except Exception as e:
-            self._panel.append_log(f"⚠ Failed to parse model_spec.json: {e}")
-            return False
-
-        _settings.server_repo_path = str(path)
-        _settings.save()
-        self._panel.append_log(f"Loaded {len(self._catalog.all_entries())} model configurations from {spec}")
-
-        def _detect():
-            devices = detect_devices()
-            compatible = devices if devices else self._catalog.all_device_types()
-            if not devices:
-                GLib.idle_add(lambda: self._panel.append_log("⚠ tt-smi not found — showing all devices") or False)
-            idle_add_once(self._sidebar.load_catalog, self._catalog, compatible)
-        threading.Thread(target=_detect, daemon=True).start()
-        return False
-
-    def _on_model_select(self, entry: ModelEntry):
-        self._current_entry = entry
-        self._cache_info = None
-        self._panel._banner_info.set_text(
-            f"{entry.display_name}  ·  {entry.device_type}  ·  {entry.inference_engine}"
-        )
-        # Show the configuration panel so the user can review/change launch
-        # options before hitting Launch.  ConfigPanel is created lazily on
-        # the first call and reused for subsequent model selections.
-        self._panel.show_config(entry, self._on_options_changed)
-
-        repo = entry.hf_model_repo
-        def _scan():
-            info = scan_model_cache(repo)
-            idle_add_once(self._on_cache_scanned, info)
-        threading.Thread(target=_scan, daemon=True).start()
-
-    def _on_options_changed(self, options) -> None:
-        """Called by ConfigPanel whenever any option widget changes value.
-
-        Currently a no-op — options are read at launch time via
-        self._panel.get_options().  Kept as an extension point for live
-        validation or command-preview updates in MainWindow.
-        """
-        pass
-
-    def _on_cache_scanned(self, info: ModelCacheInfo):
-        self._cache_info = info
-        # If tour is visible right now, refresh the left panel with real data
-        if self._state == ServerState.LOADING and self._tour_substage:
-            self._panel.set_tour(*self._build_tour_content(self._tour_substage))
-
-    def _read_hf_token(self, repo_path: Path) -> Optional[str]:
-        """Read HF_TOKEN from environment first, then repo .env file."""
-        token = os.environ.get("HF_TOKEN", "")
-        if token:
-            return token
-        env_file = repo_path / ".env"
-        if env_file.exists():
-            for line in env_file.read_text(errors="replace").splitlines():
-                if line.startswith("HF_TOKEN="):
-                    token = line.split("=", 1)[1].strip().strip('"').strip("'")
-                    if token:
-                        return token
-        return None
-
-    def _on_launch(self, entry: ModelEntry, port: str):
-        if self._state not in (ServerState.IDLE, ServerState.ERROR):
-            return
-        self._current_entry = entry
-        repo_path = Path(_settings.server_repo_path)
-        if not (repo_path / "run.py").exists():
-            self._panel.append_log(f"⚠ run.py not found at {repo_path}")
-            return
-
-        hf_token = self._read_hf_token(repo_path)
-        if not hf_token:
-            self._panel.append_log("⚠ HF_TOKEN not found in environment or .env — launch may fail")
-
-        # Collect any options the user configured in ConfigPanel (may be None
-        # if the user never selected a model and went straight to launch via
-        # keyboard shortcut — in that case server_manager falls back to
-        # sensible defaults).
-        options = self._panel.get_options()
-
-        config = LaunchConfig(
-            repo_path=repo_path,
-            model_name=entry.display_name,  # run.py --model expects short name e.g. "Wan2.2-T2V-A14B-Diffusers"
-            device=entry.device_type,
-            port=port,
-            hf_token=hf_token,
-            no_auth=True,
-            options=options,
-            inference_engine=entry.inference_engine,
-        )
-
-        self._panel.clear_log()
-        self._panel.append_log(f"▶ Launching {entry.display_name} on {entry.device_type} · port {port}")
-        # Switch to the log view before transitioning state so the user sees
-        # output immediately rather than staying on the config page.
-        self._panel.show_logs()
-        self._transition(ServerState.LAUNCHING)
-
-        self._health_worker = HealthWorker(
-            port=port,
-            on_ready=self._on_health_ready,
-            on_lost=self._on_health_lost,
-            engine="media" if entry.inference_engine == "media" else "vllm",
-        )
-        self._health_worker.start()
-        self._server_mgr.launch(config, self._on_log_line, self._on_server_state)
-
-    def _on_stop(self):
-        self._transition(ServerState.STOPPING)
-        if self._health_worker:
-            self._health_worker.stop()
-            self._health_worker = None
-        self._server_mgr.stop()
-        # Give docker stop up to 10s, then force-idle
-        GLib.timeout_add(10000, self._force_idle)
-
-    def _force_idle(self) -> bool:
-        if self._state == ServerState.STOPPING:
-            self._transition(ServerState.IDLE)
-        return False
-
-    def _on_log_line(self, line: str):
-        self._panel.append_log(line)
-        if self._state == ServerState.LOADING:
-            substage = self._server_mgr.parser.last_substage
-            if substage:
-                self._panel.set_stepper(self._build_stepper_text(substage))
-                if substage != self._tour_substage:
-                    self._tour_substage = substage
-                    self._tour_card_idx = 0
-                cards = _TOUR_CARDS.get(substage, [])
-                self._panel.update_tour_dots(self._tour_card_idx, len(cards))
-                self._panel.set_tour(*self._build_tour_content(substage))
-
-    def _on_server_state(self, state: ServerState):
-        self._transition(state)
-
-    def _on_health_ready(self, models: List[str]):
-        if self._state in (ServerState.LOADING, ServerState.LAUNCHING, ServerState.PULLING_IMAGE):
-            self._transition(ServerState.READY)
-            mstr = ", ".join(models) if models else "ready"
-            self._panel.set_state(ServerState.READY, f"localhost:{_settings.last_port}  ·  {mstr}")
-            if self._load_start and self._current_entry:
-                dur = time.monotonic() - self._load_start
-                self._timing.record_load(
-                    self._current_entry.hf_model_repo, self._current_entry.device_type, dur, cold=False
-                )
-
-    def _on_health_lost(self):
-        if self._state == ServerState.READY:
-            self._transition(ServerState.ERROR)
-            self._panel.append_log("⚠ Health check lost — server may have crashed")
-
-    def _transition(self, state: ServerState):
-        if state == self._state:
-            return
-        prev = self._state
-        self._state = state
-
-        info = ""
-        if self._current_entry:
-            info = f"localhost:{_settings.last_port}  ·  {self._current_entry.display_name}  ·  {self._current_entry.device_type}"
-
+    def _on_state_changed(self, state: ServerState, info: str) -> None:
+        """React to server state transitions: update banner, lock sidebar,
+        and navigate the main panel stack to the appropriate page."""
         self._panel.set_state(state, info)
         self._sidebar.set_locked(state not in (ServerState.IDLE, ServerState.ERROR))
 
-        if state == ServerState.LOADING:
-            self._load_start = time.monotonic()
-            self._tour_card_idx = 0
-            self._tour_substage = None
-            self._start_progress_ticker()
-            self._start_tour_timer()
-        elif state in (ServerState.READY, ServerState.ERROR, ServerState.IDLE, ServerState.STOPPING):
-            self._stop_progress_ticker()
-            self._stop_tour_timer()
-
-        # Stack navigation: return to the config page (or welcome if no model
-        # is selected) when the server reaches a terminal / idle state; keep
-        # the log view on all in-progress states so the user sees output.
+        # Navigate the main-panel stack: show config (or welcome) when idle/error,
+        # show logs as soon as a launch begins.
         if state in (ServerState.IDLE, ServerState.ERROR):
-            if self._current_entry:
-                self._panel.show_config(self._current_entry, self._on_options_changed)
+            entry = self._ctrl.current_entry
+            if entry:
+                self._panel.show_config(entry, self._on_options_changed)
             else:
                 self._panel.show_welcome()
         elif state == ServerState.LAUNCHING:
-            # show_logs() is called explicitly in _on_launch before _transition
-            # for the initial launch.  This branch handles the STOPPING→LAUNCHING
-            # re-launch edge-case where _on_launch is called again without an
-            # explicit show_logs() call preceding _transition.
             self._panel.show_logs()
 
-    def _start_progress_ticker(self):
-        if not self._progress_source:
-            self._progress_source = GLib.timeout_add(1000, self._progress_tick)
-
-    def _stop_progress_ticker(self):
-        if self._progress_source:
-            GLib.source_remove(self._progress_source)
-            self._progress_source = None
-
-    def _start_tour_timer(self):
-        if not self._tour_card_source:
-            self._tour_card_source = GLib.timeout_add(12000, self._advance_tour_card)
-
-    def _stop_tour_timer(self):
-        if self._tour_card_source:
-            GLib.source_remove(self._tour_card_source)
-            self._tour_card_source = None
-
-    def _advance_tour_card(self) -> bool:
-        if self._state != ServerState.LOADING:
-            self._tour_card_source = None
-            return False
-        substage = self._tour_substage or ""
-        cards = _TOUR_CARDS.get(substage, [])
-        if len(cards) > 1:
-            self._tour_card_idx = (self._tour_card_idx + 1) % len(cards)
-            self._panel.update_tour_dots(self._tour_card_idx, len(cards))
-            self._panel.set_tour(*self._build_tour_content(substage))
-        return True  # keep firing
-
-    def _progress_tick(self) -> bool:
-        if self._state != ServerState.LOADING or not self._current_entry:
-            return False
-
-        elapsed = time.monotonic() - (self._load_start or time.monotonic())
-        parser = self._server_mgr.parser
-
-        # vLLM trace capture — most reliable deterministic progress
-        if parser.trace_capture_count > 0:
-            frac = parser.trace_capture_count / 10.0
-            remaining = (10 - parser.trace_capture_count) * 3
-            self._panel.set_progress(frac, f"Capturing traces {parser.trace_capture_count}/10 · ~{remaining:.0f}s remaining")
-            return True
-
-        # WAN 2.2 / media warmup progress
-        if parser.warmup_n is not None and parser.warmup_total:
-            frac = parser.warmup_n / parser.warmup_total
-            est = self._timing.estimate_substage(
-                self._current_entry.hf_model_repo, self._current_entry.device_type, "warmup"
-            )
-            label = f"Warmup {parser.warmup_n}/{parser.warmup_total}"
-            if est.seconds:
-                per_step = est.seconds / parser.warmup_total
-                remaining = per_step * (parser.warmup_total - parser.warmup_n)
-                label += f" · ~{remaining:.0f}s remaining · {est.source}"
-            self._panel.set_progress(frac, label)
-            return True
-
-        # Time-based estimate
-        est = self._timing.estimate_load(
-            self._current_entry.hf_model_repo,
-            self._current_entry.device_type,
-            cold=False,
-            size_gb=self._current_entry.min_disk_gb or 10.0,
-            family=self._current_entry.family,
-        )
-        if est.seconds and est.seconds > 0:
-            frac = min(elapsed / est.seconds, 0.95)
-            remaining = max(est.seconds - elapsed, 0)
-            m, s = divmod(int(remaining), 60)
-            ts = f"{m}m {s}s" if m else f"{s}s"
-            self._panel.set_progress(frac, f"~{ts} remaining · {est.source}")
-        else:
+    def _on_progress(self, fraction: float, label: str) -> None:
+        """Update the progress bar.  fraction < 0 triggers an indeterminate pulse."""
+        if fraction < 0:
             self._panel._progress_bar.pulse()
-        return True
-
-    def _build_stepper_text(self, substage: str) -> str:
-        entry = self._current_entry
-        if not entry:
-            return ""
-        stages = _MEDIA_STAGES if entry.inference_engine == "media" else _VLLM_STAGES
-        parts = []
-        found_active = False
-        for s in stages:
-            lbl = _STAGE_LABELS.get(s, s)
-            if s == substage:
-                parts.append(f"● {lbl}")
-                found_active = True
-            elif not found_active:
-                parts.append(f"✓ {lbl}")
-            else:
-                parts.append(f"○ {lbl}")
-        return "  ──  ".join(parts)
-
-    def _build_tour_left(self, entry: ModelEntry) -> str:
-        ci = self._cache_info
-        lines = [f"📁 {entry.hf_model_repo}"]
-        if ci and ci.is_cached:
-            lines.append("  ✓ cached locally")
-            if ci.safetensors:
-                gb = ci.total_bytes / 1e9
-                lines.append(f"  {len(ci.safetensors)} shards · {gb:.1f} GB")
-            else:
-                other_gb = ci.total_bytes / 1e9
-                if other_gb > 0:
-                    lines.append(f"  {other_gb:.1f} GB total")
-            a = ci.arch
-            if a and a.num_layers:
-                lines.append(f"  {a.num_layers} layers · hidden={a.hidden_size}")
-                if a.num_kv_heads and a.num_kv_heads != a.num_heads:
-                    lines.append(f"  GQA: {a.num_heads}Q / {a.num_kv_heads}KV heads")
-                elif a.num_heads:
-                    lines.append(f"  {a.num_heads} heads · head_dim={a.head_dim}")
-                if a.context_length:
-                    lines.append(f"  ctx={a.context_length:,} tokens")
-        elif ci and not ci.is_cached:
-            lines.append("  ○ not in local HF cache")
-            if entry.min_disk_gb:
-                lines.append(f"  ~{entry.min_disk_gb:.0f} GB on disk")
         else:
-            if entry.min_disk_gb:
-                lines.append(f"  ~{entry.min_disk_gb:.0f} GB on disk")
-            if entry.param_count:
-                lines.append(f"  {entry.param_count:.0f}B parameters")
-        lines.append(f"  Engine: {entry.inference_engine}")
-        lines.append(f"  Status: {entry.status}")
-        return "\n".join(lines)
+            self._panel.set_progress(fraction, label)
 
-    def _build_tour_content(self, substage: Optional[str]) -> tuple:
-        entry = self._current_entry
-        if not entry:
-            return ("", "")
-        left = self._build_tour_left(entry)
-        cards = _TOUR_CARDS.get(substage or "", [])
-        if not cards:
-            right = "Loading model onto Tenstorrent hardware…"
-        else:
-            idx = self._tour_card_idx % len(cards)
-            right = cards[idx]
-        return (left, right)
+    def _on_substage(self, stepper: str, tour_left: str,
+                     tour_right: str, dots: str) -> None:
+        """Update stepper text, tour panel content, and dot indicator."""
+        self._panel.set_stepper(stepper)
+        self._panel.set_tour(tour_left, tour_right)
+        self._panel._tour_dots.set_text(dots)
 
-    def _on_close(self, win):
-        _settings.window_width = self.get_width()
+    def _on_catalog_loaded(self, catalog: ModelCatalog, compatible: list) -> None:
+        """Populate the sidebar tree and device buttons when the catalog is ready."""
+        self._sidebar.load_catalog(catalog, compatible)
+
+    # ── User action handlers (called from Sidebar widgets) ────────────────────
+
+    def _on_launch_clicked(self, entry: ModelEntry, port: str) -> None:
+        """Collect current options from the config panel and ask the controller
+        to start the server."""
+        options = self._panel.get_options()
+        self._ctrl.launch(entry, port, options)
+
+    def _on_model_select(self, entry: ModelEntry) -> None:
+        """Tell the controller a new model was selected and update the banner
+        and config panel immediately so the user sees feedback."""
+        self._ctrl.select_model(entry)
+        self._panel._banner_info.set_text(
+            f"{entry.display_name}  ·  {entry.device_type}"
+            f"  ·  {entry.inference_engine}"
+        )
+        self._panel.show_config(entry, self._on_options_changed)
+
+    def _on_options_changed(self, options) -> None:
+        """Relay ConfigPanel option changes to the controller (e.g. for live
+        command-preview updates or validation)."""
+        self._ctrl.set_options(options)
+
+    def _on_repo_change(self, path: Path) -> None:
+        """Forward repo path changes to the controller so it can reload the
+        model catalog."""
+        self._ctrl.load_repo(path)
+
+    def _on_close(self, win) -> bool:
+        """Persist window dimensions and stop the server on close."""
+        _settings.window_width  = self.get_width()
         _settings.window_height = self.get_height()
         _settings.save()
-        if self._state not in (ServerState.IDLE, ServerState.ERROR):
-            self._on_stop()
+        if self._ctrl.state not in (ServerState.IDLE, ServerState.ERROR):
+            self._ctrl.stop()
         return False
