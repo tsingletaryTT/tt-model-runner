@@ -2,4 +2,5 @@
 set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export PYTHONPATH="$SCRIPT_DIR/app:$PYTHONPATH"
-exec python3 "$SCRIPT_DIR/app/main.py" "$@"
+# Use system python3 which has gi (GTK bindings); the venv python does not.
+exec /usr/bin/python3 "$SCRIPT_DIR/app/main.py" "$@"
