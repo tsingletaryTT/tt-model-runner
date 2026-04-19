@@ -16,6 +16,14 @@ from launch_options import LaunchOptions
 _PROFILES_DIR = Path.home() / ".config" / "tt-runner-gui" / "profiles"
 
 
+def _profile_path(name: str) -> Path:
+    """Return the resolved path for a profile name, rejecting traversal attempts."""
+    resolved = (_PROFILES_DIR / f"{name}.json").resolve()
+    if _PROFILES_DIR.resolve() not in resolved.parents:
+        raise ValueError(f"Invalid profile name: {name!r}")
+    return _PROFILES_DIR / f"{name}.json"
+
+
 def save_profile(
     name: str,
     description: str,
@@ -31,12 +39,12 @@ def save_profile(
         "created": datetime.now().isoformat(timespec="seconds"),
         "options": asdict(options),
     }
-    (_PROFILES_DIR / f"{name}.json").write_text(json.dumps(data, indent=2))
+    _profile_path(name).write_text(json.dumps(data, indent=2))
 
 
 def load_profile(name: str) -> Optional[dict]:
     """Return profile dict or None if not found / corrupt."""
-    path = _PROFILES_DIR / f"{name}.json"
+    path = _profile_path(name)
     if not path.exists():
         return None
     try:
@@ -67,7 +75,7 @@ def list_profiles(model_type: str = "") -> List[dict]:
 
 def delete_profile(name: str) -> bool:
     """Delete profile file.  Returns True if deleted, False if not found."""
-    path = _PROFILES_DIR / f"{name}.json"
+    path = _profile_path(name)
     if not path.exists():
         return False
     path.unlink()

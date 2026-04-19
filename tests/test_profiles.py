@@ -77,3 +77,16 @@ def test_overwrite_existing_profile():
     prof_module.save_profile("p", "", "LLM", LaunchOptions(dev_mode=True))
     loaded = prof_module.load_profile("p")
     assert loaded["options"]["dev_mode"] is True
+
+
+def test_profile_to_options_roundtrip():
+    opts = LaunchOptions(use_case="dev", dev_mode=True, max_model_len=32768)
+    prof_module.save_profile("rt", "", "LLM", opts)
+    loaded = prof_module.load_profile("rt")
+    assert prof_module.profile_to_options(loaded) == opts
+
+
+def test_profile_to_options_ignores_unknown_keys():
+    profile = {"name": "x", "options": {"dev_mode": True, "future_key": "ignored"}}
+    opts = prof_module.profile_to_options(profile)
+    assert opts.dev_mode is True
