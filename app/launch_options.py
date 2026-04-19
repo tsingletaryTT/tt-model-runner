@@ -165,7 +165,11 @@ def build_extra_args(options: LaunchOptions, entry: "ModelEntry") -> List[str]:
                 vllm["enable_auto_tool_choice"] = True
         if options.extra_vllm_args:
             try:
-                vllm.update(json.loads(options.extra_vllm_args))
+                parsed = json.loads(options.extra_vllm_args)
+                # Only merge if the parsed value is a dict; a list or scalar
+                # would cause dict.update() to raise TypeError.
+                if isinstance(parsed, dict):
+                    vllm.update(parsed)
             except (json.JSONDecodeError, ValueError):
                 pass  # silently skip invalid JSON
         if vllm:

@@ -1,4 +1,5 @@
 # tests/test_launch_options.py
+import json
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "app"))
@@ -42,7 +43,6 @@ def test_code_completion_sets_context():
     assert opts.max_model_len == 32768
     args = build_extra_args(opts, entry)
     assert "--vllm-override-args" in args
-    import json
     idx = args.index("--vllm-override-args")
     payload = json.loads(args[idx + 1])
     assert payload["max_model_len"] == 32768
@@ -55,7 +55,6 @@ def test_agent_preset_enables_tool_use():
     assert opts.enable_auto_tool_choice is True
     args = build_extra_args(opts, entry)
     idx = args.index("--vllm-override-args")
-    import json
     payload = json.loads(args[idx + 1])
     assert payload["enable_auto_tool_choice"] is True
     assert payload["tool_call_parser"] == "llama3_json"   # Llama family
@@ -87,7 +86,6 @@ def test_extra_vllm_args_merge_wins():
     entry = _llm_entry()
     opts = LaunchOptions(max_model_len=8192, extra_vllm_args='{"max_model_len": 4096}')
     args = build_extra_args(opts, entry)
-    import json
     payload = json.loads(args[args.index("--vllm-override-args") + 1])
     # extra_vllm_args wins
     assert payload["max_model_len"] == 4096
@@ -117,6 +115,39 @@ def test_advanced_flags_pass_through():
     assert "--device-id" in args
     assert "--image-user" in args
     assert "--skip-system-sw-validation" in args
+    # Verify the values that follow each flag are correct
+    assert args[args.index("--host-hf-cache") + 1] == "~/.cache/hf"
+    assert args[args.index("--host-volume") + 1] == "/data/vol"
+    assert args[args.index("--device-id") + 1] == "0"
+
+
+def test_workflow_and_config_flags():
+    """workflow_args, override_tt_config, and host_weights_dir should produce
+    their corresponding CLI flags with the correct values."""
+    entry = _llm_entry()
+    opts = LaunchOptions(
+        workflow_args="param=value",
+        override_tt_config='{"trace_region_size": 4096}',
+        host_weights_dir="/weights",
+    )
+    args = build_extra_args(opts, entry)
+    assert "--workflow-args" in args
+    assert args[args.index("--workflow-args") + 1] == "param=value"
+    assert "--override-tt-config" in args
+    assert args[args.index("--override-tt-config") + 1] == '{"trace_region_size": 4096}'
+    assert "--host-weights-dir" in args
+    assert args[args.index("--host-weights-dir") + 1] == "/weights"
+
+
+def test_dev_preset_non_vllm_no_vllm_args():
+    """Dev preset on a non-vLLM engine should emit dev flags but no
+    --vllm-override-args (since the engine does not use vLLM)."""
+    entry = _llm_entry(inference_engine="forge")
+    opts = apply_preset("dev", entry)
+    args = build_extra_args(opts, entry)
+    assert "--dev-mode" in args
+    assert "--disable-metal-timeout" in args
+    assert "--vllm-override-args" not in args
 
 
 def test_invalid_extra_vllm_json_ignored():
