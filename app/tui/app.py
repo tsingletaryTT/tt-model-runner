@@ -65,11 +65,14 @@ class TuiApp(App[None]):
 
     def on_mount(self) -> None:
         """Create AppController and register all view callbacks."""
+        import threading
         from controller import AppController
         from app_settings import settings as _settings
 
+        _main_thread_id = threading.get_ident()
         self._ctrl = AppController(
-            dispatch_fn=lambda fn, *a: self.call_from_thread(fn, *a)
+            dispatch_fn=lambda fn, *a: fn(*a) if threading.get_ident() == _main_thread_id
+            else self.call_from_thread(fn, *a)
         )
 
         self._ctrl.on_state_changed  = self._on_state_changed
