@@ -1,0 +1,72 @@
+<h2>Sidebar — Model Picker</h2>
+<p class="subtitle">64+ models across LLM, VLM, Audio, Image, CNN, Embedding. How do you browse them?</p>
+
+<div class="cards">
+
+  <div class="card" data-choice="filter-list" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div style="font-family:monospace;font-size:10px;background:#0A1F28;border:1px solid #2D5566;border-radius:6px;padding:8px;color:#E8F0F2;width:160px;margin:auto">
+        <div style="color:#4FD1C5;margin-bottom:5px;font-size:9px">MODEL</div>
+        <input style="width:100%;background:#1A3C47;border:1px solid #2D5566;color:#E8F0F2;border-radius:3px;padding:2px 5px;font-size:9px;box-sizing:border-box;margin-bottom:5px" placeholder="🔍 filter..." readonly>
+        <div style="display:flex;gap:3px;margin-bottom:5px;flex-wrap:wrap">
+          <div style="background:#4FD1C5;color:#0F2A35;border-radius:10px;padding:1px 6px;font-size:8px">LLM</div>
+          <div style="background:#1A3C47;border:1px solid #2D5566;border-radius:10px;padding:1px 6px;font-size:8px;color:#607D8B">VLM</div>
+          <div style="background:#1A3C47;border:1px solid #2D5566;border-radius:10px;padding:1px 6px;font-size:8px;color:#607D8B">IMG</div>
+        </div>
+        <div style="background:#1A3C47;border-left:2px solid #4FD1C5;padding:3px 5px;margin-bottom:2px;font-size:9px">Llama-3.3-70B ●</div>
+        <div style="padding:3px 5px;margin-bottom:2px;font-size:9px;color:#607D8B">Qwen3-32B</div>
+        <div style="padding:3px 5px;margin-bottom:2px;font-size:9px;color:#607D8B">DeepSeek-R1</div>
+        <div style="padding:3px 5px;font-size:9px;color:#607D8B">Mistral-7B</div>
+        <div style="margin-top:5px;border-top:1px solid #2D5566;padding-top:5px;color:#4FD1C5;font-size:9px">DEVICE</div>
+        <div style="display:flex;gap:3px;flex-wrap:wrap;margin-top:3px">
+          <div style="background:#4FD1C5;color:#0F2A35;border-radius:3px;padding:1px 5px;font-size:8px">T3K</div>
+          <div style="background:#1A3C47;border:1px solid #2D5566;border-radius:3px;padding:1px 5px;font-size:8px;color:#607D8B">N150</div>
+          <div style="background:#1A3C47;border:1px solid #2D5566;border-radius:3px;padding:1px 5px;font-size:8px;color:#607D8B">P150</div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>A — Filter list with type chips</h3>
+      <p>Search box + type filter chips (LLM / VLM / Image / Audio…) narrow the list. Selected model is highlighted. Device buttons appear below. Fast for power users.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="grouped-tree" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div style="font-family:monospace;font-size:10px;background:#0A1F28;border:1px solid #2D5566;border-radius:6px;padding:8px;color:#E8F0F2;width:160px;margin:auto">
+        <div style="color:#4FD1C5;margin-bottom:5px;font-size:9px">MODELS</div>
+        <div style="color:#EC96B8;font-size:9px;margin-bottom:3px">▾ LLM (42)</div>
+        <div style="background:#1A3C47;border-left:2px solid #4FD1C5;padding:2px 5px 2px 10px;margin-bottom:2px;font-size:9px">Llama-3.3-70B ●</div>
+        <div style="padding:2px 5px 2px 10px;font-size:9px;color:#607D8B">Qwen3-32B</div>
+        <div style="padding:2px 5px 2px 10px;font-size:9px;color:#607D8B">DeepSeek-R1</div>
+        <div style="color:#EC96B8;font-size:9px;margin-top:4px;margin-bottom:3px">▸ VLM (8)</div>
+        <div style="color:#EC96B8;font-size:9px;margin-bottom:3px">▸ Image (6)</div>
+        <div style="color:#EC96B8;font-size:9px">▸ Audio (3)</div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>B — Grouped tree (collapse by type)</h3>
+      <p>Models grouped under collapsible sections: LLM, VLM, Image, Audio, etc. Easier to explore by category. Click a group header to expand/collapse.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="dropdown-combo" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div style="font-family:monospace;font-size:10px;background:#0A1F28;border:1px solid #2D5566;border-radius:6px;padding:8px;color:#E8F0F2;width:160px;margin:auto">
+        <div style="color:#4FD1C5;margin-bottom:4px;font-size:9px">CONFIGURE RUN</div>
+        <div style="font-size:9px;color:#607D8B;margin-bottom:2px">Model type</div>
+        <div style="background:#1A3C47;border:1px solid #2D5566;border-radius:3px;padding:2px 5px;font-size:9px;margin-bottom:5px">LLM ▾</div>
+        <div style="font-size:9px;color:#607D8B;margin-bottom:2px">Model</div>
+        <div style="background:#1A3C47;border:1px solid #4FD1C5;border-radius:3px;padding:2px 5px;font-size:9px;margin-bottom:5px">Llama-3.3-70B ▾</div>
+        <div style="font-size:9px;color:#607D8B;margin-bottom:2px">Device</div>
+        <div style="background:#1A3C47;border:1px solid #2D5566;border-radius:3px;padding:2px 5px;font-size:9px;margin-bottom:5px">T3K ▾</div>
+        <div style="background:#4FD1C5;color:#0F2A35;text-align:center;border-radius:3px;padding:3px;font-size:9px;margin-top:4px">▶ Launch</div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>C — Cascading dropdowns</h3>
+      <p>Type → Model → Device as dependent dropdowns. Selecting type filters models; selecting model filters compatible devices. Compact and structured.</p>
+    </div>
+  </div>
+
+</div>
