@@ -406,7 +406,17 @@ class ServerManager:
         while time.monotonic() < deadline:
             if self._stop_event.is_set():
                 return None
-            # Check if process exited early
+            # Scan for a new log file BEFORE checking process exit.
+            # run.py creates the log file before calling validate_setup, so even
+            # when validate_setup fails and the process exits quickly the log file
+            # already exists and contains the detailed error output.
+            for ld in log_dirs:
+                if ld.exists():
+                    current = set(ld.glob("*.log"))
+                    new = current - before[ld]
+                    if new:
+                        return max(new, key=lambda p: p.stat().st_mtime)
+            # If the process already exited and we still have no log file, give up.
             if self._proc and self._proc.poll() is not None:
                 rc = self._proc.returncode
                 if not self._resolving_image:
@@ -414,12 +424,6 @@ class ServerManager:
                         f"✗ run.py exited with code {rc} — see [stderr] lines above for details"
                     )
                 return None
-            for ld in log_dirs:
-                if ld.exists():
-                    current = set(ld.glob("*.log"))
-                    new = current - before[ld]
-                    if new:
-                        return max(new, key=lambda p: p.stat().st_mtime)
             time.sleep(0.5)
         return None
 
