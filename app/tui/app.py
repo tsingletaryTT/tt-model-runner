@@ -152,6 +152,9 @@ class TuiApp(App[None]):
 
         ready = (state == ServerState.READY)
         self._set_ready_tabs_enabled(ready)
+        if ready:
+            # Re-enable the bench run button now that server is READY.
+            self.query_one(BenchPane).set_running(False)
         if state.name in ("LAUNCHING", "RUNNING"):
             self.query_one(TabbedContent).active = "logs"
         elif ready:
