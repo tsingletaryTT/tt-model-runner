@@ -236,9 +236,10 @@ class AppController:
         self._pull_downloading: dict = {}  # layer_id → (current_bytes, total_bytes)
         self._emitted_error_hints: set = set()  # patterns already suggested this run
 
-        # Fetch compatibility catalog in the background — updates _compat_catalog when done.
+        # Fetch compatibility catalog in the background — dispatches on_compat_catalog_loaded.
         def _on_compat(cat: Optional[CompatCatalog]) -> None:
             self._compat_catalog = cat
+            self._emit("on_compat_catalog_loaded", cat)
         _compat_load_async(_on_compat)
 
         # Callbacks — views set these after construction; None = ignored
@@ -251,8 +252,9 @@ class AppController:
         self.on_bench_progress: Optional[Callable] = None        # (str,)
         self.on_bench_result: Optional[Callable] = None          # (BenchResult,)
         self.on_tool_result: Optional[Callable] = None           # (ToolRoundTrip,)
-        self.on_running_servers: Optional[Callable] = None       # (List[RunningServer],)
-        self.on_hardware_status: Optional[Callable] = None       # (List[ChipStatus],)
+        self.on_running_servers: Optional[Callable] = None           # (List[RunningServer],)
+        self.on_hardware_status: Optional[Callable] = None           # (List[ChipStatus],)
+        self.on_compat_catalog_loaded: Optional[Callable] = None     # (Optional[CompatCatalog],)
 
     # ── Read-only properties for views ──────────────────────────────────────
 

@@ -86,6 +86,7 @@ class TuiApp(App[None]):
         self._ctrl.on_tool_result     = self._on_tool_result
         self._ctrl.on_hardware_status = self._on_hardware_status
         self._ctrl.on_running_servers = self._on_running_servers
+        self._ctrl.on_compat_catalog_loaded = lambda _cat: None  # TUI: compat catalog not used yet
 
         self._set_ready_tabs_enabled(False)
 

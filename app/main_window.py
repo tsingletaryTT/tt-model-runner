@@ -104,6 +104,8 @@ class Sidebar(Gtk.Box):
         self._launch_connected_to_launch = True
         self._search_filter: str = ""
         self._cached_repos: set = set()
+        self._compat_catalog = None      # set via set_compat_catalog()
+        self.on_compat_select = None     # Callable[[CompatEntry], None]
 
         self._build()
 
@@ -333,6 +335,16 @@ class Sidebar(Gtk.Box):
         self._rebuild_tree([active] if active else compatible_devices)
         self._scan_hf_cache_async()
 
+    def set_compat_catalog(self, catalog) -> None:
+        """Attach the compatibility catalog for DISCOVER results when searching."""
+        self._compat_catalog = catalog
+        # If there's an active search, refresh the tree to show DISCOVER results.
+        if self._search_filter:
+            if self._selected_device:
+                self._rebuild_tree([self._selected_device])
+            else:
+                self._rebuild_tree(None)
+
     def _scan_hf_cache_async(self) -> None:
         """Background scan of HF cache — updates tree with ✓ badges on completion."""
         import threading
@@ -494,6 +506,54 @@ class Sidebar(Gtk.Box):
             if searching or type_name in expanded:
                 self._tree_view.expand_row(self._tree_store.get_path(type_it), True)
 
+        # DISCOVER section — compat catalog entries not in model_spec, shown when searching.
+        if searching and self._compat_catalog:
+            self._append_discover_results(search)
+
+    def _append_discover_results(self, search: str) -> None:
+        """Add DISCOVER tree section from compat catalog for search query."""
+        # Build the set of display names already shown by model_spec catalog.
+        known_names: set = set()
+        if self._catalog:
+            known_names = {e.display_name.lower() for e in self._catalog.all_entries()}
+
+        # Gather matching compat entries not already in model_spec.
+        sw_buckets: dict = {}  # software_stack → [CompatEntry]
+        for entry in self._compat_catalog.all_entries():
+            if entry.display_name.lower() in known_names:
+                continue
+            name_match = search in entry.display_name.lower() or search in entry.id.lower()
+            desc_match = search in (entry.model_description or "").lower()
+            fam_match  = search in (entry.family or "").lower()
+            if not (name_match or desc_match or fam_match):
+                continue
+            # Determine applicable software stacks from all compatibility records.
+            for compat in entry.compatibility:
+                if compat.status == "Not Supported":
+                    continue
+                for sw in compat.software:
+                    if sw not in sw_buckets:
+                        sw_buckets[sw] = []
+                    if entry not in sw_buckets[sw]:
+                        sw_buckets[sw].append(entry)
+
+        if not sw_buckets:
+            return
+
+        total = len({e.id for entries in sw_buckets.values() for e in entries})
+        disc_it = self._tree_store.append(
+            None, [f"DISCOVER ({total} via compat catalog)", "", "", False]
+        )
+        for sw, entries in sorted(sw_buckets.items()):
+            sw_it = self._tree_store.append(disc_it, [sw, "", "", False])
+            for entry in entries[:15]:
+                size_str = f"  {entry.model_size}" if entry.model_size else ""
+                label = f"{entry.display_name}{size_str}"
+                self._tree_store.append(
+                    sw_it, [label, f"__compat__:{entry.id}", sw, True]
+                )
+        self._tree_view.expand_row(self._tree_store.get_path(disc_it), True)
+
     def _on_tree_selection(self, sel):
         model, it = sel.get_selected()
         if it is None:
@@ -502,6 +562,16 @@ class Sidebar(Gtk.Box):
             return
         model_key = model.get_value(it, 1)
         device = model.get_value(it, 2)
+
+        # DISCOVER entry — model_key has a __compat__: prefix.
+        if model_key.startswith("__compat__:"):
+            entry_id = model_key[len("__compat__:"):]
+            if self._compat_catalog and self.on_compat_select:
+                compat_entry = self._compat_catalog.lookup(entry_id)
+                if compat_entry:
+                    self.on_compat_select(compat_entry)
+            return
+
         if self._catalog:
             entry = self._catalog.get_entry(model_key, device)
             if entry:
@@ -958,6 +1028,64 @@ class MainPanel(Gtk.Box):
         welcome_box.append(self._welcome_setup)
         self._stack.add_named(welcome_box, "welcome")
 
+        # ── Discover page ─────────────────────────────────────────────────────
+        # Shown when the user selects a compat-catalog-only (tt-forge/tt-metal) entry.
+        disc_scroll = Gtk.ScrolledWindow()
+        disc_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        disc_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        disc_box.set_margin_start(16); disc_box.set_margin_end(16)
+        disc_box.set_margin_top(12);   disc_box.set_margin_bottom(12)
+
+        self._disc_name_lbl = Gtk.Label(label="")
+        self._disc_name_lbl.set_halign(Gtk.Align.START)
+        self._disc_name_lbl.set_markup("<b>Model</b>")
+        disc_box.append(self._disc_name_lbl)
+
+        self._disc_tags_lbl = Gtk.Label(label="")
+        self._disc_tags_lbl.add_css_class("muted")
+        self._disc_tags_lbl.set_halign(Gtk.Align.START)
+        self._disc_tags_lbl.set_wrap(True)
+        disc_box.append(self._disc_tags_lbl)
+
+        disc_box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+
+        self._disc_desc_lbl = Gtk.Label(label="")
+        self._disc_desc_lbl.set_halign(Gtk.Align.START)
+        self._disc_desc_lbl.set_wrap(True)
+        self._disc_desc_lbl.set_visible(False)
+        disc_box.append(self._disc_desc_lbl)
+
+        compat_lbl = Gtk.Label(label="COMPATIBLE HARDWARE")
+        compat_lbl.add_css_class("muted")
+        compat_lbl.set_halign(Gtk.Align.START)
+        disc_box.append(compat_lbl)
+        self._disc_compat_buf = Gtk.TextBuffer()
+        self._disc_compat_view = Gtk.TextView(buffer=self._disc_compat_buf)
+        self._disc_compat_view.set_editable(False)
+        self._disc_compat_view.set_monospace(True)
+        self._disc_compat_view.add_css_class("log-view")
+        self._disc_compat_view.set_size_request(-1, 100)
+        disc_box.append(self._disc_compat_view)
+
+        self._disc_run_btn = Gtk.Button(label="▶ Run via Developer Image")
+        self._disc_run_btn.add_css_class("suggested-action")
+        self._disc_run_btn.set_halign(Gtk.Align.START)
+        self._disc_run_btn.set_visible(False)
+        self._disc_run_btn.connect("clicked", self._on_disc_run_clicked)
+        disc_box.append(self._disc_run_btn)
+
+        self._disc_hint_lbl = Gtk.Label(label="")
+        self._disc_hint_lbl.add_css_class("muted")
+        self._disc_hint_lbl.set_halign(Gtk.Align.START)
+        self._disc_hint_lbl.set_wrap(True)
+        self._disc_hint_lbl.set_visible(False)
+        disc_box.append(self._disc_hint_lbl)
+
+        disc_scroll.set_child(disc_box)
+        self._stack.add_named(disc_scroll, "discover")
+        self._disc_current_entry = None   # currently displayed CompatEntry
+        self._disc_run_callback = None    # set by caller
+
         # ── Config page ───────────────────────────────────────────────────────
         # Created lazily on first show_config() call to avoid importing GTK
         # widgets before the window is fully constructed.
@@ -1243,6 +1371,61 @@ class MainPanel(Gtk.Box):
     def show_logs(self) -> None:
         """Switch the main content area to the live log view."""
         self._stack.set_visible_child_name("logs")
+
+    def show_discover(self, compat_entry, on_run=None) -> None:
+        """Show the DISCOVER page for a compat-catalog entry."""
+        self._disc_current_entry = compat_entry
+        self._disc_run_callback = on_run
+
+        self._disc_name_lbl.set_markup(f"<b>{compat_entry.display_name}</b>")
+
+        tags = []
+        if compat_entry.family:
+            tags.append(compat_entry.family)
+        tags += compat_entry.tasks or []
+        if compat_entry.model_size:
+            tags.append(compat_entry.model_size)
+        self._disc_tags_lbl.set_text("  ·  ".join(tags) if tags else "")
+
+        desc = compat_entry.model_description or ""
+        self._disc_desc_lbl.set_text(desc)
+        self._disc_desc_lbl.set_visible(bool(desc))
+
+        # Build compatibility table.
+        lines = []
+        sw_stacks: set = set()
+        for c in compat_entry.compatibility:
+            status_icon = {"Supported": "✓", "Experimental": "⚡"}.get(c.status, "✗")
+            sw_str = ", ".join(c.software) if c.software else "?"
+            lines.append(f"  {status_icon}  {c.hardware:12s}  {c.chip_set:12s}  {sw_str}")
+            sw_stacks.update(c.software)
+        self._disc_compat_buf.set_text("\n".join(lines))
+
+        # Show run button for tt-forge / tt-metal if applicable.
+        can_run = bool(sw_stacks & {"tt-forge", "tt-metal"})
+        if can_run:
+            primary_sw = "tt-forge" if "tt-forge" in sw_stacks else "tt-metal"
+            self._disc_run_btn.set_label(f"▶ Run via Developer Image  ({primary_sw})")
+            self._disc_run_btn.set_visible(True)
+            self._disc_hint_lbl.set_visible(False)
+        else:
+            self._disc_run_btn.set_visible(False)
+            self._disc_hint_lbl.set_text(
+                "This model is only available via tt-inference-server. "
+                "It may appear in the model list once the server repo is configured."
+            )
+            self._disc_hint_lbl.set_visible(True)
+
+        self._stack.set_visible_child_name("discover")
+
+    def _on_disc_run_clicked(self, _btn) -> None:
+        entry = self._disc_current_entry
+        if entry and self._disc_run_callback:
+            # Determine the primary software stack.
+            sw_stacks = {sw for c in entry.compatibility for sw in c.software
+                         if c.status != "Not Supported"}
+            primary_sw = "tt-forge" if "tt-forge" in sw_stacks else next(iter(sw_stacks), "tt-forge")
+            self._disc_run_callback(entry.id, primary_sw)
 
     def get_options(self):
         """Return the current LaunchOptions from ConfigPanel, or None if not yet created."""
@@ -1793,6 +1976,7 @@ class MainWindow(Gtk.ApplicationWindow):
         controller.on_tool_result    = self._on_tool_result
         controller.on_running_servers = self._on_running_servers_detected
         controller.on_hardware_status = self._on_hardware_status
+        controller.on_compat_catalog_loaded = self._on_compat_catalog_loaded
 
         # Connect the ↻ chip-telemetry refresh button to the controller.
         self._sidebar._hw_refresh_btn.connect(
@@ -1975,10 +2159,27 @@ class MainWindow(Gtk.ApplicationWindow):
     def _on_catalog_loaded(self, catalog: ModelCatalog, compatible: list) -> None:
         """Populate the sidebar tree and device buttons when the catalog is ready."""
         self._sidebar.load_catalog(catalog, compatible)
+        self._sidebar.on_compat_select = self._on_compat_select
+        # Pass compat catalog if already available (fetched from disk cache).
+        if self._ctrl.compat_catalog:
+            self._sidebar.set_compat_catalog(self._ctrl.compat_catalog)
         branch, sha = self._ctrl.get_repo_git_info()
         self._sidebar.refresh_git_info(branch, sha)
         self._panel.set_ad_select_model_callback(self._sidebar.select_model_by_id)
         self._refresh_ad_unit()
+
+    def _on_compat_select(self, compat_entry) -> None:
+        """Show the DISCOVER info panel for a compat-catalog entry."""
+        self._panel.show_discover(
+            compat_entry,
+            on_run=self._ctrl.launch_dev_image,
+        )
+
+    def _on_compat_catalog_loaded(self, catalog) -> None:
+        """Pass the freshly-fetched compat catalog to the sidebar."""
+        if catalog:
+            self._sidebar.set_compat_catalog(catalog)
+            self._refresh_ad_unit()
 
     # ── User action handlers (called from Sidebar widgets) ────────────────────
 
