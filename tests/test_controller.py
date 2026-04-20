@@ -274,3 +274,60 @@ def test_run_benchmark_emits_bench_progress_and_result():
     assert "Running…" in progress_lines
     assert len(results) == 1
     assert results[0].tier_pass == "PASS"
+
+
+# ── Docker pull progress ──────────────────────────────────────────────────────
+
+def test_pull_done_increments_counter():
+    ctrl, _ = make_controller()
+    ctrl._state = ServerState.PULLING_IMAGE
+    assert ctrl._pull_layers_done == 0
+    ctrl._update_pull_progress("abc123def456: Pull complete")
+    assert ctrl._pull_layers_done == 1
+
+
+def test_pull_downloading_updates_dict():
+    ctrl, _ = make_controller()
+    ctrl._state = ServerState.PULLING_IMAGE
+    line = "abc123def456: Downloading [==>  ] 123.4MB/1.5GB"
+    result = ctrl._update_pull_progress(line)
+    assert "abc123def456" in ctrl._pull_downloading
+    cur, tot = ctrl._pull_downloading["abc123def456"]
+    assert abs(cur - 123.4e6) < 1e5
+    assert abs(tot - 1.5e9) < 1e7
+
+
+def test_pull_summary_includes_layers_done():
+    ctrl, _ = make_controller()
+    ctrl._state = ServerState.PULLING_IMAGE
+    ctrl._update_pull_progress("abc123def456: Pull complete")
+    ctrl._update_pull_progress("def456abc123: Pull complete")
+    summary = ctrl._update_pull_progress("no pull here")
+    assert "2 layers done" in summary
+
+
+def test_pull_summary_empty_before_any_progress():
+    ctrl, _ = make_controller()
+    ctrl._state = ServerState.PULLING_IMAGE
+    summary = ctrl._update_pull_progress("Pulling from ghcr.io/tenstorrent/tt-inference-server")
+    assert summary == ""
+
+
+def test_pull_summary_emitted_as_substage_via_handle_log():
+    ctrl, view = make_controller()
+    ctrl._state = ServerState.PULLING_IMAGE
+    ctrl._handle_log_line("abc123def456: Pull complete")
+    substages = [s for s in view.substages if s[0] == "⬇"]
+    assert substages, "Expected pull substage to be emitted"
+    assert "1 layers done" in substages[-1][1]
+
+
+def test_pull_counters_reset_on_entering_pulling_state():
+    ctrl, _ = make_controller()
+    # Simulate partial pull state, then a fresh PULLING_IMAGE transition from LAUNCHING
+    ctrl._state = ServerState.LAUNCHING
+    ctrl._pull_layers_done = 5
+    ctrl._pull_downloading = {"abc": (1e6, 2e6)}
+    ctrl._transition(ServerState.PULLING_IMAGE)
+    assert ctrl._pull_layers_done == 0
+    assert ctrl._pull_downloading == {}

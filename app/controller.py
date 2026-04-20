@@ -12,6 +12,7 @@ Threading discipline:
 """
 import json
 import os
+import re
 import socket
 import subprocess
 import threading
@@ -231,6 +232,8 @@ class AppController:
         self._last_error_hint: str = ""   # last error-ish log line, shown in ERROR banner
         self._compat_catalog: Optional[CompatCatalog] = None
         self._dev_launcher = DevImageLauncher()
+        self._pull_layers_done: int = 0   # layers that reached "Pull complete"
+        self._pull_downloading: dict = {}  # layer_id → (current_bytes, total_bytes)
 
         # Fetch compatibility catalog in the background — updates _compat_catalog when done.
         def _on_compat(cat: Optional[CompatCatalog]) -> None:
@@ -677,10 +680,9 @@ class AppController:
         """Forward a log line to views and update state/substage from it."""
         self._emit("on_log_line", line)
         # Keep the last actionable error message for the ERROR state banner.
-        import re as _re
-        if _re.search(r'ERROR|failed|✗|⚠.*[Cc]ontainer|exit.*code\s*[1-9]', line):
+        if re.search(r'ERROR|failed|✗|⚠.*[Cc]ontainer|exit.*code\s*[1-9]', line):
             stripped = line.strip()
-            if stripped and not _re.search(r'error_handler|on_error|ErrorHandler', stripped):
+            if stripped and not re.search(r'error_handler|on_error|ErrorHandler', stripped):
                 self._last_error_hint = stripped[:120]
         new_state = self._server_mgr.parser.feed(line)
         if new_state:
@@ -699,6 +701,11 @@ class AppController:
                 dots = ("  ".join("●" if i == self._tour_card_idx else "○"
                                   for i in range(total)) if total > 1 else "")
                 self._emit("on_substage", stepper, left, right, dots)
+
+        elif self._state == ServerState.PULLING_IMAGE:
+            pull_summary = self._update_pull_progress(line)
+            if pull_summary:
+                self._emit("on_substage", "⬇", pull_summary, "", "")
 
     def _on_server_state(self, state: ServerState) -> None:
         """Callback from ServerManager when a state change is detected in the log."""
@@ -756,7 +763,10 @@ class AppController:
 
         self._emit("on_state_changed", state, info)
 
-        if state == ServerState.LAUNCHING:
+        if state == ServerState.PULLING_IMAGE:
+            self._pull_layers_done = 0
+            self._pull_downloading.clear()
+        elif state == ServerState.LAUNCHING:
             # Persist launch metadata for cross-engine reset warnings and reboot detection.
             self._last_error_hint = ""   # fresh slate for the new run
             if self._current_entry:
@@ -884,6 +894,46 @@ class AppController:
             self._emit("on_progress", frac, f"~{ts} remaining · {est.source}")
         else:
             self._emit("on_progress", -1.0, "")
+
+    # Docker pull progress ──────────────────────────────────────────────────────
+
+    _RE_PULL_LAYER = re.compile(
+        r'^([a-f0-9]{12}):\s+Downloading\s.*?(\d+(?:\.\d+)?)\s*(kB|MB|GB)\s*/\s*(\d+(?:\.\d+)?)\s*(kB|MB|GB)',
+        re.I,
+    )
+    _RE_PULL_DONE  = re.compile(r'Pull complete', re.I)
+    _SCALE = {"kb": 1e3, "mb": 1e6, "gb": 1e9}
+
+    def _update_pull_progress(self, line: str) -> str:
+        """Parse a Docker pull log line, update counters, return a progress summary or ''."""
+        if self._RE_PULL_DONE.search(line):
+            self._pull_layers_done += 1
+        m = self._RE_PULL_LAYER.match(line)
+        if m:
+            lid, cur_v, cur_u, tot_v, tot_u = m.groups()
+            cur_bytes = float(cur_v) * self._SCALE.get(cur_u.lower(), 1)
+            tot_bytes = float(tot_v) * self._SCALE.get(tot_u.lower(), 1)
+            self._pull_downloading[lid] = (cur_bytes, tot_bytes)
+        if not (self._pull_layers_done or self._pull_downloading):
+            return ""
+        active = list(self._pull_downloading.values())
+        cur_total = sum(c for c, _ in active)
+        size_total = sum(t for _, t in active)
+
+        def _fmt(b: float) -> str:
+            if b >= 1e9:
+                return f"{b/1e9:.1f} GB"
+            if b >= 1e6:
+                return f"{b/1e6:.0f} MB"
+            return f"{b/1e3:.0f} kB"
+
+        parts = []
+        if self._pull_layers_done:
+            parts.append(f"{self._pull_layers_done} layers done")
+        if active:
+            pct = int(100 * cur_total / size_total) if size_total else 0
+            parts.append(f"downloading {_fmt(cur_total)} / {_fmt(size_total)} ({pct}%)")
+        return "  ·  ".join(parts) if parts else ""
 
     def _build_stepper_text(self, substage: str) -> str:
         """Build a pipeline stepper string marking completed (✓), active (●), and pending (○) stages."""
