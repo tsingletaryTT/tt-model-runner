@@ -66,7 +66,7 @@ class ToolPane(Widget):
             yield Label("PROMPT")
             yield Input(placeholder="What's the weather in Austin?",
                         id="tool-prompt")
-            yield Button("▶ Send", id="tool-send-btn", variant="success")
+            yield Button("Send", id="tool-send-btn", variant="success")
             yield Label("⚠ Tool use was not enabled at launch. Re-launch with tool use on.",
                         id="tool-hint")
             yield Label("ROUND-TRIP")

@@ -32,8 +32,8 @@ class ImagesPane(Widget):
 
     def compose(self) -> ComposeResult:
         with Widget(id="images-btn-row"):
-            yield Button("↺ Refresh", id="images-refresh-btn", variant="default")
-            yield Button("✕ Prune Dangling", id="images-prune-btn", variant="default")
+            yield Button("Refresh", id="images-refresh-btn", variant="default")
+            yield Button("Prune Dangling", id="images-prune-btn", variant="warning")
         yield Static("", id="images-status")
         yield Label("TT Docker Images")
         yield DataTable(id="images-table")

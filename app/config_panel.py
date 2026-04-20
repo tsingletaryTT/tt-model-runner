@@ -161,7 +161,7 @@ class ConfigPanel(Gtk.Box):
         # Download row — shown for all models; ⬇ button triggers HF download
         dl_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         dl_row.set_margin_bottom(6)
-        self._dl_btn = Gtk.Button(label="⬇  Download to HF cache")
+        self._dl_btn = Gtk.Button(label="Download to HF cache")
         self._dl_btn.set_hexpand(True)
         self._dl_btn.connect("clicked", self._on_download_clicked)
         dl_row.append(self._dl_btn)
@@ -190,7 +190,7 @@ class ConfigPanel(Gtk.Box):
         self._save_profile_btn = Gtk.Button(label="Save…")
         self._save_profile_btn.connect("clicked", self._on_save_profile)
         profile_bar.append(self._save_profile_btn)
-        self._del_profile_btn = Gtk.Button(label="✕")
+        self._del_profile_btn = Gtk.Button(icon_name="edit-delete-symbolic")
         self._del_profile_btn.add_css_class("destructive-action")
         self._del_profile_btn.connect("clicked", self._on_delete_profile)
         self._del_profile_btn.set_sensitive(False)
@@ -259,11 +259,9 @@ class ConfigPanel(Gtk.Box):
         parser_lbl = Gtk.Label(label="Parser:")
         parser_lbl.add_css_class("muted")
         tool_row.append(parser_lbl)
-        self._parser_combo = Gtk.ComboBoxText()
-        for p in _PARSERS:
-            self._parser_combo.append_text(p)
-        self._parser_combo.set_active(0)
-        self._parser_combo.connect("changed", self._on_parser_changed)
+        self._parser_combo = Gtk.DropDown.new_from_strings(_PARSERS)
+        self._parser_combo.set_selected(0)
+        self._parser_combo.connect("notify::selected", self._on_parser_changed)
         tool_row.append(self._parser_combo)
         self._auto_tool_check = Gtk.CheckButton(label="Auto tool choice")
         self._auto_tool_check.connect("toggled", self._on_any_change)
@@ -323,7 +321,8 @@ class ConfigPanel(Gtk.Box):
         self._docker_combo.set_hexpand(True)
         self._docker_combo.connect("changed", self._on_docker_changed)
         docker_row.append(self._docker_combo)
-        refresh_btn = Gtk.Button(label="⟳")
+        refresh_btn = Gtk.Button(icon_name="view-refresh-symbolic")
+        refresh_btn.set_tooltip_text("Refresh Docker image list")
         refresh_btn.connect("clicked", self._on_docker_refresh)
         docker_row.append(refresh_btn)
         self._docker_status = Gtk.Label(label="")
@@ -510,7 +509,7 @@ class ConfigPanel(Gtk.Box):
         self._arch_ctx_limit = 0
         self._ctx_user_edited = False
         self._ctx_warn_lbl.set_visible(False)
-        self._dl_btn.set_label("⬇  Download to HF cache")
+        self._dl_btn.set_label("Download to HF cache")
         self._dl_btn.set_sensitive(True)
         self._dl_progress.set_visible(False)
         self._scan_arch_async(entry)
@@ -626,8 +625,9 @@ class ConfigPanel(Gtk.Box):
             dev_stacks = [sw for sw in catalog_stacks if sw in on_disk]
             # Show all catalog stacks but disable missing ones (tooltip explains)
             for sw in catalog_stacks:
-                btn = Gtk.Button(label=f"▶  {sw}")
+                btn = Gtk.Button(label=sw)
                 if sw in dev_stacks:
+                    btn.add_css_class("suggested-action")
                     btn.set_tooltip_text(f"Launch via tt-developer-image using {sw}")
                     btn.connect("clicked", self._on_dev_launch_clicked, compat_entry.id, sw)
                 else:
@@ -648,7 +648,7 @@ class ConfigPanel(Gtk.Box):
     def _on_download_clicked(self, _btn) -> None:
         if self._entry and self.on_download:
             self._dl_btn.set_sensitive(False)
-            self._dl_btn.set_label("⬇  Downloading…")
+            self._dl_btn.set_label("Downloading…")
             self._dl_progress.set_visible(True)
             self._dl_progress.set_fraction(0.0)
             self.on_download(self._entry.hf_model_repo)
@@ -659,7 +659,7 @@ class ConfigPanel(Gtk.Box):
             return
         if fraction < 0:
             # Error
-            self._dl_btn.set_label("⬇  Download failed — retry?")
+            self._dl_btn.set_label("Download failed — retry?")
             self._dl_btn.set_sensitive(True)
             self._dl_progress.set_visible(False)
         elif fraction >= 1.0:
@@ -785,9 +785,9 @@ class ConfigPanel(Gtk.Box):
         self._tool_toggle.set_active(self._options.tool_use_enabled)
         parser = self._options.tool_call_parser
         if parser and parser in _PARSERS:
-            self._parser_combo.set_active(_PARSERS.index(parser))
+            self._parser_combo.set_selected(_PARSERS.index(parser))
         else:
-            self._parser_combo.set_active(0)
+            self._parser_combo.set_selected(0)
         self._auto_tool_check.set_active(self._options.enable_auto_tool_choice)
         tool_detail_visible = self._options.tool_use_enabled
         self._parser_combo.set_visible(tool_detail_visible)
@@ -859,14 +859,15 @@ class ConfigPanel(Gtk.Box):
         if enabled and self._entry and not self._options.tool_call_parser:
             self._options.tool_call_parser = detect_tool_parser(self._entry)
             idx = _PARSERS.index(self._options.tool_call_parser) if self._options.tool_call_parser in _PARSERS else 0
-            self._parser_combo.set_active(idx)
+            self._parser_combo.set_selected(idx)
         self._deselect_use_case_chip()
         self._schedule_preview_update()
 
-    def _on_parser_changed(self, combo: Gtk.ComboBoxText) -> None:
+    def _on_parser_changed(self, dropdown, _pspec) -> None:
         if self._inhibit_signals:
             return
-        self._options.tool_call_parser = combo.get_active_text() or ""
+        item = dropdown.get_selected_item()
+        self._options.tool_call_parser = item.get_string() if item else ""
         self._schedule_preview_update()
 
     def _on_any_change(self, widget) -> None:
@@ -1039,7 +1040,8 @@ class ConfigPanel(Gtk.Box):
         opts.disable_trace_capture = self._no_trace_check.get_active()
         opts.tool_use_enabled = self._tool_toggle.get_active()
         opts.enable_auto_tool_choice = self._auto_tool_check.get_active()
-        opts.tool_call_parser = self._parser_combo.get_active_text() or ""
+        _item = self._parser_combo.get_selected_item()
+        opts.tool_call_parser = _item.get_string() if _item else ""
 
     def _deselect_use_case_chip(self) -> None:
         """Deselect all use-case chips (user edited a field that contradicts the preset)."""

@@ -53,10 +53,10 @@ class BenchPane(Widget):
             yield Select(_MODES, value="smoke-test", id="bench-mode")
             yield Checkbox("Concurrency sweeps", id="bench-sweeps")
             yield Checkbox("Percentile report",  id="bench-pct")
-            yield Button("▶ Run Benchmark", id="bench-run-btn", variant="success")
+            yield Button("Run Benchmark", id="bench-run-btn", variant="success")
         with Widget(id="bench-hist-row"):
-            yield Button("⬇ Export CSV", id="bench-csv-btn", variant="default")
-            yield Button("✕ Clear History", id="bench-clear-btn", variant="default")
+            yield Button("Export CSV", id="bench-csv-btn", variant="default")
+            yield Button("Clear History", id="bench-clear-btn", variant="warning")
         yield Label("", id="bench-stats", markup=True)
         yield Label("LIVE OUTPUT")
         yield RichLog(id="bench-live-log", highlight=False, markup=False)

@@ -41,9 +41,18 @@ _CSS = b"""
 @define-color tt_warning     #F4C471;
 
 window, .view { background-color: @tt_bg_darkest; color: @tt_text; }
-* { font-family: "Noto Sans", "Segoe UI", sans-serif; font-size: 13px; color: @tt_text; }
-.section-label { color: @tt_accent; font-weight: bold; font-size: 11px; }
+/* Scope font to window so it inherits naturally — avoid * which bleeds
+   color/font into system-managed popups, tooltips, and IME overlays. */
+window { font-family: "Noto Sans", "Segoe UI", sans-serif; font-size: 13px; }
+label, checkbutton > label, radiobutton > label,
+expander > title > label { color: @tt_text; }
+.section-label { color: @tt_accent; font-weight: bold; font-size: 11px; letter-spacing: 0.5px; }
 .muted { color: @tt_text_muted; font-size: 11px; }
+
+/* Semantic status classes — use add_css_class / set_css_classes instead of inline Pango markup */
+.status-ok    { color: @tt_success; }
+.status-warn  { color: @tt_warning; }
+.status-error { color: @tt_error; }
 
 entry, textview {
     background-color: @tt_bg_dark; color: @tt_text;
@@ -57,6 +66,11 @@ button {
 }
 button:hover { background-color: @tt_border; border-color: @tt_accent; }
 button:disabled { color: @tt_text_muted; border-color: @tt_bg_dark; }
+
+/* Flat / icon-only buttons should not inherit the bordered button style */
+button.flat { background: none; border: none; padding: 4px; border-radius: 4px; color: @tt_text; }
+button.flat:hover { background-color: alpha(@tt_accent, 0.12); border: none; }
+button.flat:disabled { background: none; border: none; color: @tt_text_muted; }
 
 .launch-btn {
     background-color: @tt_accent; color: @tt_bg_darkest;
@@ -93,7 +107,12 @@ button:disabled { color: @tt_text_muted; border-color: @tt_bg_dark; }
     background-color: @tt_bg_panel;
     font-family: "Noto Sans Mono", "DejaVu Sans Mono", monospace;
     font-size: 11px;
+    color: @tt_text;
 }
+
+/* Log level filter buttons (DEBUG / INFO / WARN / ERROR) */
+.log-filter-btn { padding: 2px 6px; font-size: 11px; min-height: 0; }
+.log-filter-btn:checked { background-color: @tt_bg_dark; border-color: @tt_accent; color: @tt_accent; }
 
 separator { background-color: @tt_border; min-height: 1px; min-width: 1px; }
 treeview { background-color: @tt_bg_panel; }

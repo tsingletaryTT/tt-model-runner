@@ -130,7 +130,8 @@ class Sidebar(Gtk.Box):
         self._repo_entry.set_hexpand(True)
         repo_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
         repo_row.append(self._repo_entry)
-        self._pull_btn = Gtk.Button(label="↑")
+        self._pull_btn = Gtk.Button(icon_name="software-update-available-symbolic")
+        self._pull_btn.add_css_class("flat")
         self._pull_btn.set_tooltip_text("git pull — update inference-server repo to latest")
         self._pull_btn.connect("clicked", lambda _: self._on_pull() if self._on_pull else None)
         repo_row.append(self._pull_btn)
@@ -151,12 +152,12 @@ class Sidebar(Gtk.Box):
         ml = Gtk.Label(label="MODEL"); ml.add_css_class("section-label")
         ml.set_halign(Gtk.Align.START); ml.set_hexpand(True)
         ml_header.append(ml)
-        self._expand_all_btn = Gtk.Button(label="⊞")
+        self._expand_all_btn = Gtk.Button(icon_name="list-add-symbolic")
         self._expand_all_btn.add_css_class("flat")
         self._expand_all_btn.set_tooltip_text("Expand all model groups")
         self._expand_all_btn.connect("clicked", lambda _: self._tree_view.expand_all())
         ml_header.append(self._expand_all_btn)
-        self._collapse_all_btn = Gtk.Button(label="⊟")
+        self._collapse_all_btn = Gtk.Button(icon_name="list-remove-symbolic")
         self._collapse_all_btn.add_css_class("flat")
         self._collapse_all_btn.set_tooltip_text("Collapse all model groups")
         self._collapse_all_btn.connect("clicked", lambda _: self._tree_view.collapse_all())
@@ -232,8 +233,8 @@ class Sidebar(Gtk.Box):
         self._port_entry.connect("changed", self._on_port_changed)
         pbox.append(self._port_entry)
         self._port_indicator = Gtk.Label(label="●")
+        self._port_indicator.add_css_class("muted")
         self._port_indicator.set_tooltip_text("Port availability")
-        self._port_indicator.set_markup("<span foreground='#607D8B'>●</span>")
         pbox.append(self._port_indicator)
         self.append(pbox)
         self._port_check_timer: Optional[int] = None
@@ -242,7 +243,7 @@ class Sidebar(Gtk.Box):
         # Launch button
         btnbox = Gtk.Box(); btnbox.set_margin_start(8); btnbox.set_margin_end(8)
         btnbox.set_margin_top(4); btnbox.set_margin_bottom(4)
-        self._launch_btn = Gtk.Button(label="▶  Launch Server")
+        self._launch_btn = Gtk.Button(label="Launch Server")
         self._launch_btn.add_css_class("launch-btn")
         self._launch_btn.set_hexpand(True)
         self._launch_btn.connect("clicked", self._on_launch_clicked)
@@ -260,7 +261,7 @@ class Sidebar(Gtk.Box):
         hw_lbl.set_halign(Gtk.Align.START)
         hw_lbl.set_hexpand(True)
         hw_header.append(hw_lbl)
-        self._hw_refresh_btn = Gtk.Button(label="↻")
+        self._hw_refresh_btn = Gtk.Button(icon_name="view-refresh-symbolic")
         self._hw_refresh_btn.add_css_class("flat")
         self._hw_refresh_btn.set_tooltip_text("Refresh chip telemetry (tt-smi -s)")
         self._hw_refresh_btn.connect("clicked", self._on_hw_refresh_clicked)
@@ -270,12 +271,13 @@ class Sidebar(Gtk.Box):
         self._chip_grid = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
         self._chip_grid.set_visible(False)
         hw_box.append(self._chip_grid)
-        self._reset_btn = Gtk.Button(label="↺  Reset  (tt-smi -r)")
+        self._reset_btn = Gtk.Button(label="Reset Devices")
         self._reset_btn.add_css_class("destructive-action")
         self._reset_btn.set_hexpand(True)
         self._reset_btn.set_tooltip_text(
-            "Reset all TT devices. Required when switching between model families "
-            "(e.g. LLM → video)."
+            "tt-smi -r: soft-reset all TT devices.\n"
+            "Required when switching between model families (e.g. LLM → video) "
+            "or to recover from a hung/error state."
         )
         self._reset_btn.connect("clicked", self._on_reset_clicked)
         hw_box.append(self._reset_btn)
@@ -291,13 +293,13 @@ class Sidebar(Gtk.Box):
         docker_hdr_lbl.add_css_class("section-label")
         docker_hdr_lbl.set_hexpand(True)
         docker_hdr.append(docker_hdr_lbl)
-        self._docker_refresh_btn = Gtk.Button(label="↻")
+        self._docker_refresh_btn = Gtk.Button(icon_name="view-refresh-symbolic")
         self._docker_refresh_btn.add_css_class("flat")
         self._docker_refresh_btn.set_tooltip_text("Refresh local image list")
         self._docker_refresh_btn.connect(
             "clicked", lambda _: self._on_docker_refresh() if self._on_docker_refresh else None)
         docker_hdr.append(self._docker_refresh_btn)
-        self._docker_prune_btn = Gtk.Button(label="🗑")
+        self._docker_prune_btn = Gtk.Button(icon_name="user-trash-symbolic")
         self._docker_prune_btn.add_css_class("flat")
         self._docker_prune_btn.set_tooltip_text("Prune unused Docker images (docker image prune -f)")
         self._docker_prune_btn.connect(
@@ -336,7 +338,7 @@ class Sidebar(Gtk.Box):
         self._hf_entry.connect("icon-press", lambda e, pos: e.set_visibility(not e.get_visibility()))
         self._hf_entry.connect("activate", lambda _: self._save_hf_token())
         hf_entry_row.append(self._hf_entry)
-        hf_save_btn = Gtk.Button(label="✓")
+        hf_save_btn = Gtk.Button(icon_name="document-save-symbolic")
         hf_save_btn.set_tooltip_text("Save HF token")
         hf_save_btn.connect("clicked", lambda _: self._save_hf_token())
         hf_entry_row.append(hf_save_btn)
@@ -386,13 +388,13 @@ class Sidebar(Gtk.Box):
     def _set_port_indicator(self, in_use: Optional[bool]) -> None:
         """Update port indicator: None=unknown, False=free, True=in use."""
         if in_use is None:
-            self._port_indicator.set_markup("<span foreground='#607D8B'>●</span>")
+            self._port_indicator.set_css_classes(["muted"])
             self._port_indicator.set_tooltip_text("Invalid port")
         elif in_use:
-            self._port_indicator.set_markup("<span foreground='#FF6B6B'>●</span>")
+            self._port_indicator.set_css_classes(["status-error"])
             self._port_indicator.set_tooltip_text("Port in use")
         else:
-            self._port_indicator.set_markup("<span foreground='#27AE60'>●</span>")
+            self._port_indicator.set_css_classes(["status-ok"])
             self._port_indicator.set_tooltip_text("Port free")
 
     def _trigger_repo_change(self):
@@ -436,15 +438,16 @@ class Sidebar(Gtk.Box):
     def _update_hf_status(self):
         token = self._find_hf_token()
         if token:
-            # Set in env so the running process also benefits immediately
             os.environ["HF_TOKEN"] = token
             short = f"…{token[-4:]}" if len(token) > 4 else "set"
-            self._hf_status_label.set_markup(f"<span foreground='#27AE60'>✓ {short}</span>")
+            self._hf_status_label.set_text(f"✓ {short}")
+            self._hf_status_label.set_css_classes(["hf-ok"])
             if not self._locked:
                 self._launch_btn.set_sensitive(True)
             self._launch_btn.set_tooltip_text("")
         else:
-            self._hf_status_label.set_markup("<span foreground='#FF6B6B'>not set</span>")
+            self._hf_status_label.set_text("not set")
+            self._hf_status_label.set_css_classes(["hf-warn"])
             self._launch_btn.set_sensitive(False)
             self._launch_btn.set_tooltip_text("Paste HuggingFace token above to enable launch")
 
@@ -804,7 +807,7 @@ class Sidebar(Gtk.Box):
         self._pull_btn.set_sensitive(not locked)
 
         if locked:
-            self._launch_btn.set_label("■  Stop Server")
+            self._launch_btn.set_label("Stop Server")
             self._launch_btn.set_css_classes(["stop-btn"])
             self._launch_btn.set_sensitive(True)
             if self._launch_connected_to_launch:
@@ -812,7 +815,7 @@ class Sidebar(Gtk.Box):
                 self._launch_btn.connect("clicked", self._on_stop_clicked)
                 self._launch_connected_to_launch = False
         else:
-            self._launch_btn.set_label("▶  Launch Server")
+            self._launch_btn.set_label("Launch Server")
             self._launch_btn.set_css_classes(["launch-btn"])
             if not self._launch_connected_to_launch:
                 self._launch_btn.disconnect_by_func(self._on_stop_clicked)
@@ -991,7 +994,7 @@ class AdUnit(Gtk.Box):
         inner.append(text_box)
 
         # Rail-link button — visible only for cards with a model_id
-        self._find_btn = Gtk.Button(label="→ Rail")
+        self._find_btn = _make_icon_text_btn("go-jump-symbolic", "Rail")
         self._find_btn.add_css_class("flat")
         self._find_btn.set_valign(Gtk.Align.CENTER)
         self._find_btn.set_visible(False)
@@ -999,8 +1002,8 @@ class AdUnit(Gtk.Box):
         self._find_btn.connect("clicked", self._on_find_clicked)
         inner.append(self._find_btn)
 
-        # Advance button — shows ▶ when paused, › when playing
-        self._adv_btn = Gtk.Button(label="›")
+        # Advance button — shows media-playback-start when paused, go-next when playing
+        self._adv_btn = Gtk.Button(icon_name="go-next-symbolic")
         self._adv_btn.add_css_class("flat")
         self._adv_btn.set_valign(Gtk.Align.CENTER)
         self._adv_btn.connect("clicked", lambda _: self._advance())
@@ -1025,7 +1028,7 @@ class AdUnit(Gtk.Box):
         self._cards = cards or []
         self._idx = 0
         self._paused = False
-        self._adv_btn.set_label("›")
+        self._adv_btn.set_icon_name("go-next-symbolic")
         self._show_current()
         self._restart_timer()
 
@@ -1053,7 +1056,7 @@ class AdUnit(Gtk.Box):
         if self._cards:
             self._idx = (self._idx + 1) % len(self._cards)
         self._paused = False
-        self._adv_btn.set_label("›")
+        self._adv_btn.set_icon_name("go-next-symbolic")
         self._show_current()
         self._restart_timer()
 
@@ -1070,14 +1073,16 @@ class AdUnit(Gtk.Box):
 
     def _on_body_pressed(self, gesture, n_press, x, y) -> None:
         if not self._paused:
-            # First click: pause — stop the timer, signal paused state via button label
+            # First click: pause — stop the timer, signal paused state via button icon
             self._paused = True
             if self._timer is not None:
                 GLib.source_remove(self._timer)
                 self._timer = None
-            self._adv_btn.set_label("▶")
+            self._adv_btn.set_icon_name("media-playback-start-symbolic")
         else:
             # Second click: advance to next card + resume auto-advance
+            self._adv_btn.set_icon_name("go-next-symbolic")
+            self._paused = False
             self._advance()
 
     def _on_find_clicked(self, _btn) -> None:
@@ -1085,8 +1090,21 @@ class AdUnit(Gtk.Box):
             self._on_select_model(self._current_model_id)
 
 
+def _make_icon_text_btn(icon_name: str, label: str) -> Gtk.Button:
+    """Return a Gtk.Button with a symbolic icon followed by a short text label."""
+    btn = Gtk.Button()
+    box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+    box.append(Gtk.Image.new_from_icon_name(icon_name))
+    lbl = Gtk.Label(label=label)
+    box.append(lbl)
+    btn.set_child(box)
+    return btn
+
+
 class MainPanel(Gtk.Box):
     """Right panel: status banner, sub-stage stepper, progress bar, tour panel, log view."""
+
+    _make_icon_text_btn = staticmethod(_make_icon_text_btn)
 
     def __init__(self):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
@@ -1122,14 +1140,14 @@ class MainPanel(Gtk.Box):
         banner.append(self._uptime_label)
 
         # "Restart" button — visible when READY or ERROR (and previous entry exists)
-        self._restart_btn = Gtk.Button(label="↺")
+        self._restart_btn = Gtk.Button(icon_name="view-refresh-symbolic")
         self._restart_btn.add_css_class("flat")
         self._restart_btn.set_tooltip_text("Restart server with same model and options")
         self._restart_btn.set_visible(False)
         banner.append(self._restart_btn)
 
         # "Copy curl" button — only visible when READY
-        self._copy_curl_btn = Gtk.Button(label="⧉ curl")
+        self._copy_curl_btn = self._make_icon_text_btn("edit-copy-symbolic", "curl")
         self._copy_curl_btn.add_css_class("flat")
         self._copy_curl_btn.set_tooltip_text("Copy a test curl command to clipboard")
         self._copy_curl_btn.set_visible(False)
@@ -1137,7 +1155,7 @@ class MainPanel(Gtk.Box):
         banner.append(self._copy_curl_btn)
 
         # "Open API" button — opens http://localhost:{port}/docs in default browser
-        self._open_api_btn = Gtk.Button(label="⤤ API")
+        self._open_api_btn = self._make_icon_text_btn("web-browser-symbolic", "API")
         self._open_api_btn.add_css_class("flat")
         self._open_api_btn.set_tooltip_text("Open API explorer in default browser")
         self._open_api_btn.set_visible(False)
@@ -1145,7 +1163,7 @@ class MainPanel(Gtk.Box):
         banner.append(self._open_api_btn)
 
         # Star/unstar toggle — visible when a model is selected
-        self._star_btn = Gtk.Button(label="☆")
+        self._star_btn = Gtk.Button(icon_name="non-starred-symbolic")
         self._star_btn.add_css_class("flat")
         self._star_btn.set_tooltip_text("Pin/unpin this model to Starred")
         self._star_btn.set_visible(False)
@@ -1306,7 +1324,7 @@ class MainPanel(Gtk.Box):
         self._disc_compat_view.set_size_request(-1, 100)
         disc_box.append(self._disc_compat_view)
 
-        self._disc_run_btn = Gtk.Button(label="▶ Run via Developer Image")
+        self._disc_run_btn = Gtk.Button(label="Run via Developer Image")
         self._disc_run_btn.add_css_class("suggested-action")
         self._disc_run_btn.set_halign(Gtk.Align.START)
         self._disc_run_btn.set_visible(False)
@@ -1355,25 +1373,26 @@ class MainPanel(Gtk.Box):
         self._log_count_lbl.set_hexpand(True)
         self._log_count_lbl.set_halign(Gtk.Align.END)
         filter_bar.append(self._log_count_lbl)
-        self._jump_error_btn = Gtk.Button(label="↓ Error")
+        self._jump_error_btn = self._make_icon_text_btn("go-down-symbolic", "Error")
         self._jump_error_btn.add_css_class("flat")
         self._jump_error_btn.set_tooltip_text("Jump to last ERROR line in log")
         self._jump_error_btn.set_visible(False)
         self._jump_error_btn.connect("clicked", self._on_jump_to_error)
         filter_bar.append(self._jump_error_btn)
-        self._save_log_btn = Gtk.Button(label="⬇ Save")
+        self._save_log_btn = self._make_icon_text_btn("document-save-symbolic", "Save")
         self._save_log_btn.add_css_class("flat")
         self._save_log_btn.set_tooltip_text("Save log to file")
         self._save_log_btn.connect("clicked", self._on_save_log)
         filter_bar.append(self._save_log_btn)
 
-        self._copy_log_btn = Gtk.Button(label="⎘ Copy")
+        self._copy_log_btn = self._make_icon_text_btn("edit-copy-symbolic", "Copy")
         self._copy_log_btn.add_css_class("flat")
         self._copy_log_btn.set_tooltip_text("Copy selected text, or all visible log lines (Ctrl+A then Ctrl+C)")
         self._copy_log_btn.connect("clicked", self._on_copy_log)
         filter_bar.append(self._copy_log_btn)
 
-        self._ts_btn = Gtk.ToggleButton(label="🕐")
+        self._ts_btn = Gtk.ToggleButton()
+        self._ts_btn.set_child(Gtk.Image.new_from_icon_name("preferences-system-time-symbolic"))
         self._ts_btn.add_css_class("flat")
         self._ts_btn.set_tooltip_text("Toggle timestamps on log lines")
         self._ts_btn.connect("toggled", self._on_ts_toggled)
@@ -1482,7 +1501,7 @@ class MainPanel(Gtk.Box):
         self._tool_prompt_entry = Gtk.Entry()
         self._tool_prompt_entry.set_placeholder_text("What's the weather in Austin?")
         right_col.append(self._tool_prompt_entry)
-        self._tool_send_btn = Gtk.Button(label="▶ Send")
+        self._tool_send_btn = Gtk.Button(label="Send")
         self._tool_send_btn.add_css_class("suggested-action")
         right_col.append(self._tool_send_btn)
         output_lbl = Gtk.Label(label="ROUND-TRIP")
@@ -1513,16 +1532,15 @@ class MainPanel(Gtk.Box):
         mode_lbl = Gtk.Label(label="Mode:")
         mode_lbl.add_css_class("muted")
         run_cfg_box.append(mode_lbl)
-        self._bench_mode_combo = Gtk.ComboBoxText()
-        for m in ["smoke-test", "ci-nightly", "ci-long"]:
-            self._bench_mode_combo.append_text(m)
-        self._bench_mode_combo.set_active(0)
+        self._bench_mode_combo = Gtk.DropDown.new_from_strings(
+            ["smoke-test", "ci-nightly", "ci-long"]
+        )
         run_cfg_box.append(self._bench_mode_combo)
         self._bench_sweeps_check = Gtk.CheckButton(label="Concurrency sweeps")
         run_cfg_box.append(self._bench_sweeps_check)
         self._bench_pct_check = Gtk.CheckButton(label="Percentile report")
         run_cfg_box.append(self._bench_pct_check)
-        self._bench_run_btn = Gtk.Button(label="▶ Run Benchmark")
+        self._bench_run_btn = Gtk.Button(label="Run Benchmark")
         self._bench_run_btn.add_css_class("suggested-action")
         run_cfg_box.append(self._bench_run_btn)
         bench_box.append(run_cfg_box)
@@ -1566,12 +1584,12 @@ class MainPanel(Gtk.Box):
         hist_lbl.set_halign(Gtk.Align.START)
         hist_lbl.set_hexpand(True)
         hist_header.append(hist_lbl)
-        self._bench_csv_btn = Gtk.Button(label="⬇ CSV")
+        self._bench_csv_btn = self._make_icon_text_btn("document-save-symbolic", "CSV")
         self._bench_csv_btn.add_css_class("flat")
         self._bench_csv_btn.set_tooltip_text("Export benchmark history as CSV")
         self._bench_csv_btn.connect("clicked", self._on_bench_export_csv)
         hist_header.append(self._bench_csv_btn)
-        self._bench_clear_btn = Gtk.Button(label="✕ Clear")
+        self._bench_clear_btn = self._make_icon_text_btn("edit-clear-symbolic", "Clear")
         self._bench_clear_btn.add_css_class("flat")
         self._bench_clear_btn.set_tooltip_text("Clear benchmark history")
         self._bench_clear_btn.connect("clicked", self._on_bench_clear_history)
@@ -1655,7 +1673,7 @@ class MainPanel(Gtk.Box):
         can_run = bool(sw_stacks & {"tt-forge", "tt-metal"})
         if can_run:
             primary_sw = "tt-forge" if "tt-forge" in sw_stacks else "tt-metal"
-            self._disc_run_btn.set_label(f"▶ Run via Developer Image  ({primary_sw})")
+            self._disc_run_btn.set_label(f"Run via Developer Image  ({primary_sw})")
             self._disc_run_btn.set_visible(True)
             self._disc_hint_lbl.set_visible(False)
         else:
@@ -2192,8 +2210,9 @@ class MainPanel(Gtk.Box):
         )
         clipboard = self._log_view.get_clipboard()
         clipboard.set(cmd)
-        self._copy_curl_btn.set_label("✓ copied")
-        GLib.timeout_add(2000, lambda: self._copy_curl_btn.set_label("⧉ curl") or False)
+        img = self._copy_curl_btn.get_child().get_first_child()
+        img.set_from_icon_name("emblem-ok-symbolic")
+        GLib.timeout_add(2000, lambda: img.set_from_icon_name("edit-copy-symbolic") or False)
 
     def _on_open_api(self, _btn) -> None:
         port = getattr(self, "_curl_port", "8000")
@@ -2213,10 +2232,10 @@ class MainPanel(Gtk.Box):
 
     def update_star_btn(self, visible: bool, starred: bool,
                         on_toggle: Optional[callable] = None) -> None:
-        """Show/hide the ⭐ star button and update its label to reflect current state."""
+        """Show/hide the star button and update its icon to reflect current state."""
         self._star_btn.set_visible(visible)
         if visible:
-            self._star_btn.set_label("★" if starred else "☆")
+            self._star_btn.set_icon_name("starred-symbolic" if starred else "non-starred-symbolic")
             self._star_btn.set_tooltip_text(
                 "Unpin from Starred" if starred else "Pin to Starred"
             )
@@ -2486,7 +2505,7 @@ class MainWindow(Gtk.ApplicationWindow):
         ))
         bar.append(reconnect_btn)
 
-        stop_btn = Gtk.Button(label="■ Stop")
+        stop_btn = Gtk.Button(label="Stop")
         stop_btn.add_css_class("destructive-action")
         stop_btn.set_tooltip_text("Kill this container — does not reconnect")
         stop_btn.connect("clicked", lambda _: (
@@ -2496,7 +2515,7 @@ class MainWindow(Gtk.ApplicationWindow):
         ))
         bar.append(stop_btn)
 
-        close_btn = Gtk.Button(label="✕")
+        close_btn = Gtk.Button(icon_name="window-close-symbolic")
         close_btn.add_css_class("flat")
         close_btn.connect("clicked", lambda _: (
             self._outer.remove(bar),
@@ -2604,33 +2623,29 @@ class MainWindow(Gtk.ApplicationWindow):
                                    old_engine: str, new_engine: str,
                                    old_model: str) -> None:
         """Warn that the inference engine changed and a hardware reset is recommended."""
-        dialog = Gtk.MessageDialog(
-            transient_for=self,
-            modal=True,
-            message_type=Gtk.MessageType.WARNING,
-            text="Hardware reset recommended",
-        )
-        dialog.format_secondary_text(
-            f"Last launch used the '{old_engine}' engine  ({old_model}).\n"
-            f"Switching to '{new_engine}' — running tt-smi -r first is\n"
+        dialog = Gtk.AlertDialog()
+        dialog.set_message("Hardware reset recommended")
+        dialog.set_detail(
+            f"Last launch used the '{old_engine}' engine ({old_model}).\n"
+            f"Switching to '{new_engine}' — running tt-smi -r first is "
             f"strongly recommended to avoid hangs or device errors."
         )
-        dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
-        dialog.add_button("Launch Anyway", Gtk.ResponseType.REJECT)
-        reset_btn = dialog.add_button("↺  Reset & Launch", Gtk.ResponseType.ACCEPT)
-        reset_btn.add_css_class("suggested-action")
-        dialog.set_default_response(Gtk.ResponseType.ACCEPT)
+        dialog.set_buttons(["Cancel", "Launch Anyway", "Reset & Launch"])
+        dialog.set_cancel_button(0)
+        dialog.set_default_button(2)
 
-        def _on_response(dlg, resp: int) -> None:
-            dlg.destroy()
-            if resp == Gtk.ResponseType.ACCEPT:
+        def _on_choose(dlg, result) -> None:
+            try:
+                idx = dlg.choose_finish(result)
+            except Exception:
+                return
+            if idx == 2:
                 self._do_reset_and_launch(entry, port)
-            elif resp == Gtk.ResponseType.REJECT:
+            elif idx == 1:
                 self._ctrl.launch(entry, port, self._panel.get_options())
-            # CANCEL → do nothing
+            # 0 = Cancel → do nothing
 
-        dialog.connect("response", _on_response)
-        dialog.present()
+        dialog.choose(self, None, _on_choose)
 
     def _do_reset_and_launch(self, entry: ModelEntry, port: str) -> None:
         """Run tt-smi -r then immediately launch the server on completion."""
@@ -2645,31 +2660,28 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def _on_hardware_reset(self) -> None:
         """Called from the sidebar Reset button — confirm then run tt-smi -r."""
-        dialog = Gtk.MessageDialog(
-            transient_for=self,
-            modal=True,
-            message_type=Gtk.MessageType.WARNING,
-            text="Reset all TT devices?",
-        )
-        dialog.format_secondary_text(
-            "tt-smi -r will soft-reset all Tenstorrent devices.\n"
+        dialog = Gtk.AlertDialog()
+        dialog.set_message("Reset all TT devices?")
+        dialog.set_detail(
+            "tt-smi -r will soft-reset all Tenstorrent devices. "
             "Any running server will be killed immediately.\n\n"
-            "Use this to clear device state when switching model families\n"
+            "Use this to clear device state when switching model families "
             "or to recover from a hung/error state."
         )
-        dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
-        reset_btn = dialog.add_button("↺  Reset", Gtk.ResponseType.ACCEPT)
-        reset_btn.add_css_class("destructive-action")
-        dialog.set_default_response(Gtk.ResponseType.CANCEL)
+        dialog.set_buttons(["Cancel", "Reset Devices"])
+        dialog.set_cancel_button(0)
+        dialog.set_default_button(0)
 
-        def _on_response(dlg, resp: int) -> None:
-            dlg.destroy()
-            if resp == Gtk.ResponseType.ACCEPT:
+        def _on_choose(dlg, result) -> None:
+            try:
+                idx = dlg.choose_finish(result)
+            except Exception:
+                return
+            if idx == 1:
                 self._panel.show_logs()
                 self._ctrl.reset_hardware()
 
-        dialog.connect("response", _on_response)
-        dialog.present()
+        dialog.choose(self, None, _on_choose)
 
     def _on_model_select(self, entry: ModelEntry) -> None:
         """Tell the controller a new model was selected and update the banner
@@ -2868,7 +2880,7 @@ class MainWindow(Gtk.ApplicationWindow):
         if line == "§BENCH_DONE§":
             from server_manager import ServerState
             btn = self._panel._bench_run_btn
-            btn.set_label("▶ Run Benchmark")
+            btn.set_label("Run Benchmark")
             btn.set_sensitive(self._ctrl.state == ServerState.READY)
             return
         self._panel.append_bench_progress(line)
@@ -2892,7 +2904,8 @@ class MainWindow(Gtk.ApplicationWindow):
         self._bench_run_wired = True
 
         def _on_run(_btn):
-            mode = self._panel._bench_mode_combo.get_active_text() or "smoke-test"
+            _bm_item = self._panel._bench_mode_combo.get_selected_item()
+            mode = _bm_item.get_string() if _bm_item else "smoke-test"
             sweeps = self._panel._bench_sweeps_check.get_active()
             pct    = self._panel._bench_pct_check.get_active()
             # Switch to bench tab so live output is visible immediately.

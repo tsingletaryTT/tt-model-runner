@@ -80,6 +80,12 @@ class ConfigPane(Widget):
     #hf-token-row { height: 3; layout: horizontal; }
     #hf-token-input { width: 1fr; }
     #hf-status { color: $text-muted; height: 1; }
+    .section-label {
+        color: $accent;
+        text-style: bold;
+        height: 1;
+        margin-top: 1;
+    }
     """
 
     def __init__(self, **kwargs):
@@ -100,9 +106,9 @@ class ConfigPane(Widget):
         yield Static("", id="timing-strip")
         yield Static("", id="desc-strip")
         yield Static("", id="compat-strip")
-        yield Label("USE CASE")
+        yield Label("USE CASE", classes="section-label")
         yield Widget(id="use-case-row")
-        yield Label("QUICK SETTINGS")
+        yield Label("QUICK SETTINGS", classes="section-label")
         with Widget(id="quick-settings"):
             yield Input(placeholder="Context length (e.g. 131072)", id="ctx-input")
             yield Input(placeholder="Max concurrent seqs (e.g. 1)", id="seq-input")
@@ -111,13 +117,13 @@ class ConfigPane(Widget):
             yield Checkbox("Disable TT timeout",      id="no-timeout-check")
             yield Checkbox("Skip SW validation",      id="skip-sw-check")
             yield Checkbox("Disable trace capture",   id="no-trace-check")
-        yield Label("HF TOKEN")
+        yield Label("HF TOKEN", classes="section-label")
         with Widget(id="hf-token-row"):
             yield Input(placeholder="hf_… (Enter to save)", id="hf-token-input", password=True)
-            yield Button("✓", id="hf-token-save", variant="default")
+            yield Button("Save", id="hf-token-save", variant="success")
         yield Static("", id="hf-status")
-        yield Button("⬇  Download to HF cache", id="dl-btn", variant="default")
-        yield Label("COMMAND PREVIEW")
+        yield Button("Download to HF cache", id="dl-btn", variant="default")
+        yield Label("COMMAND PREVIEW", classes="section-label")
         yield Static("", id="command-preview")
         yield Static("", id="dev-image-strip")
         yield Widget(id="dev-image-row")
@@ -140,7 +146,7 @@ class ConfigPane(Widget):
         self.query_one("#compat-strip", Static).update("")
         try:
             dl = self.query_one("#dl-btn", Button)
-            dl.label = "⬇  Download to HF cache"
+            dl.label = "Download to HF cache"
             dl.disabled = False
         except Exception:
             pass
@@ -199,7 +205,7 @@ class ConfigPane(Widget):
             if catalog_stacks:
                 self.query_one("#dev-image-strip", Static).update("ALSO VIA DEVELOPER IMAGE")
                 for sw in catalog_stacks:
-                    btn = Button(f"▶ {sw}", id=f"dev-{sw.replace('-', '_')}")
+                    btn = Button(sw, id=f"dev-{sw.replace('-', '_')}", variant="primary")
                     if sw not in on_disk:
                         btn.disabled = True
                         btn.tooltip = f"Script not found: {dev_repo.name}/models/{compat_entry.id}/{sw}.py"
@@ -383,7 +389,7 @@ class ConfigPane(Widget):
             if self._entry and self._on_download:
                 try:
                     self.query_one("#dl-btn", Button).disabled = True
-                    self.query_one("#dl-btn", Button).label = "⬇  Downloading…"
+                    self.query_one("#dl-btn", Button).label = "Downloading…"
                 except Exception:
                     pass
                 self._on_download(self._entry.hf_model_repo)

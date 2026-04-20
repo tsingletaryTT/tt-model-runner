@@ -117,7 +117,7 @@ class ModelRail(Widget):
         with Widget(id="port-row"):
             yield Input(value="8000", id="port-input", placeholder="8000")
             yield Static("●", id="port-dot")
-        yield Button("▶ Launch", id="launch-btn", variant="success")
+        yield Button("Launch", id="launch-btn", variant="success")
 
     def load_catalog(self, catalog, compatible_devices: List[str]) -> None:
         """Populate the model list from the catalog, then scan HF cache in background."""
