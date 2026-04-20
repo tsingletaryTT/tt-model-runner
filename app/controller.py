@@ -258,6 +258,7 @@ class AppController:
         self.on_hardware_status: Optional[Callable] = None           # (List[ChipStatus],)
         self.on_compat_catalog_loaded: Optional[Callable] = None     # (Optional[CompatCatalog],)
         self.on_docker_images: Optional[Callable] = None             # (List[DockerImage],)
+        self.on_model_identified: Optional[Callable] = None          # (ModelEntry,) — fired after reconnect identifies the running model
 
     # ── Read-only properties for views ──────────────────────────────────────
 
@@ -870,6 +871,9 @@ class AppController:
                     self._current_entry.device_type,
                     dur, cold=False,
                 )
+            # On reconnect (no current_entry), try to identify the model from /v1/models
+            if not self._current_entry and models and self._catalog:
+                self._try_identify_model_from_health(models)
 
     def _on_health_lost(self) -> None:
         """Called by HealthWorker when health endpoint stops responding after READY."""
@@ -877,6 +881,29 @@ class AppController:
             self._transition(ServerState.ERROR)
             self._emit("on_log_line",
                        "⚠ Health check lost — server may have crashed")
+
+    def _try_identify_model_from_health(self, model_ids: list) -> None:
+        """Match /v1/models response against catalog; emit on_model_identified if found."""
+        for mid in model_ids:
+            # Try exact hf_model_repo match first
+            for entry in self._catalog.all_entries():
+                if entry.hf_model_repo.lower() == mid.lower():
+                    self._current_entry = entry
+                    self._emit("on_model_identified", entry)
+                    return
+            # Fall back: model_name key
+            for entry in self._catalog.all_entries():
+                if entry.model_name.lower() == mid.lower():
+                    self._current_entry = entry
+                    self._emit("on_model_identified", entry)
+                    return
+            # Partial match: model id is a suffix of the hf repo
+            for entry in self._catalog.all_entries():
+                repo_tail = entry.hf_model_repo.split("/")[-1].lower()
+                if repo_tail and repo_tail in mid.lower():
+                    self._current_entry = entry
+                    self._emit("on_model_identified", entry)
+                    return
 
     def _transition(self, state: ServerState, info_override: str = "") -> None:
         """Transition to a new state, emit on_state_changed, and manage timers.

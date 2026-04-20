@@ -2207,8 +2207,9 @@ class MainWindow(Gtk.ApplicationWindow):
         self._ctrl = controller
         self._running_server_bar: Optional[Gtk.Box] = None
 
-        # Outer vertical box: optional running-server banner + paned content
+        # Outer vertical box: menu bar + optional reconnect banner + paned content
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        outer.append(self._build_menubar())
 
         paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
         paned.set_position(_settings.sidebar_width)
@@ -2250,6 +2251,7 @@ class MainWindow(Gtk.ApplicationWindow):
         controller.on_hardware_status = self._on_hardware_status
         controller.on_compat_catalog_loaded = self._on_compat_catalog_loaded
         controller.on_docker_images = lambda imgs: self._sidebar.update_docker_images(imgs)
+        controller.on_model_identified = self._on_model_identified
 
         # Connect the ↻ chip-telemetry refresh button to the controller.
         self._sidebar._hw_refresh_btn.connect(
@@ -2420,6 +2422,16 @@ class MainWindow(Gtk.ApplicationWindow):
         ))
         bar.append(reconnect_btn)
 
+        stop_btn = Gtk.Button(label="■ Stop")
+        stop_btn.add_css_class("destructive-action")
+        stop_btn.set_tooltip_text("Kill this container — does not reconnect")
+        stop_btn.connect("clicked", lambda _: (
+            self._kill_detected_server(server.container_name),
+            self._outer.remove(bar),
+            setattr(self, "_running_server_bar", None),
+        ))
+        bar.append(stop_btn)
+
         close_btn = Gtk.Button(label="✕")
         close_btn.add_css_class("flat")
         close_btn.connect("clicked", lambda _: (
@@ -2431,6 +2443,29 @@ class MainWindow(Gtk.ApplicationWindow):
         # Insert banner at top (before the paned widget)
         self._outer.prepend(bar)
         self._running_server_bar = bar
+
+    def _on_model_identified(self, entry) -> None:
+        """Called after reconnect when the server's /v1/models reveals the running model."""
+        self._sidebar.select_model_by_id(entry.model_name)
+        # Also populate the config panel so options are visible.
+        self._panel.show_config(entry, self._on_options_changed)
+
+    def _kill_detected_server(self, container_name: str) -> None:
+        """Kill a detected container without reconnecting to it."""
+        import threading, subprocess
+        self._panel.append_log(f"■ Stopping container {container_name}…")
+        def _run():
+            try:
+                subprocess.run(["docker", "stop", "-t", "10", container_name],
+                               capture_output=True, timeout=15)
+                self._ctrl._dispatch(
+                    self._panel.append_log, f"✓ Container {container_name} stopped"
+                )
+            except Exception as exc:
+                self._ctrl._dispatch(
+                    self._panel.append_log, f"✗ docker stop failed: {exc}"
+                )
+        threading.Thread(target=_run, daemon=True).start()
 
     def _do_reconnect(self, port: str, container_name: str) -> None:
         """Reconnect to an existing inference server container."""
@@ -2737,6 +2772,108 @@ class MainWindow(Gtk.ApplicationWindow):
                                      percentile_report=pct)
 
         self._panel._bench_run_btn.connect("clicked", _on_run)
+
+    # ── Menubar ───────────────────────────────────────────────────────────────
+
+    def _build_menubar(self) -> Gtk.Box:
+        """Thin File/Edit/View-style menu bar using Gio.SimpleAction + Gtk.MenuButton.
+
+        Each top-level entry is a MenuButton whose popover is a PopoverMenu backed
+        by a Gio.Menu. Actions are registered on the window so they work from keyboard
+        accelerators too. The bar is injected at the top of the outer Box in __init__.
+        """
+        bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+        bar.add_css_class("menubar-row")
+
+        def _act(name: str, callback, accel: str = "") -> None:
+            """Register a window-level SimpleAction and optionally bind an accelerator."""
+            action = Gio.SimpleAction.new(name, None)
+            action.connect("activate", lambda a, p: callback())
+            self.add_action(action)
+            if accel:
+                self.get_application().set_accels_for_action(
+                    f"win.{name}", [accel]
+                )
+
+        # ── Server actions ──────────────────────────────────────────────────
+        def _launch_or_stop():
+            active_states = (
+                ServerState.LAUNCHING, ServerState.PULLING_IMAGE,
+                ServerState.LOADING, ServerState.READY, ServerState.RUNNING,
+            )
+            if self._ctrl.state in active_states:
+                self._ctrl.stop()
+            else:
+                self._on_launch_clicked()
+
+        _act("launch-stop",     _launch_or_stop,                    "F5")
+        _act("restart",         self._ctrl.restart,                  "<Primary>r")
+        _act("reconnect",       lambda: None)          # surfaced via banner; no global action
+        _act("git-pull",        self._on_pull_repo,                  "<Primary>g")
+        _act("hw-refresh",      self._ctrl.refresh_hardware_status,  "<Primary>h")
+
+        server_menu = Gio.Menu()
+        server_menu.append("Launch / Stop",       "win.launch-stop")
+        server_menu.append("Restart server",      "win.restart")
+        server_menu.append("Git pull repo",       "win.git-pull")
+        server_menu.append("Refresh hardware",    "win.hw-refresh")
+        server_btn = Gtk.MenuButton(label="Server")
+        server_btn.set_menu_model(server_menu)
+        server_btn.add_css_class("flat")
+        bar.append(server_btn)
+
+        # ── View actions ────────────────────────────────────────────────────
+        def _switch(name: str):
+            self._panel._stack.set_visible_child_name(name)
+            self._panel._update_tab_buttons(name)
+
+        _act("view-config",  lambda: _switch("config"),  "<Primary>1")
+        _act("view-logs",    lambda: _switch("logs"),    "<Primary>2")
+        _act("view-tools",   lambda: _switch("tools"),   "<Primary>3")
+        _act("view-bench",   lambda: _switch("bench"),   "<Primary>4")
+        _act("view-images",  lambda: _switch("images"))
+        _act("toggle-sidebar",
+             lambda: self._sidebar.set_visible(not self._sidebar.get_visible()))
+        _act("open-api",     lambda: self._on_open_api(None))
+
+        view_menu = Gio.Menu()
+        view_menu.append("Config tab",        "win.view-config")
+        view_menu.append("Logs tab",          "win.view-logs")
+        view_menu.append("Tools tab",         "win.view-tools")
+        view_menu.append("Bench tab",         "win.view-bench")
+        view_menu.append("Images tab",        "win.view-images")
+        view_menu.append("Toggle sidebar",    "win.toggle-sidebar")
+        view_menu.append("Open API in browser", "win.open-api")
+        view_btn = Gtk.MenuButton(label="View")
+        view_btn.set_menu_model(view_menu)
+        view_btn.add_css_class("flat")
+        bar.append(view_btn)
+
+        # ── Log actions ─────────────────────────────────────────────────────
+        _act("jump-error",    lambda: self._panel._jump_error_btn.emit("clicked"),  "<Primary>k")
+        _act("save-log",      lambda: self._panel._save_log_btn.emit("clicked"),    "<Primary><Shift>s")
+        _act("copy-curl",     lambda: self._panel._copy_curl_btn.emit("clicked"),   "<Primary>u")
+
+        log_menu = Gio.Menu()
+        log_menu.append("Jump to last error",  "win.jump-error")
+        log_menu.append("Save log to file",    "win.save-log")
+        log_menu.append("Copy curl command",   "win.copy-curl")
+        log_btn = Gtk.MenuButton(label="Log")
+        log_btn.set_menu_model(log_menu)
+        log_btn.add_css_class("flat")
+        bar.append(log_btn)
+
+        # ── Help ────────────────────────────────────────────────────────────
+        _act("shortcuts",  self._show_about_dialog,  "F1")
+
+        help_menu = Gio.Menu()
+        help_menu.append("Keyboard shortcuts",  "win.shortcuts")
+        help_btn = Gtk.MenuButton(label="Help")
+        help_btn.set_menu_model(help_menu)
+        help_btn.add_css_class("flat")
+        bar.append(help_btn)
+
+        return bar
 
     # ── Global keyboard shortcuts ─────────────────────────────────────────────
 

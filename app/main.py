@@ -120,6 +120,24 @@ progressbar progress { background-color: @tt_accent; border-radius: 3px; }
     border-bottom: 1px solid @tt_accent;
     padding: 4px 8px;
 }
+
+/* File/Edit/View-style menu bar */
+.menubar-row {
+    background-color: @tt_bg_darkest;
+    border-bottom: 1px solid @tt_border;
+    padding: 1px 4px;
+    min-height: 26px;
+}
+.menubar-row button {
+    padding: 2px 8px;
+    font-size: 12px;
+    border: none;
+    border-radius: 3px;
+    min-height: 0;
+}
+.menubar-row button:hover {
+    background-color: @tt_bg_dark;
+}
 """
 
 

@@ -105,6 +105,7 @@ class TuiApp(App[None]):
         self._ctrl.on_running_servers = self._on_running_servers
         self._ctrl.on_compat_catalog_loaded = self._on_compat_catalog_loaded
         self._ctrl.on_docker_images = self._on_docker_images
+        self._ctrl.on_model_identified = self._on_model_identified
 
         self._set_ready_tabs_enabled(False)
 
@@ -225,6 +226,15 @@ class TuiApp(App[None]):
 
     def _on_docker_images(self, images: list) -> None:
         self.query_one(ImagesPane).load_images(images)
+
+    def _on_model_identified(self, entry) -> None:
+        """Auto-select identified model in ModelRail after reconnect."""
+        rail = self.query_one(ModelRail)
+        rail.selected_entry = entry
+        # Highlight the entry in the list by re-running search with an empty string
+        # so the entry appears; the visual highlight is best-effort in Textual ListView.
+        self._on_model_select(entry)
+        self.notify(f"Identified: {entry.display_name}", title="Model detected")
 
     def action_launch_stop(self) -> None:
         from server_manager import ServerState
