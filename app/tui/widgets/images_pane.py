@@ -61,14 +61,11 @@ class ImagesPane(Widget):
         elif btn_id == "images-prune-btn":
             self.query_one("#images-status", Static).update("Pruning dangling images…")
             app_ctrl.prune_docker_images(
-                on_complete=lambda ok, msg: self.app.call_from_thread(
-                    self._on_prune_done, ok, msg
-                )
+                on_complete=lambda: self.app.call_from_thread(self._on_prune_done)
             )
 
-    def _on_prune_done(self, ok: bool, msg: str) -> None:
-        icon = "✓" if ok else "✗"
-        self.notify(f"{icon} {msg}", title="Docker prune")
+    def _on_prune_done(self) -> None:
+        self.notify("Prune complete", title="Docker prune")
         app_ctrl = getattr(self.app, "_ctrl", None)
         if app_ctrl:
             app_ctrl.scan_docker_images_async()
