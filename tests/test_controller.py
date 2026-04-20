@@ -418,6 +418,80 @@ def test_get_bench_history_newest_first(tmp_path):
         assert history[-1]["model_name"] == "model-0"
 
 
+# ── Bench history clear ────────────────────────────────────────────────────────
+
+def test_clear_bench_history_empties_settings(tmp_path):
+    """clear_bench_history should wipe benchmark_history in settings."""
+    fake_settings = _make_test_settings(tmp_path)
+    ctrl, _ = make_controller()
+    with patch("controller._settings", fake_settings):
+        r = BenchResult(
+            model_name="llama-3-8b", device="N150",
+            timestamp="2026-04-19T10:00:00",
+            isl=128, osl=128, concurrency=1,
+            mean_ttft_ms=80.0, p95_ttft_ms=None,
+            mean_tps=35.0, tps_decode=36.0,
+            mean_e2el_ms=900.0, request_throughput=0.8,
+            tier_pass="PASS",
+        )
+        ctrl._persist_bench_result(r)
+        assert len(fake_settings.benchmark_history) == 1
+        ctrl.clear_bench_history()
+        assert fake_settings.benchmark_history == []
+        assert ctrl.get_bench_history() == []
+
+
+# ── get_repo_git_info ─────────────────────────────────────────────────────────
+
+def test_get_repo_git_info_returns_empty_for_non_git_path(tmp_path):
+    """Non-git directories return ('', '')."""
+    ctrl, _ = make_controller()
+    branch, sha = ctrl.get_repo_git_info(path=tmp_path)
+    assert branch == ""
+    assert sha == ""
+
+
+def test_get_repo_git_info_handles_missing_git_gracefully():
+    """If git is not on PATH, should return ('', '') without raising."""
+    import subprocess
+    ctrl, _ = make_controller()
+    with patch("subprocess.check_output", side_effect=FileNotFoundError):
+        branch, sha = ctrl.get_repo_git_info()
+    assert branch == ""
+    assert sha == ""
+
+
+# ── pull_repo ────────────────────────────────────────────────────────────────
+
+def test_pull_repo_emits_log_lines_and_calls_on_complete(tmp_path):
+    """pull_repo should emit log lines and invoke on_complete(bool, str)."""
+    import subprocess
+    ctrl, view = make_controller()
+
+    mock_proc = MagicMock()
+    mock_proc.stdout = iter(["Already up to date.\n"])
+    mock_proc.wait.return_value = 0
+    fake_settings = _make_test_settings(tmp_path)
+    fake_settings.server_repo_path = str(tmp_path)
+
+    completed = []
+    with patch("subprocess.Popen", return_value=mock_proc), \
+         patch("controller._settings", fake_settings):
+        ctrl.pull_repo(on_complete=lambda ok, msg: completed.append((ok, msg)))
+        # pull_repo runs in a daemon thread; wait briefly for it
+        import time
+        for _ in range(50):
+            if completed:
+                break
+            time.sleep(0.02)
+
+    assert completed, "on_complete was never called"
+    ok, msg = completed[0]
+    assert ok is True
+    log_text = " ".join(view.log_lines)
+    assert "git pull" in log_text.lower()
+
+
 # ── Model starring ───────────────────────────────────────────────────────────
 
 def _make_mock_entry(model_name="llama-3-8b", device="N150"):
