@@ -3,10 +3,30 @@
 """LogPane — Logs tab for the Textual TUI."""
 from __future__ import annotations
 
+import re
+from typing import List, Set, Tuple
+
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.widget import Widget
 from textual.widgets import Label, ProgressBar, RichLog, Static
+
+_LEVEL_RE = re.compile(r'\b(ERROR|CRITICAL|WARN|WARNING|INFO|DEBUG)\b')
+
+_ALL_LEVELS = ("DEBUG", "INFO", "WARN", "ERROR")
+
+
+def _detect_level(line: str) -> str:
+    """Return normalised log level string, or '' if none detected."""
+    m = _LEVEL_RE.search(line)
+    if not m:
+        return ""
+    lvl = m.group(1)
+    if lvl == "CRITICAL":
+        return "ERROR"
+    if lvl == "WARNING":
+        return "WARN"
+    return lvl
 
 
 class LogPane(Widget):
@@ -62,6 +82,11 @@ class LogPane(Widget):
         Binding("e", "toggle_error", "Error", show=False),
     ]
 
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._all_lines: List[Tuple[str, str]] = []   # (text, level) pairs
+        self._hidden_levels: Set[str] = set()         # levels to suppress
+
     def compose(self) -> ComposeResult:
         yield Static("", id="log-banner")
         yield Static("", id="log-stepper")
@@ -70,8 +95,7 @@ class LogPane(Widget):
         with Widget(id="tour-panel"):
             yield Static("", id="tour-left")
             yield Static("", id="tour-right")
-        yield Static("[dim]Filter: [D] [I] [W] [E][/dim]", id="log-filter-bar",
-                     markup=True)
+        yield Static(self._filter_markup(), id="log-filter-bar", markup=True)
         yield RichLog(id="log-output", highlight=False, markup=False, wrap=True)
 
     def update_state(self, state, info: str = "") -> None:
@@ -97,7 +121,12 @@ class LogPane(Widget):
         self.query_one("#tour-panel").display = bool(stepper)
 
     def append_line(self, line: str) -> None:
-        self.query_one("#log-output", RichLog).write(line)
+        level = _detect_level(line)
+        self._all_lines.append((line, level))
+        if level not in self._hidden_levels:
+            self.query_one("#log-output", RichLog).write(line)
+
+    # ── Filter actions ───────────────────────────────────────────────────────
 
     def action_toggle_debug(self) -> None: self._toggle_level("DEBUG")
     def action_toggle_info(self)  -> None: self._toggle_level("INFO")
@@ -105,4 +134,31 @@ class LogPane(Widget):
     def action_toggle_error(self) -> None: self._toggle_level("ERROR")
 
     def _toggle_level(self, level: str) -> None:
-        self.notify(f"Level filter '{level}' toggled (buffered filtering in future release)")
+        if level in self._hidden_levels:
+            self._hidden_levels.discard(level)
+        else:
+            self._hidden_levels.add(level)
+        self._rebuild_log()
+        self._update_filter_bar()
+
+    def _rebuild_log(self) -> None:
+        log = self.query_one("#log-output", RichLog)
+        log.clear()
+        for line, level in self._all_lines:
+            if level not in self._hidden_levels:
+                log.write(line)
+
+    def _update_filter_bar(self) -> None:
+        self.query_one("#log-filter-bar", Static).update(
+            self._filter_markup(), markup=True
+        )
+
+    def _filter_markup(self) -> str:
+        parts = []
+        labels = {"DEBUG": "D", "INFO": "I", "WARN": "W", "ERROR": "E"}
+        for lvl, short in labels.items():
+            if lvl in self._hidden_levels:
+                parts.append(f"[dim]{short}[/dim]")
+            else:
+                parts.append(f"[bold]{short}[/bold]")
+        return "[dim]Filter:[/dim] " + " ".join(parts) + "  [dim][D/I/W/E toggle][/dim]"

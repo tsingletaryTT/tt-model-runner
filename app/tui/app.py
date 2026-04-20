@@ -25,6 +25,9 @@ from tui.widgets.bench_pane import BenchPane
 class TuiApp(App[None]):
     """Feature-equivalent TUI sharing AppController with the GTK GUI."""
 
+    # Stores (port, container_name) when a running server is detected on startup.
+    _pending_reconnect: "Optional[tuple]" = None
+
     CSS = """
     Screen {
         layout: horizontal;
@@ -47,6 +50,7 @@ class TuiApp(App[None]):
         Binding("3", "switch_tab('tools')",   "Tools",   show=False),
         Binding("4", "switch_tab('bench')",   "Bench",   show=False),
         Binding("[", "toggle_rail",            "Rail",    show=False),
+        Binding("r", "reconnect",              "Reconnect", show=False),
     ]
 
     def compose(self) -> ComposeResult:
@@ -248,8 +252,34 @@ class TuiApp(App[None]):
         self.query_one(LogPane).append_line("HW  " + "  |  ".join(parts))
 
     def _on_running_servers(self, servers: list) -> None:
-        """Log a reconnect hint when a running TT server is detected on startup."""
-        for s in servers:
-            self.query_one(LogPane).append_line(
-                f"⚡ Detected running server: {s.container_name} on port {s.port}"
-            )
+        """Store detected server and offer reconnect via [R] key."""
+        from server_manager import ServerState
+        if not servers or self._ctrl.state not in (ServerState.IDLE, ServerState.ERROR):
+            return
+        server = servers[0]
+        port = server.port or "8000"
+        self._pending_reconnect = (port, server.container_name)
+        extra = f" (+ {len(servers) - 1} more)" if len(servers) > 1 else ""
+        self.query_one(LogPane).append_line(
+            f"⚡ Detected running server: {server.container_name}  port {port}"
+            f"  {server.running_for}{extra}"
+        )
+        self.notify(
+            f"Running server on port {port} — press [R] to reconnect",
+            title="Server detected",
+            timeout=10,
+        )
+
+    def action_reconnect(self) -> None:
+        """Reconnect to the most recently detected running server."""
+        from server_manager import ServerState
+        if not self._pending_reconnect:
+            self.notify("No running server detected", severity="warning")
+            return
+        if self._ctrl.state not in (ServerState.IDLE, ServerState.ERROR):
+            self.notify("Cannot reconnect: server already active", severity="warning")
+            return
+        port, container_name = self._pending_reconnect
+        self._pending_reconnect = None
+        self.query_one(LogPane).append_line(f"⟳ Reconnecting to {container_name} on port {port}…")
+        self._ctrl.adopt_running_server(port, container_name)
