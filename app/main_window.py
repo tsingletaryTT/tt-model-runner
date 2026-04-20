@@ -2317,6 +2317,8 @@ class MainWindow(Gtk.ApplicationWindow):
         self.set_child(outer)
         self._outer = outer
         self.connect("close-request", self._on_close)
+        if _settings.window_maximized:
+            self.maximize()
 
         # Register view callbacks so the controller can push updates to us.
         # The panel exists at this point, so the log callback is safe to set.
@@ -2808,8 +2810,10 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def _on_close(self, win) -> bool:
         """Persist window dimensions and stop the server on close."""
-        _settings.window_width  = self.get_width()
-        _settings.window_height = self.get_height()
+        _settings.window_maximized = self.is_maximized()
+        if not self.is_maximized():
+            _settings.window_width  = self.get_width()
+            _settings.window_height = self.get_height()
         _settings.save()
         if self._ctrl.state not in (ServerState.IDLE, ServerState.ERROR):
             self._ctrl.stop()

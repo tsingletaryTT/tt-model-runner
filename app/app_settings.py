@@ -15,6 +15,7 @@ _DEFAULTS = {
     "log_level_filters": ["DEBUG", "INFO", "WARN", "ERROR"],
     "window_width": 1280,
     "window_height": 820,
+    "window_maximized": False,
     "sidebar_width": 290,
     # Tracks the last successfully-initiated launch so cross-engine resets can be suggested.
     "last_launched_engine": "",
