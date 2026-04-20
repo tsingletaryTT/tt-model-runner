@@ -248,13 +248,15 @@ def _scrub_env_key(env_path: Path, key: str) -> None:
 class ServerManager:
     # Docker image-not-found patterns — capture the full image reference.
     # Covers:
+    #   run_docker_server.py assertion: Docker image: ghcr.io/... not found on GHCR or locally
     #   containerd: failed to resolve reference "ghcr.io/..."
     #   Docker daemon: Error response from daemon: ... "image:tag"... not found
     #   GHCR registry: manifest unknown ... "image:tag"
     #   Docker daemon: pull access denied for ghcr.io/..., repository does not exist
     #   Docker daemon: repository ghcr.io/... not found
     _IMAGE_NOT_FOUND_RE = re.compile(
-        r'failed to resolve reference\s+"([^"]+)"'
+        r'Docker image:\s+(ghcr\.io/[^\s,]+)\s+not found'
+        r'|failed to resolve reference\s+"([^"]+)"'
         r'|Error response from daemon[^"]*"([^"]+)".*not found'
         r'|manifest unknown[^"]*"([^"]+)"'
         r'|pull access denied for (ghcr\.io/[^,\s]+)'
