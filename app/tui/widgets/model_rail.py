@@ -80,6 +80,7 @@ class ModelRail(Widget):
         self._entries: list = []
         self._compat_entries: list = []  # (display_name, compat_entry, sw_stack) tuples
         self._catalog = None
+        self._cached_repos: set = set()  # HF repos with local cache snapshots
 
     def compose(self) -> ComposeResult:
         yield Static("[b]TT Model Runner[/b]", markup=True)
@@ -89,6 +90,7 @@ class ModelRail(Widget):
         yield Static("", id="recent-label", markup=True)
         yield ListView(id="recent-list")
         yield Label("Model:", classes="rail-section-label")
+        yield Input(placeholder="Search models…", id="model-search")
         yield ListView(id="model-list")
         yield Static("", id="discover-label")
         yield ListView(id="discover-list")
@@ -97,23 +99,44 @@ class ModelRail(Widget):
         yield Button("▶ Launch", id="launch-btn", variant="success")
 
     def load_catalog(self, catalog, compatible_devices: List[str]) -> None:
-        """Populate the model list from the catalog."""
+        """Populate the model list from the catalog, then scan HF cache in background."""
         if compatible_devices:
             self._entries = [e for e in catalog.all_entries()
                              if e.device_type in compatible_devices]
         else:
             self._entries = list(catalog.all_entries())
         self._catalog = catalog
-        lv = self.query_one("#model-list", ListView)
-        lv.clear()
-        for entry in self._entries:
-            size = _fmt_size(getattr(entry, "param_count", None))
-            suffix = f"  {size}" if size else ""
-            item = ListItem(Label(f"{entry.display_name}{suffix}\n  {entry.device_type}"))
-            item._entry = entry
-            item._compat_entry = None
-            lv.append(item)
+        self._repopulate_model_list()
         self._refresh_starred_recent()
+        self._scan_hf_cache_async()
+
+    def _repopulate_model_list(self) -> None:
+        """Fill #model-list from self._entries, respecting active search and cache badges."""
+        search = ""
+        try:
+            search = self.query_one("#model-search", Input).value.strip().lower()
+        except Exception:
+            pass
+        self._apply_search(search)
+
+    def _scan_hf_cache_async(self) -> None:
+        """Background HF cache scan; refreshes model list with ✓ badges when done."""
+        import threading
+        from hf_cache import scan_all_cached
+        if not self._catalog:
+            return
+        repos = {getattr(e, "hf_model_repo", None) for e in self._entries}
+        repos.discard(None)
+
+        def _run():
+            cached = scan_all_cached(repos)
+            self.app.call_from_thread(self._on_cache_scanned, cached)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _on_cache_scanned(self, cached: set) -> None:
+        self._cached_repos = cached
+        self._repopulate_model_list()
 
     def _refresh_starred_recent(self) -> None:
         """Re-populate the STARRED and RECENT sections from settings."""
@@ -248,8 +271,28 @@ class ModelRail(Widget):
         except Exception:
             pass
 
+    def _apply_search(self, search: str) -> None:
+        lv = self.query_one("#model-list", ListView)
+        lv.clear()
+        entries = self._entries if not search else [
+            e for e in self._entries if search in e.display_name.lower()
+        ]
+        for entry in entries:
+            size = _fmt_size(getattr(entry, "param_count", None))
+            suffix = f"  {size}" if size else ""
+            cached = getattr(entry, "hf_model_repo", None) in self._cached_repos
+            cache_badge = " ✓" if cached else ""
+            item = ListItem(Label(
+                f"{entry.display_name}{suffix}{cache_badge}\n  {entry.device_type}"
+            ))
+            item._entry = entry
+            item._compat_entry = None
+            lv.append(item)
+
     def on_input_changed(self, event: Input.Changed) -> None:
-        if event.input.id == "port-input":
+        if event.input.id == "model-search":
+            self._apply_search(event.value.strip().lower())
+        elif event.input.id == "port-input":
             val = event.value.strip()
             if val.isdigit() and 1 <= int(val) <= 65535:
                 self.port_value = val

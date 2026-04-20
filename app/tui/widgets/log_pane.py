@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import re
+import time
 from typing import List, Optional, Set, Tuple
 
 from textual.app import ComposeResult
@@ -97,6 +98,9 @@ class LogPane(Widget):
         self._all_lines: List[Tuple[str, str]] = []   # (text, level) pairs
         self._hidden_levels: Set[str] = set()         # levels to suppress
         self._search_text: str = ""                   # active search filter
+        self._ready_start: Optional[float] = None     # monotonic timestamp when READY
+        self._uptime_timer = None
+        self._banner_base: str = ""
 
     def compose(self) -> ComposeResult:
         yield Static("", id="log-banner")
@@ -113,11 +117,48 @@ class LogPane(Widget):
 
     def update_state(self, state, info: str = "") -> None:
         name = state.name if hasattr(state, "name") else str(state)
-        self.query_one("#log-banner", Static).update(f"{name}  {info}".strip())
+        self._banner_base = f"{name}  {info}".strip()
+        self.query_one("#log-banner", Static).update(self._banner_base)
         loading = name in ("LOADING", "LAUNCHING", "PULLING_IMAGE")
         self.query_one("#log-progress").display = loading
         self.query_one("#log-progress-label").display = loading
         self.query_one("#tour-panel").display = loading
+
+        if name == "READY":
+            if self._ready_start is None:
+                self._ready_start = time.monotonic()
+                self._start_uptime_ticker()
+        else:
+            self._ready_start = None
+            self._stop_uptime_ticker()
+
+    def _start_uptime_ticker(self) -> None:
+        if self._uptime_timer is not None:
+            return
+        self._uptime_timer = self.set_interval(5, self._tick_uptime)
+
+    def _stop_uptime_ticker(self) -> None:
+        if self._uptime_timer is not None:
+            try:
+                self._uptime_timer.stop()
+            except Exception:
+                pass
+            self._uptime_timer = None
+
+    def _tick_uptime(self) -> None:
+        if self._ready_start is None:
+            return
+        elapsed = int(time.monotonic() - self._ready_start)
+        if elapsed < 60:
+            uptime = f"↑ {elapsed}s"
+        elif elapsed < 3600:
+            uptime = f"↑ {elapsed // 60}m{elapsed % 60:02d}s"
+        else:
+            h = elapsed // 3600
+            m = (elapsed % 3600) // 60
+            uptime = f"↑ {h}h{m:02d}m"
+        base = getattr(self, "_banner_base", "")
+        self.query_one("#log-banner", Static).update(f"{base}  {uptime}")
 
     def update_progress(self, fraction: float, label: str) -> None:
         bar = self.query_one("#log-progress", ProgressBar)
