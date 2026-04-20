@@ -60,7 +60,9 @@ def _get_ghcr_token(image_path: str) -> Optional[str]:
 def _list_tags(image_path: str, token: str) -> List[str]:
     """Return all tags listed by GHCR v2 API, following pagination links."""
     tags: List[str] = []
-    url: Optional[str] = f"https://ghcr.io/v2/{image_path}/tags/list?n=100"
+    # Use n=1000 so GHCR returns the full list in one shot — n=100 silently
+    # truncates when a repo has more than 100 tags and returns no Link header.
+    url: Optional[str] = f"https://ghcr.io/v2/{image_path}/tags/list?n=1000"
     while url:
         try:
             req = urllib.request.Request(url, headers={
@@ -131,6 +133,21 @@ def _best_tag(tags: List[str], failed_tag: str) -> Optional[str]:
     if not versioned:
         return "latest" if "latest" in tags else None
 
+    # Strategy 1: same commit-hash suffix, any version prefix.
+    # e.g. failed "0.12.0-555f240-22be241" finds "qb2_launch-555f240-22be241"
+    # and "0.11.0-555f240-22be241" — prefer the highest-version numeric prefix.
+    # This is the most reliable match: identical code regardless of tag naming.
+    commit_m = re.match(r'^v?[\d.]+-(.+)$', failed_tag)
+    if commit_m:
+        commit_suffix = commit_m.group(1)
+        same_commits = [t for t in versioned if t.endswith(f"-{commit_suffix}") and t != failed_tag]
+        if same_commits:
+            def _prefix_key(t: str) -> List[int]:
+                return [int(n) for n in re.findall(r'\d+', t.split("-")[0])] or [0]
+            same_commits.sort(key=_prefix_key, reverse=True)
+            return same_commits[0]
+
+    # Strategy 2: same version prefix (e.g. "0.12.0"), highest build suffix.
     prefix_m = re.match(r'^v?([\d.]+)-', failed_tag)
     if prefix_m:
         prefix = prefix_m.group(1)
