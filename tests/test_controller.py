@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
 
 import pytest
 from unittest.mock import MagicMock, patch, call
-from controller import AppController
+from controller import AppController, BenchResult
 from server_manager import ServerState
 
 
@@ -331,3 +331,52 @@ def test_pull_counters_reset_on_entering_pulling_state():
     ctrl._transition(ServerState.PULLING_IMAGE)
     assert ctrl._pull_layers_done == 0
     assert ctrl._pull_downloading == {}
+
+
+# ── Benchmark history persistence ──────────────────────────────────────────────
+
+def _make_test_settings(tmp_path):
+    from app_settings import AppSettings
+    return AppSettings(config_dir=tmp_path)
+
+
+def test_persist_bench_result_appends_to_settings(tmp_path):
+    """_persist_bench_result should append a serialized entry to settings."""
+    fake_settings = _make_test_settings(tmp_path)
+    ctrl, _ = make_controller()
+    with patch("controller._settings", fake_settings):
+        r = BenchResult(
+            model_name="llama-3-8b", device="N150",
+            timestamp="2026-04-19T10:00:00",
+            isl=128, osl=128, concurrency=1,
+            mean_ttft_ms=80.0, p95_ttft_ms=None,
+            mean_tps=35.0, tps_decode=36.0,
+            mean_e2el_ms=900.0, request_throughput=0.8,
+            tier_pass="PASS",
+        )
+        ctrl._persist_bench_result(r)
+        history = fake_settings.benchmark_history
+        assert len(history) == 1
+        assert history[0]["model_name"] == "llama-3-8b"
+        assert history[0]["tier_pass"] == "PASS"
+
+
+def test_get_bench_history_newest_first(tmp_path):
+    fake_settings = _make_test_settings(tmp_path)
+    ctrl, _ = make_controller()
+    with patch("controller._settings", fake_settings):
+        for i in range(3):
+            r = BenchResult(
+                model_name=f"model-{i}", device="N150",
+                timestamp=f"2026-04-19T1{i}:00:00",
+                isl=128, osl=128, concurrency=1,
+                mean_ttft_ms=80.0, p95_ttft_ms=None,
+                mean_tps=35.0, tps_decode=36.0,
+                mean_e2el_ms=900.0, request_throughput=0.8,
+                tier_pass="PASS",
+            )
+            ctrl._persist_bench_result(r)
+        history = ctrl.get_bench_history()
+        assert len(history) == 3
+        assert history[0]["model_name"] == "model-2"   # newest first
+        assert history[-1]["model_name"] == "model-0"

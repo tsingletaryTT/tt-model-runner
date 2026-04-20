@@ -1060,10 +1060,14 @@ class AppController:
                 # Best-effort — if parsing fails, run without targets
                 pass
 
+        def _on_result(r):
+            self._persist_bench_result(r)
+            self._emit("on_bench_result", r)
+
         runner = BenchmarkRunner(
             repo_path=repo_path,
             on_progress=lambda line: self._emit("on_bench_progress", line),
-            on_result=lambda r: self._emit("on_bench_result", r),
+            on_result=_on_result,
         )
         runner.run(
             model_name=model_name,
@@ -1073,6 +1077,32 @@ class AppController:
             percentile_report=percentile_report,
             perf_targets=perf_targets,
         )
+
+    def _persist_bench_result(self, r) -> None:
+        """Append a BenchResult to settings.benchmark_history (max 50 entries)."""
+        entry = {
+            "model_name": r.model_name,
+            "device": r.device,
+            "timestamp": r.timestamp,
+            "isl": r.isl,
+            "osl": r.osl,
+            "concurrency": r.concurrency,
+            "mean_ttft_ms": r.mean_ttft_ms,
+            "p95_ttft_ms": r.p95_ttft_ms,
+            "mean_tps": r.mean_tps,
+            "tps_decode": r.tps_decode,
+            "mean_e2el_ms": r.mean_e2el_ms,
+            "request_throughput": r.request_throughput,
+            "tier_pass": r.tier_pass,
+        }
+        history = list(_settings.benchmark_history or [])
+        history.append(entry)
+        _settings.benchmark_history = history[-50:]  # keep last 50
+        _settings.save()
+
+    def get_bench_history(self) -> list:
+        """Return the persisted benchmark history as a list of dicts (newest first)."""
+        return list(reversed(_settings.benchmark_history or []))
 
     def send_tool_call(self, tools: list, prompt: str) -> None:
         """Send a multi-turn tool-call to the running server.

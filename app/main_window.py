@@ -1096,6 +1096,31 @@ class MainPanel(Gtk.Box):
         bench_results_scroll.set_child(bench_results_view)
         bench_box.append(bench_results_scroll)
 
+        # History section — persisted results across sessions
+        hist_header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        hist_header.set_margin_top(8)
+        hist_lbl = Gtk.Label(label="HISTORY")
+        hist_lbl.add_css_class("muted")
+        hist_lbl.set_halign(Gtk.Align.START)
+        hist_lbl.set_hexpand(True)
+        hist_header.append(hist_lbl)
+        self._bench_clear_btn = Gtk.Button(label="✕ Clear")
+        self._bench_clear_btn.add_css_class("flat")
+        self._bench_clear_btn.set_tooltip_text("Clear benchmark history")
+        self._bench_clear_btn.connect("clicked", self._on_bench_clear_history)
+        hist_header.append(self._bench_clear_btn)
+        bench_box.append(hist_header)
+        self._bench_history_buf = Gtk.TextBuffer()
+        bench_hist_view = Gtk.TextView(buffer=self._bench_history_buf)
+        bench_hist_view.set_editable(False)
+        bench_hist_view.set_monospace(True)
+        bench_hist_view.add_css_class("log-view")
+        bench_hist_scroll = Gtk.ScrolledWindow()
+        bench_hist_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        bench_hist_scroll.set_vexpand(True)
+        bench_hist_scroll.set_child(bench_hist_view)
+        bench_box.append(bench_hist_scroll)
+
         self._stack.add_named(bench_box, "bench")
 
         self.append(self._stack)
@@ -1397,8 +1422,35 @@ class MainPanel(Gtk.Box):
             end = buf.get_end_iter()
         buf.insert(end, line)
 
+    def load_bench_history(self, history: list) -> None:
+        """Populate the HISTORY buffer from persisted benchmark entries (newest first)."""
+        buf = self._bench_history_buf
+        buf.set_text("")
+        if not history:
+            buf.set_text("No benchmark history yet.")
+            return
+        lines = []
+        for r in history:
+            icon = {"PASS": "✓", "BELOW_TARGET": "⚠", "FAIL": "✗"}.get(r.get("tier_pass", ""), "?")
+            lines.append(
+                f"{icon} {r.get('tier_pass','?'):12s}"
+                f"  {r.get('model_name','?')[:20]:20s}"
+                f"  {r.get('device','?'):8s}"
+                f"  ISL={r.get('isl','?')} OSL={r.get('osl','?')}"
+                f"  TPS={r.get('mean_tps',0):.1f}"
+                f"  TTFT={r.get('mean_ttft_ms',0):.0f}ms"
+                f"  [{r.get('timestamp','')[:16]}]"
+            )
+        buf.set_text("\n".join(lines))
+
+    def _on_bench_clear_history(self, _btn) -> None:
+        from app_settings import settings as _settings
+        _settings.benchmark_history = []
+        _settings.save()
+        self._bench_history_buf.set_text("History cleared.")
+
     def append_bench_result(self, result) -> None:
-        """Append a formatted BenchResult row to the bench results buffer."""
+        """Append a formatted BenchResult row to the session results buffer, then refresh history."""
         icon = {"PASS": "✓", "BELOW_TARGET": "⚠", "FAIL": "✗"}.get(result.tier_pass, "?")
         line = (
             f"{icon} {result.tier_pass:12s}"
@@ -1414,6 +1466,9 @@ class MainPanel(Gtk.Box):
             buf.insert(end, "\n")
             end = buf.get_end_iter()
         buf.insert(end, line)
+        # Refresh the persistent history section
+        from app_settings import settings as _settings
+        self.load_bench_history(list(reversed(_settings.benchmark_history or [])))
 
     def set_curl_context(self, port: str, model_repo: str) -> None:
         """Store port and model for use in the copy-curl command."""
@@ -1562,6 +1617,9 @@ class MainWindow(Gtk.ApplicationWindow):
         if repo_path:
             self._sidebar._repo_entry.set_text(str(repo_path))
             GLib.idle_add(self._ctrl.load_repo, repo_path)
+
+        # Populate benchmark history from persisted data on startup.
+        GLib.idle_add(lambda: self._panel.load_bench_history(self._ctrl.get_bench_history()) or False)
 
     # ── Callbacks pushed by AppController ────────────────────────────────────
 

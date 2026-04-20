@@ -23,6 +23,10 @@ _DEFAULTS = {
     "dev_image_repo_path": str(Path.home() / "code" / "tt-developer-image"),
     # Last 5 launched models: [{"model_name": str, "device": str, "display": str}]
     "recent_models": [],
+    # Last 50 benchmark results: [{"model_name", "device", "timestamp", "isl", "osl",
+    #   "concurrency", "mean_ttft_ms", "p95_ttft_ms", "mean_tps", "tps_decode",
+    #   "mean_e2el_ms", "request_throughput", "tier_pass"}]
+    "benchmark_history": [],
 }
 
 
