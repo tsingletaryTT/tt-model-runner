@@ -98,6 +98,8 @@ class TuiApp(App[None]):
         rail = self.query_one(ModelRail)
         rail.on_launch = self._do_launch
         rail.on_stop   = lambda: self._ctrl.stop()
+        # Pre-populate port from persisted settings.
+        rail.set_port(_settings.last_port)
 
         repo_path = None
         saved = _settings.server_repo_path

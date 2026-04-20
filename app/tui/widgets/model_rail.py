@@ -7,7 +7,7 @@ from typing import Callable, List, Optional, TYPE_CHECKING
 
 from textual.app import ComposeResult
 from textual.widget import Widget
-from textual.widgets import Button, Label, ListItem, ListView, Static
+from textual.widgets import Button, Input, Label, ListItem, ListView, Static
 
 if TYPE_CHECKING:
     from model_catalog import ModelEntry
@@ -83,7 +83,7 @@ class ModelRail(Widget):
         yield Static("", id="discover-label")
         yield ListView(id="discover-list")
         yield Label("Port:", classes="rail-section-label")
-        yield Static("8000", id="port-display")
+        yield Input(value="8000", id="port-input", placeholder="8000")
         yield Button("▶ Launch", id="launch-btn", variant="success")
 
     def load_catalog(self, catalog, compatible_devices: List[str]) -> None:
@@ -164,6 +164,27 @@ class ModelRail(Widget):
         elif compat_entry is not None:
             if self.on_compat_select:
                 self.on_compat_select(compat_entry)
+
+    def set_port(self, port: str) -> None:
+        """Update the port input and cached value (called from TuiApp.on_mount)."""
+        self.port_value = port or "8000"
+        try:
+            self.query_one("#port-input", Input).value = self.port_value
+        except Exception:
+            pass
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "port-input":
+            val = event.value.strip()
+            if val.isdigit() and 1 <= int(val) <= 65535:
+                self.port_value = val
+                # Persist so the GTK app sees the same port next time.
+                try:
+                    from app_settings import settings as _settings
+                    _settings.last_port = val
+                    _settings.save()
+                except Exception:
+                    pass
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "launch-btn":
