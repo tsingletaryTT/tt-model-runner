@@ -304,6 +304,9 @@ class AppController:
                    f"Loaded {len(self._catalog.all_entries())} model configurations from {spec}")
 
         def _detect():
+            # Run a one-time environment check on startup (results go to the log).
+            self._emit("on_log_line", "Checking environment…")
+            self.check_environment()
             devices = detect_devices()
             compatible = devices if devices else self._catalog.all_device_types()
             if not devices:
@@ -584,6 +587,40 @@ class AppController:
                 self._dispatch(on_complete, success)
 
         threading.Thread(target=_run, daemon=True).start()
+
+    def check_environment(self) -> None:
+        """Emit log lines summarising which required tools are present/missing.
+
+        Runs synchronously — call from a background thread.
+        Checks: docker, tt-smi, git, HF_TOKEN.
+        """
+        checks = [
+            ("docker", ["docker", "info"], "Docker daemon running"),
+            ("tt-smi", ["tt-smi", "--version"], "TT device management tool"),
+            ("git",    ["git", "--version"],    "git version control"),
+        ]
+        any_missing = False
+        for name, cmd, desc in checks:
+            try:
+                subprocess.run(cmd, capture_output=True, timeout=8, check=True)
+                self._emit("on_log_line", f"  ✓ {name}: {desc}")
+            except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+                self._emit("on_log_line", f"  ✗ {name}: NOT FOUND — {desc} required")
+                any_missing = True
+        hf_token = os.environ.get("HF_TOKEN", "")
+        if not hf_token:
+            env_file = Path(_settings.server_repo_path) / ".env"
+            if env_file.exists():
+                for line in env_file.read_text(errors="replace").splitlines():
+                    if line.startswith("HF_TOKEN="):
+                        hf_token = line.split("=", 1)[1].strip().strip('"').strip("'")
+                        break
+        if hf_token:
+            self._emit("on_log_line", "  ✓ HF_TOKEN: found")
+        else:
+            self._emit("on_log_line", "  ⚠ HF_TOKEN: not set — required to pull gated models")
+        if not any_missing:
+            self._emit("on_log_line", "Environment OK")
 
     def get_repo_git_info(self, path: Optional[Path] = None) -> tuple:
         """Return (branch, short_hash) for the server repo, or ('', '') on failure."""
