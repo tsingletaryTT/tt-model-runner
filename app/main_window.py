@@ -786,6 +786,7 @@ class MainPanel(Gtk.Box):
         self._pulse_source: Optional[int] = None
         self._log_entries: list = []        # (line_text, level_str) tuples
         self._hidden_levels: set = set()
+        self._log_search_filter: str = ""
         self._uptime_start: Optional[float] = None
         self._uptime_timer: Optional[int] = None
         self._build()
@@ -998,6 +999,14 @@ class MainPanel(Gtk.Box):
         self._save_log_btn.set_tooltip_text("Save log to file")
         self._save_log_btn.connect("clicked", self._on_save_log)
         filter_bar.append(self._save_log_btn)
+
+        # Log search field — filters displayed lines to those matching the query.
+        self._log_search = Gtk.SearchEntry()
+        self._log_search.set_placeholder_text("Search logs…")
+        self._log_search.set_max_width_chars(20)
+        self._log_search.connect("search-changed", self._on_log_search_changed)
+        filter_bar.append(self._log_search)
+
         logs_box.append(filter_bar)
         logs_box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
 
@@ -1267,8 +1276,8 @@ class MainPanel(Gtk.Box):
         self._log_entries.append((line, level))
         if len(self._log_entries) > _MAX_LOG_ENTRIES:
             self._log_entries = self._log_entries[-_MAX_LOG_ENTRIES:]
-        # Only insert if this level isn't hidden
-        if level not in self._hidden_levels:
+        # Only insert if this level isn't hidden and matches any active search filter
+        if self._line_visible(line, level):
             self._insert_line_to_buffer(line, level)
         self._update_log_count()
         # Show jump-to-error button when an ERROR/CRITICAL line lands
@@ -1408,17 +1417,24 @@ class MainPanel(Gtk.Box):
         self._jump_error_btn.set_visible(False)
         self._update_log_count()
 
+    def _line_visible(self, line: str, level: str) -> bool:
+        if level in self._hidden_levels:
+            return False
+        if self._log_search_filter and self._log_search_filter not in line.lower():
+            return False
+        return True
+
     def _rebuild_log_buffer(self):
         self._log_buf.set_text("")
         self._auto_scroll = True
         for line, level in self._log_entries:
-            if level not in self._hidden_levels:
+            if self._line_visible(line, level):
                 self._insert_line_to_buffer(line, level)
         self._update_log_count()
 
     def _update_log_count(self):
         visible = sum(
-            1 for _, lvl in self._log_entries if lvl not in self._hidden_levels
+            1 for line, lvl in self._log_entries if self._line_visible(line, lvl)
         )
         total = len(self._log_entries)
         if visible == total:
@@ -1431,6 +1447,10 @@ class MainPanel(Gtk.Box):
             self._hidden_levels.discard(level)
         else:
             self._hidden_levels.add(level)
+        self._rebuild_log_buffer()
+
+    def _on_log_search_changed(self, entry) -> None:
+        self._log_search_filter = entry.get_text().strip().lower()
         self._rebuild_log_buffer()
 
     def update_tour_dots(self, idx: int, total: int):
