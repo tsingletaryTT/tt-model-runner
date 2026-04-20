@@ -101,6 +101,18 @@ treeview:selected { background-color: @tt_bg_dark; color: @tt_accent; }
 
 progressbar trough { background-color: @tt_bg_dark; border-radius: 3px; min-height: 6px; }
 progressbar progress { background-color: @tt_accent; border-radius: 3px; }
+
+/* Type filter chips in sidebar MODEL section */
+.type-chip {
+    background-color: @tt_bg_dark; color: @tt_text_muted;
+    border: 1px solid @tt_border; border-radius: 10px;
+    padding: 1px 5px; font-size: 10px; min-width: 0;
+}
+.type-chip:checked {
+    background-color: @tt_accent; color: @tt_bg_darkest;
+    border-color: @tt_accent; font-weight: bold;
+}
+.type-chip:hover { border-color: @tt_accent; }
 """
 
 

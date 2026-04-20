@@ -106,6 +106,10 @@ class Sidebar(Gtk.Box):
         self._cached_repos: set = set()
         self._compat_catalog = None      # set via set_compat_catalog()
         self.on_compat_select = None     # Callable[[CompatEntry], None]
+        # Active model type filters: empty set = show all types.
+        saved_tf = _settings.type_filters or []
+        self._type_filter_active: set = set(saved_tf) if saved_tf else set(_TYPE_ORDER)
+        self._type_filter_btns: dict = {}
 
         self._build()
 
@@ -161,6 +165,28 @@ class Sidebar(Gtk.Box):
         self._search_entry.connect("search-changed", self._on_search_changed)
         self._search_entry.connect("stop-search", lambda _: self._clear_search())
         ml_box.append(self._search_entry)
+        # Type filter chips — compact toggles for LLM / VLM / CNN / Embedding etc.
+        type_flow = Gtk.FlowBox()
+        type_flow.set_selection_mode(Gtk.SelectionMode.NONE)
+        type_flow.set_max_children_per_line(6)
+        type_flow.set_row_spacing(2)
+        type_flow.set_column_spacing(2)
+        type_flow.set_margin_top(2)
+        _SHORT_LABEL = {
+            "LLM": "LLM", "VLM": "VLM", "IMAGE": "Img", "VIDEO": "Vid",
+            "AUDIO": "Aud", "CNN": "CNN", "EMBEDDING": "Emb", "TTS": "TTS",
+        }
+        for type_name in _TYPE_ORDER:
+            btn = Gtk.ToggleButton(label=_SHORT_LABEL.get(type_name, type_name))
+            btn.add_css_class("type-chip")
+            btn.set_active(type_name in self._type_filter_active)
+            btn.set_tooltip_text(f"Show {_TYPE_LABEL.get(type_name, type_name)} models")
+            btn.connect("toggled", self._on_type_chip_toggled, type_name)
+            self._type_filter_btns[type_name] = btn
+            wrapper = Gtk.Box()
+            wrapper.append(btn)
+            type_flow.append(wrapper)
+        ml_box.append(type_flow)
         self.append(ml_box)
 
         # Model tree
@@ -416,6 +442,22 @@ class Sidebar(Gtk.Box):
         self._rebuild_tree([device])
         self._on_device_select(device)
 
+    def _on_type_chip_toggled(self, btn: Gtk.ToggleButton, type_name: str) -> None:
+        if btn.get_active():
+            self._type_filter_active.add(type_name)
+        else:
+            self._type_filter_active.discard(type_name)
+        # Persist: empty list stored when all types active (default), so upgrade-safe.
+        if self._type_filter_active == set(_TYPE_ORDER):
+            _settings.type_filters = []
+        else:
+            _settings.type_filters = sorted(self._type_filter_active)
+        _settings.save()
+        if self._selected_device:
+            self._rebuild_tree([self._selected_device])
+        else:
+            self._rebuild_tree(None)
+
     def _on_search_changed(self, entry: "Gtk.SearchEntry") -> None:
         self._search_filter = entry.get_text().strip().lower()
         if self._selected_device:
@@ -486,6 +528,9 @@ class Sidebar(Gtk.Box):
 
         for type_name in _TYPE_ORDER:
             if type_name not in tree:
+                continue
+            # Skip types that the user has toggled off.
+            if type_name not in self._type_filter_active:
                 continue
             families = tree[type_name]
             # When searching, pre-filter entries so we can count visible leaves.

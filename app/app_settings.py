@@ -10,6 +10,8 @@ _DEFAULTS = {
     "last_device": "",
     "last_port": "8000",
     "tree_expanded_types": ["LLM"],
+    # Active model type filters — empty list means all types shown.
+    "type_filters": [],
     "log_level_filters": ["DEBUG", "INFO", "WARN", "ERROR"],
     "window_width": 1280,
     "window_height": 820,
