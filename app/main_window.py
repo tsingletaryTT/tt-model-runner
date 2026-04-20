@@ -1526,6 +1526,11 @@ class MainPanel(Gtk.Box):
         if self._config_panel is not None:
             self._config_panel.on_dev_launch = cb
 
+    def load_options_in_config(self, options) -> None:
+        """Sync config panel widgets to restored per-model launch options."""
+        if self._config_panel is not None:
+            self._config_panel.load_options(options)
+
     def _on_scroll(self, adj):
         self._auto_scroll = adj.get_value() >= adj.get_upper() - adj.get_page_size() - 10
 
@@ -2401,13 +2406,15 @@ class MainWindow(Gtk.ApplicationWindow):
     def _on_model_select(self, entry: ModelEntry) -> None:
         """Tell the controller a new model was selected and update the banner
         and config panel immediately so the user sees feedback."""
-        self._ctrl.select_model(entry)
+        self._ctrl.select_model(entry)  # restores per-model options into controller
         self._panel._banner_info.set_text(
             f"{entry.display_name}  ·  {entry.device_type}"
             f"  ·  {entry.inference_engine}"
         )
         self._panel.show_config(entry, self._on_options_changed)
         self._panel.set_dev_launch_callback(self._on_dev_launch)
+        # After show_config resets to preset, sync saved per-model options back into UI.
+        self._panel.load_options_in_config(self._ctrl.get_options())
         # Show hardware compatibility from compat catalog if available
         cat = self._ctrl.compat_catalog
         if cat is not None:

@@ -667,6 +667,22 @@ class ConfigPanel(Gtk.Box):
             self._uc_box.append(btn)
             self._use_case_btns[uc] = btn
 
+    def load_options(self, options: "LaunchOptions") -> None:
+        """Sync UI widgets to the given options (e.g., restored from per-model settings).
+
+        This overrides the preset defaults applied by set_model without triggering
+        on_options_changed, since the options are already set in the controller.
+        """
+        self._inhibit_signals = True
+        self._options = options
+        # Highlight the matching use-case chip (best-effort — no chip may match)
+        for uc, btn in self._use_case_btns.items():
+            btn.handler_block_by_func(self._on_uc_toggled)
+            btn.set_active(uc == options.use_case)
+            btn.handler_unblock_by_func(self._on_uc_toggled)
+        self._sync_widgets_to_options()
+        self._inhibit_signals = False
+
     def _apply_use_case(self, use_case: str) -> None:
         """Set active chip and fill quick-settings fields from preset."""
         if self._entry is None:
