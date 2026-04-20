@@ -2090,9 +2090,7 @@ class MainPanel(Gtk.Box):
             pass  # silent fail — user can retry
 
     def _on_bench_clear_history(self, _btn) -> None:
-        from app_settings import settings as _settings
-        _settings.benchmark_history = []
-        _settings.save()
+        self._ctrl.clear_bench_history()
         self._bench_history_buf.set_text("History cleared.")
 
     def append_bench_result(self, result) -> None:

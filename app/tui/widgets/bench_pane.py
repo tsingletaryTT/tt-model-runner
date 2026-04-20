@@ -24,6 +24,10 @@ class BenchPane(Widget):
         height: 3;
         layout: horizontal;
     }
+    #bench-hist-row {
+        height: 3;
+        layout: horizontal;
+    }
     #bench-live-log {
         height: 1fr;
         border: solid $primary-darken-2;
@@ -40,6 +44,9 @@ class BenchPane(Widget):
             yield Checkbox("Concurrency sweeps", id="bench-sweeps")
             yield Checkbox("Percentile report",  id="bench-pct")
             yield Button("▶ Run Benchmark", id="bench-run-btn", variant="success")
+        with Widget(id="bench-hist-row"):
+            yield Button("⬇ Export CSV", id="bench-csv-btn", variant="default")
+            yield Button("✕ Clear History", id="bench-clear-btn", variant="default")
         yield Label("LIVE OUTPUT")
         yield RichLog(id="bench-live-log", highlight=False, markup=False)
         yield Label("RESULTS")
@@ -102,8 +109,15 @@ class BenchPane(Widget):
                             app_ctrl.state != ServerState.READY)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id != "bench-run-btn":
-            return
+        btn_id = event.button.id
+        if btn_id == "bench-run-btn":
+            self._do_run()
+        elif btn_id == "bench-csv-btn":
+            self._do_export_csv()
+        elif btn_id == "bench-clear-btn":
+            self._do_clear_history()
+
+    def _do_run(self) -> None:
         from server_manager import ServerState
         app_ctrl = getattr(self.app, "_ctrl", None)
         if not app_ctrl or app_ctrl.state != ServerState.READY:
@@ -116,3 +130,38 @@ class BenchPane(Widget):
         self.set_running(True)
         app_ctrl.run_benchmark(mode=mode, concurrency_sweeps=sweeps,
                                percentile_report=pct)
+
+    def _do_export_csv(self) -> None:
+        import csv, datetime, io
+        from pathlib import Path
+        app_ctrl = getattr(self.app, "_ctrl", None)
+        if not app_ctrl:
+            return
+        history = app_ctrl.get_bench_history()
+        if not history:
+            self.notify("No benchmark history to export", severity="warning")
+            return
+        fields = [
+            "timestamp", "model_name", "device", "isl", "osl", "concurrency",
+            "mean_ttft_ms", "p95_ttft_ms", "mean_tps", "tps_decode",
+            "mean_e2el_ms", "request_throughput", "tier_pass",
+        ]
+        ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        out_path = Path.home() / f"tt-benchmarks-{ts}.csv"
+        out = io.StringIO()
+        writer = csv.DictWriter(out, fieldnames=fields, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(history)
+        try:
+            out_path.write_text(out.getvalue())
+            self.notify(f"Saved to {out_path}", title="CSV exported")
+        except OSError as exc:
+            self.notify(f"Export failed: {exc}", severity="error")
+
+    def _do_clear_history(self) -> None:
+        app_ctrl = getattr(self.app, "_ctrl", None)
+        if not app_ctrl:
+            return
+        app_ctrl.clear_bench_history()
+        self.query_one("#bench-results", DataTable).clear()
+        self.notify("Benchmark history cleared")

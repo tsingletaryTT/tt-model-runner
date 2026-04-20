@@ -1312,6 +1312,11 @@ class AppController:
         """Return the persisted benchmark history as a list of dicts (newest first)."""
         return list(reversed(_settings.benchmark_history or []))
 
+    def clear_bench_history(self) -> None:
+        """Erase all persisted benchmark results."""
+        _settings.benchmark_history = []
+        _settings.save()
+
     def is_starred(self, entry: ModelEntry) -> bool:
         """Return True if this model/device is in the starred list."""
         starred = _settings.starred_models or []
