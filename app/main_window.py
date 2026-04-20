@@ -17,7 +17,7 @@ from typing import List, Optional
 import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Pango", "1.0")
-from gi.repository import GLib, Gtk, Pango
+from gi.repository import Gdk, GLib, Gtk, Pango
 
 from app_settings import settings as _settings
 from model_catalog import ModelCatalog, ModelEntry
@@ -1000,6 +1000,12 @@ class MainPanel(Gtk.Box):
         self._save_log_btn.connect("clicked", self._on_save_log)
         filter_bar.append(self._save_log_btn)
 
+        self._copy_log_btn = Gtk.Button(label="⎘ Copy")
+        self._copy_log_btn.add_css_class("flat")
+        self._copy_log_btn.set_tooltip_text("Copy selected text, or all visible log lines (Ctrl+A then Ctrl+C)")
+        self._copy_log_btn.connect("clicked", self._on_copy_log)
+        filter_bar.append(self._copy_log_btn)
+
         # Log search field — filters displayed lines to those matching the query.
         self._log_search = Gtk.SearchEntry()
         self._log_search.set_placeholder_text("Search logs…")
@@ -1026,6 +1032,18 @@ class MainPanel(Gtk.Box):
         self._log_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
         self._log_view.add_css_class("log-view")
         self._log_view.set_monospace(True)
+
+        # Right-click context menu for copy actions.
+        self._log_ctx_popover = self._build_log_context_popover()
+        self._log_ctx_popover.set_parent(self._log_view)
+        _rclick = Gtk.GestureClick(button=3)
+        _rclick.connect("pressed", self._on_log_right_click)
+        self._log_view.add_controller(_rclick)
+
+        # Ctrl+C key handler — copies selection or all visible text.
+        _key_ctrl = Gtk.EventControllerKey()
+        _key_ctrl.connect("key-pressed", self._on_log_key_pressed)
+        self._log_view.add_controller(_key_ctrl)
 
         self._vadj = log_scroll.get_vadjustment()
         self._vadj.connect("value-changed", self._on_scroll)
@@ -1326,6 +1344,95 @@ class MainPanel(Gtk.Box):
             Path(path).write_text("\n".join(lines) + "\n")
         except Exception as exc:
             self.append_log(f"⚠ Save log failed: {exc}")
+
+    def _build_log_context_popover(self) -> Gtk.Popover:
+        """Build the right-click context menu popover for the log view."""
+        pop = Gtk.Popover()
+        pop.set_has_arrow(False)
+        vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        vbox.set_margin_start(4); vbox.set_margin_end(4)
+        vbox.set_margin_top(4);   vbox.set_margin_bottom(4)
+
+        btn_line = Gtk.Button(label="Copy line")
+        btn_line.add_css_class("flat")
+        btn_line.connect("clicked", self._on_copy_line_at_cursor)
+        vbox.append(btn_line)
+
+        btn_sel = Gtk.Button(label="Copy selection")
+        btn_sel.add_css_class("flat")
+        btn_sel.connect("clicked", self._on_copy_selection)
+        vbox.append(btn_sel)
+
+        btn_all = Gtk.Button(label="Copy all visible")
+        btn_all.add_css_class("flat")
+        btn_all.connect("clicked", self._on_copy_all_log)
+        vbox.append(btn_all)
+
+        pop.set_child(vbox)
+        return pop
+
+    def _on_log_right_click(self, gesture, _n, x, y) -> None:
+        r = Gdk.Rectangle()
+        r.x, r.y, r.width, r.height = int(x), int(y), 1, 1
+        self._log_ctx_popover.set_pointing_to(r)
+        # Store the click iter offset so "Copy line" knows which line to copy.
+        buf_x, buf_y = self._log_view.window_to_buffer_coords(
+            Gtk.TextWindowType.WIDGET, int(x), int(y)
+        )
+        it, _ = self._log_view.get_iter_at_position(buf_x, buf_y)
+        self._log_ctx_iter_offset = it.get_offset()
+        self._log_ctx_popover.popup()
+
+    def _on_log_key_pressed(self, ctrl, keyval, keycode, state) -> bool:
+        ctrl_held = bool(state & Gdk.ModifierType.CONTROL_MASK)
+        if ctrl_held and keyval == Gdk.KEY_c:
+            self._copy_log_to_clipboard(line_only=False)
+            return True
+        return False
+
+    def _on_copy_log(self, _btn) -> None:
+        """'⎘ Copy' button: copy selection or all visible log text."""
+        self._copy_log_to_clipboard(line_only=False)
+
+    def _on_copy_line_at_cursor(self, _btn) -> None:
+        self._log_ctx_popover.popdown()
+        buf = self._log_buf
+        it = buf.get_iter_at_offset(self._log_ctx_iter_offset)
+        start = it.copy(); start.set_line_offset(0)
+        end   = it.copy()
+        if not end.ends_line():
+            end.forward_to_line_end()
+        text = buf.get_text(start, end, False)
+        self._put_in_clipboard(text)
+
+    def _on_copy_selection(self, _btn) -> None:
+        self._log_ctx_popover.popdown()
+        self._copy_log_to_clipboard(line_only=False)
+
+    def _on_copy_all_log(self, _btn) -> None:
+        self._log_ctx_popover.popdown()
+        self._copy_all_visible_log()
+
+    def _copy_log_to_clipboard(self, *, line_only: bool) -> None:
+        """Copy selected text if there's a selection, otherwise copy all visible text."""
+        buf = self._log_buf
+        if buf.get_has_selection():
+            start, end = buf.get_selection_bounds()
+            self._put_in_clipboard(buf.get_text(start, end, False))
+        else:
+            self._copy_all_visible_log()
+
+    def _copy_all_visible_log(self) -> None:
+        """Copy all text currently in the log buffer."""
+        buf = self._log_buf
+        self._put_in_clipboard(buf.get_text(buf.get_start_iter(), buf.get_end_iter(), False))
+
+    def _put_in_clipboard(self, text: str) -> None:
+        display = self._log_view.get_display()
+        if display is None:
+            return
+        clipboard = display.get_clipboard()
+        clipboard.set(text)
 
     def set_state(self, state: ServerState, info: str = ""):
         label, css_class = _STATE_LABELS.get(state, ("?", "pill-idle"))
