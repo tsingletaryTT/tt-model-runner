@@ -2152,6 +2152,11 @@ class MainWindow(Gtk.ApplicationWindow):
         # Populate benchmark history from persisted data on startup.
         GLib.idle_add(lambda: self._panel.load_bench_history(self._ctrl.get_bench_history()) or False)
 
+        # Register window-level keyboard shortcuts.
+        _kc = Gtk.EventControllerKey()
+        _kc.connect("key-pressed", self._on_window_key_pressed)
+        self.add_controller(_kc)
+
     # ── Callbacks pushed by AppController ────────────────────────────────────
 
     def _on_state_changed(self, state: ServerState, info: str) -> None:
@@ -2540,3 +2545,48 @@ class MainWindow(Gtk.ApplicationWindow):
                                      percentile_report=pct)
 
         self._panel._bench_run_btn.connect("clicked", _on_run)
+
+    # ── Global keyboard shortcuts ─────────────────────────────────────────────
+
+    def _on_window_key_pressed(self, ctrl, keyval, keycode, state) -> bool:
+        """Handle window-level keyboard shortcuts.
+
+        F5           — launch (if idle/error) or stop (if active)
+        Ctrl+K       — jump log to last error
+        Ctrl+Shift+S — save log to file
+        Ctrl+1..5    — switch main panel tab (config/logs/tools/bench/discover)
+        """
+        ctrl_held  = bool(state & Gdk.ModifierType.CONTROL_MASK)
+        shift_held = bool(state & Gdk.ModifierType.SHIFT_MASK)
+
+        if keyval == Gdk.KEY_F5:
+            active_states = (
+                ServerState.LAUNCHING, ServerState.PULLING_IMAGE,
+                ServerState.LOADING, ServerState.READY, ServerState.RUNNING,
+            )
+            if self._ctrl.state in active_states:
+                self._ctrl.stop()
+            elif self._ctrl.state in (ServerState.IDLE, ServerState.ERROR, ServerState.DONE):
+                self._on_launch_clicked()
+            return True
+
+        if ctrl_held and not shift_held and keyval == Gdk.KEY_k:
+            self._panel._jump_error_btn.emit("clicked")
+            return True
+
+        if ctrl_held and shift_held and keyval == Gdk.KEY_S:
+            self._panel._save_log_btn.emit("clicked")
+            return True
+
+        if ctrl_held and not shift_held:
+            tab_map = {
+                Gdk.KEY_1: "config",
+                Gdk.KEY_2: "logs",
+                Gdk.KEY_3: "tools",
+                Gdk.KEY_4: "bench",
+            }
+            if keyval in tab_map:
+                self._panel._stack.set_visible_child_name(tab_map[keyval])
+                return True
+
+        return False
