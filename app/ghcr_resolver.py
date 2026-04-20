@@ -144,17 +144,17 @@ def _best_tag(tags: List[str], failed_tag: str) -> Optional[str]:
             if best != failed_tag:
                 return best
 
-    # Fall back: sort by all numeric components descending, but only consider
-    # tags that are strictly newer than (or equal to) the failed one.
+    # Fall back: only consider tags strictly newer than the failed one.
+    # Never suggest a downgrade — an older image is likely incompatible.
     def _numeric_key(t: str) -> List[int]:
         return [int(n) for n in re.findall(r'\d+', t)] or [0]
 
     failed_key = _numeric_key(failed_tag)
     newer = [t for t in versioned if _numeric_key(t) > failed_key]
-    candidates = newer if newer else versioned
-    candidates.sort(key=_numeric_key, reverse=True)
-    best = candidates[0]
-    return best if best != failed_tag else None
+    if not newer:
+        return None   # no upgrade available; caller will try GitHub Releases
+    newer.sort(key=_numeric_key, reverse=True)
+    return newer[0]
 
 
 def _resolve_via_github_releases(

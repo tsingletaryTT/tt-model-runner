@@ -1218,6 +1218,8 @@ class MainPanel(Gtk.Box):
         self._stepper_label = Gtk.Label(label="")
         self._stepper_label.add_css_class("muted")
         self._stepper_label.set_halign(Gtk.Align.START)
+        self._stepper_label.set_ellipsize(Pango.EllipsizeMode.END)
+        self._stepper_label.set_max_width_chars(1)
         stepper_box.append(self._stepper_label)
         self._stepper_rev.set_child(stepper_box)
         self.append(self._stepper_rev)
@@ -1235,6 +1237,8 @@ class MainPanel(Gtk.Box):
         self._progress_label = Gtk.Label(label="")
         self._progress_label.add_css_class("muted")
         self._progress_label.set_halign(Gtk.Align.START)
+        self._progress_label.set_ellipsize(Pango.EllipsizeMode.END)
+        self._progress_label.set_max_width_chars(1)
         prog_box.append(self._progress_label)
         self._progress_rev.set_child(prog_box)
         self.append(self._progress_rev)
@@ -1242,6 +1246,7 @@ class MainPanel(Gtk.Box):
         # Tour panel (revealed during LOADING)
         self._tour_rev = Gtk.Revealer()
         self._tour_rev.set_transition_type(Gtk.RevealerTransitionType.SLIDE_DOWN)
+        self._tour_rev.set_overflow(Gtk.Overflow.HIDDEN)
         tour_outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         tour_outer.add_css_class("tour-panel")
         tour_outer.set_margin_start(8); tour_outer.set_margin_end(8)
@@ -1469,6 +1474,8 @@ class MainPanel(Gtk.Box):
         # because Gtk.Popover with autohide (grabbing) must be parented to a
         # native surface (GtkWindow), not a deep widget like GtkTextView.
         self._log_ctx_popover = self._build_log_context_popover()
+        self._log_ctx_iter_offset: int = 0
+        self._log_ctx_sel_text: str = ""
         _rclick = Gtk.GestureClick(button=3)
         _rclick.connect("pressed", self._on_log_right_click)
         self._log_view.add_controller(_rclick)
@@ -2064,6 +2071,14 @@ class MainPanel(Gtk.Box):
         )
         _, it, _ = self._log_view.get_iter_at_position(buf_x, buf_y)
         self._log_ctx_iter_offset = it.get_offset()
+        # Save selection NOW — opening a grabbing popover steals focus and
+        # clears the GtkTextView selection before "Copy selection" can read it.
+        buf = self._log_buf
+        if buf.get_has_selection():
+            sel_start, sel_end = buf.get_selection_bounds()
+            self._log_ctx_sel_text = buf.get_text(sel_start, sel_end, False)
+        else:
+            self._log_ctx_sel_text = ""
         self._log_ctx_popover.popup()
 
     def _on_log_key_pressed(self, ctrl, keyval, keycode, state) -> bool:
@@ -2090,7 +2105,13 @@ class MainPanel(Gtk.Box):
 
     def _on_copy_selection(self, _btn) -> None:
         self._log_ctx_popover.popdown()
-        self._copy_log_to_clipboard(line_only=False)
+        # Use the text snapshotted at right-click time — the selection is
+        # cleared when the grabbing popover takes focus.
+        text = getattr(self, "_log_ctx_sel_text", "")
+        if text:
+            self._put_in_clipboard(text)
+        else:
+            self._copy_log_to_clipboard(line_only=False)
 
     def _on_copy_all_log(self, _btn) -> None:
         self._log_ctx_popover.popdown()
