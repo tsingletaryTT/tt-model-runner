@@ -41,7 +41,7 @@ _CSS = b"""
 @define-color tt_warning     #F4C471;
 
 window, .view { background-color: @tt_bg_darkest; color: @tt_text; }
-/* Scope font to window so it inherits naturally — avoid * which bleeds
+/* Scope font to window so it inherits naturally -- avoid * which bleeds
    color/font into system-managed popups, tooltips, and IME overlays. */
 window { font-family: "Noto Sans", "Segoe UI", sans-serif; font-size: 13px; }
 label, checkbutton > label, radiobutton > label,
@@ -49,7 +49,7 @@ expander > title > label { color: @tt_text; }
 .section-label { color: @tt_accent; font-weight: bold; font-size: 11px; letter-spacing: 0.5px; }
 .muted { color: @tt_text_muted; font-size: 11px; }
 
-/* Semantic status classes — use add_css_class / set_css_classes instead of inline Pango markup */
+/* Semantic status classes -- use add_css_class / set_css_classes instead of inline Pango markup */
 .status-ok    { color: @tt_success; }
 .status-warn  { color: @tt_warning; }
 .status-error { color: @tt_error; }
