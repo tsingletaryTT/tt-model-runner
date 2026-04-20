@@ -88,7 +88,8 @@ class ConfigPane(Widget):
         self._options = None
         self._on_options_changed: Optional[Callable] = None
         self._syncing: bool = False   # suppress change callbacks during sync
-        self._on_dev_launch: Optional[Callable] = None  # (model_id, sw_stack) → None
+        self._on_dev_launch: Optional[Callable] = None   # (model_id, sw_stack) → None
+        self._on_download: Optional[Callable] = None     # (hf_repo: str) → None
         self._dev_stacks: list = []   # ["tt-forge", "tt-metal", ...] for current model
         self._arch_scan_model: str = ""  # hf_model_repo of in-flight arch scan
         self._arch_ctx_limit: int = 0   # model's actual max context_length from HF cache
@@ -115,6 +116,7 @@ class ConfigPane(Widget):
             yield Input(placeholder="hf_… (Enter to save)", id="hf-token-input", password=True)
             yield Button("✓", id="hf-token-save", variant="default")
         yield Static("", id="hf-status")
+        yield Button("⬇  Download to HF cache", id="dl-btn", variant="default")
         yield Label("COMMAND PREVIEW")
         yield Static("", id="command-preview")
         yield Static("", id="dev-image-strip")
@@ -136,6 +138,12 @@ class ConfigPane(Widget):
         self.query_one("#timing-strip", Static).update(self._make_timing_label(entry))
         self.query_one("#desc-strip", Static).update("")
         self.query_one("#compat-strip", Static).update("")
+        try:
+            dl = self.query_one("#dl-btn", Button)
+            dl.label = "⬇  Download to HF cache"
+            dl.disabled = False
+        except Exception:
+            pass
         self._scan_arch_async(entry)
 
         row = self.query_one("#use-case-row")
@@ -196,6 +204,9 @@ class ConfigPane(Widget):
     def set_dev_launch_callback(self, callback) -> None:
         self._on_dev_launch = callback
 
+    def set_download_callback(self, callback) -> None:
+        self._on_download = callback
+
     # ---------------------------------------------------------------- timing estimate
 
     @staticmethod
@@ -244,6 +255,13 @@ class ConfigPane(Widget):
     def _on_arch_scanned(self, hf_repo: str, info) -> None:
         if self._entry is None or getattr(self._entry, "hf_model_repo", "") != hf_repo:
             return  # model changed while scan was in flight
+        if info.is_cached:
+            try:
+                dl = self.query_one("#dl-btn", Button)
+                dl.label = "✓  Cached — re-download?"
+                dl.disabled = False
+            except Exception:
+                pass
         if not info.is_cached:
             return
         parts = []
@@ -346,6 +364,15 @@ class ConfigPane(Widget):
         btn_id = event.button.id or ""
         if btn_id == "hf-token-save":
             self._save_hf_token()
+            return
+        if btn_id == "dl-btn":
+            if self._entry and self._on_download:
+                try:
+                    self.query_one("#dl-btn", Button).disabled = True
+                    self.query_one("#dl-btn", Button).label = "⬇  Downloading…"
+                except Exception:
+                    pass
+                self._on_download(self._entry.hf_model_repo)
             return
         if btn_id.startswith("uc-"):
             from launch_options import apply_preset

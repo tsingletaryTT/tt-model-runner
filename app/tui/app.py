@@ -106,6 +106,7 @@ class TuiApp(App[None]):
         self._ctrl.on_compat_catalog_loaded = self._on_compat_catalog_loaded
         self._ctrl.on_docker_images = self._on_docker_images
         self._ctrl.on_model_identified = self._on_model_identified
+        self._ctrl.on_download_progress = self._on_download_progress
 
         self._set_ready_tabs_enabled(False)
 
@@ -192,18 +193,6 @@ class TuiApp(App[None]):
         config_pane = self.query_one(ConfigPane)
         config_pane.set_compat_info(compat_entry, [])
 
-    def _on_model_select(self, entry) -> None:
-        self._ctrl.select_model(entry)
-        config_pane = self.query_one(ConfigPane)
-        config_pane.set_model(entry, self._on_options_changed)
-        config_pane.set_dev_launch_callback(self._ctrl.launch_dev_image)
-        # Show compat info if catalog has been loaded
-        compat = self._ctrl.compat_catalog
-        if compat:
-            compat_entry = (compat.lookup(entry.display_name.lower().replace(" ", "-"))
-                            or compat.lookup_by_display_name(entry.display_name))
-            config_pane.set_compat_info(compat_entry, [])
-
     def _on_options_changed(self, options) -> None:
         self._ctrl.set_options(options)
 
@@ -231,10 +220,42 @@ class TuiApp(App[None]):
         """Auto-select identified model in ModelRail after reconnect."""
         rail = self.query_one(ModelRail)
         rail.selected_entry = entry
-        # Highlight the entry in the list by re-running search with an empty string
-        # so the entry appears; the visual highlight is best-effort in Textual ListView.
         self._on_model_select(entry)
         self.notify(f"Identified: {entry.display_name}", title="Model detected")
+
+    def _on_model_select(self, entry) -> None:
+        self._ctrl.select_model(entry)
+        config_pane = self.query_one(ConfigPane)
+        config_pane.set_model(entry, self._on_options_changed)
+        config_pane.set_dev_launch_callback(self._ctrl.launch_dev_image)
+        config_pane.set_download_callback(self._ctrl.download_model)
+        # Show compat info if catalog has been loaded
+        compat = self._ctrl.compat_catalog
+        if compat:
+            compat_entry = (compat.lookup(entry.display_name.lower().replace(" ", "-"))
+                            or compat.lookup_by_display_name(entry.display_name))
+            config_pane.set_compat_info(compat_entry, [])
+
+    def _on_download_progress(self, hf_repo: str, fraction: float, status_line: str) -> None:
+        from textual.widgets import Static, Button
+        try:
+            config_pane = self.query_one(ConfigPane)
+            timing = config_pane.query_one("#timing-strip", Static)
+            dl_btn = config_pane.query_one("#dl-btn", Button)
+            if fraction < 0:
+                timing.update(f"[red]Download failed[/red]")
+                dl_btn.label = "⬇  Download failed — retry?"
+                dl_btn.disabled = False
+            elif fraction >= 1.0:
+                timing.update("")
+                dl_btn.label = "✓  Cached — re-download?"
+                dl_btn.disabled = False
+                self.notify(f"Download complete: {hf_repo}", title="Download")
+            else:
+                pct = int(fraction * 100)
+                timing.update(f"[cyan]⬇ {pct}%  {status_line[:40]}[/cyan]")
+        except Exception:
+            pass
 
     def action_launch_stop(self) -> None:
         from server_manager import ServerState

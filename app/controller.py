@@ -259,6 +259,7 @@ class AppController:
         self.on_compat_catalog_loaded: Optional[Callable] = None     # (Optional[CompatCatalog],)
         self.on_docker_images: Optional[Callable] = None             # (List[DockerImage],)
         self.on_model_identified: Optional[Callable] = None          # (ModelEntry,) — fired after reconnect identifies the running model
+        self.on_download_progress: Optional[Callable] = None         # (hf_repo, fraction, status_line)
 
     # ── Read-only properties for views ──────────────────────────────────────
 
@@ -805,6 +806,90 @@ class AppController:
                    f"▶ Dev image launch: {model_id} via {software_stack}")
         self._transition(ServerState.LAUNCHING)
         self._dev_launcher.launch(config, self._handle_log_line, self._on_server_state)
+
+    def download_model(self, hf_repo: str, on_done: Optional[Callable[[bool], None]] = None) -> None:
+        """Download a HuggingFace model repo to the local cache in a background thread.
+
+        Uses huggingface_hub.snapshot_download if available, otherwise falls back to
+        the huggingface-cli subprocess. Fires on_download_progress(hf_repo, fraction, msg)
+        periodically and on_log_line for each status message.
+
+        on_done(success: bool) is called on the UI thread when finished.
+        """
+        def _run():
+            token = os.environ.get("HF_TOKEN", "") or _settings.hf_token or ""
+            self._emit("on_log_line", f"⬇ Downloading {hf_repo}…")
+            self._emit("on_download_progress", hf_repo, 0.0, "Starting…")
+            success = False
+            try:
+                import importlib.util
+                if importlib.util.find_spec("huggingface_hub"):
+                    from huggingface_hub import snapshot_download
+                    from huggingface_hub.utils import tqdm as hf_tqdm
+                    import contextlib
+                    import io
+                    _last_pct = [0.0]
+
+                    class _ProgressHook:
+                        def __call__(self, size, total, _elapsed=None):
+                            if total and total > 0:
+                                pct = min(size / total, 1.0)
+                                if pct - _last_pct[0] >= 0.02:
+                                    _last_pct[0] = pct
+                                    mb_done = size / 1e6
+                                    mb_total = total / 1e6
+                                    msg = f"{mb_done:.0f} / {mb_total:.0f} MB"
+                                    # dispatch is thread-safe
+                                    from app_settings import settings as _s
+                                    _ = _s  # keep import live
+                                    AppController._static_emit_progress(
+                                        self_ref, hf_repo, pct, msg)
+
+                    self_ref = self
+
+                    snapshot_download(
+                        repo_id=hf_repo,
+                        token=token or None,
+                        ignore_patterns=["*.gguf", "*.bin"],
+                    )
+                    success = True
+                    self._emit("on_log_line", f"✓ Downloaded {hf_repo}")
+                else:
+                    # Fallback: huggingface-cli download
+                    cmd = ["huggingface-cli", "download", hf_repo]
+                    if token:
+                        cmd += ["--token", token]
+                    proc = subprocess.Popen(
+                        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
+                    )
+                    for line in proc.stdout:
+                        line = line.rstrip("\n")
+                        self._emit("on_log_line", line)
+                        # Simple fraction estimate from progress lines like "100%|███…"
+                        m = re.search(r'(\d+)%', line)
+                        if m:
+                            pct = int(m.group(1)) / 100.0
+                            self._emit("on_download_progress", hf_repo, pct, line[:60])
+                    rc = proc.wait()
+                    success = rc == 0
+                    if success:
+                        self._emit("on_log_line", f"✓ Downloaded {hf_repo}")
+                    else:
+                        self._emit("on_log_line", f"✗ huggingface-cli exited {rc}")
+            except Exception as exc:
+                self._emit("on_log_line", f"✗ Download error: {exc}")
+                success = False
+            self._emit("on_download_progress", hf_repo, 1.0 if success else -1.0,
+                       "Done" if success else "Failed")
+            if on_done:
+                self._dispatch(on_done, success)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    @staticmethod
+    def _static_emit_progress(ctrl, hf_repo, pct, msg):
+        ctrl._emit("on_download_progress", hf_repo, pct, msg)
+        ctrl._emit("on_log_line", f"  ⬇ {hf_repo}: {msg}")
 
     def _handle_log_line(self, line: str) -> None:
         """Forward a log line to views and update state/substage from it."""

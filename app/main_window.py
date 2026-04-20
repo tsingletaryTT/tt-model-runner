@@ -1693,6 +1693,14 @@ class MainPanel(Gtk.Box):
         if self._config_panel is not None:
             self._config_panel.on_dev_launch = cb
 
+    def set_download_callback(self, cb) -> None:
+        if self._config_panel is not None:
+            self._config_panel.on_download = cb
+
+    def update_download_progress(self, hf_repo: str, fraction: float, status_line: str) -> None:
+        if self._config_panel is not None:
+            self._config_panel.update_download_progress(hf_repo, fraction, status_line)
+
     def load_options_in_config(self, options) -> None:
         """Sync config panel widgets to restored per-model launch options."""
         if self._config_panel is not None:
@@ -2300,6 +2308,7 @@ class MainWindow(Gtk.ApplicationWindow):
         controller.on_compat_catalog_loaded = self._on_compat_catalog_loaded
         controller.on_docker_images = lambda imgs: self._sidebar.update_docker_images(imgs)
         controller.on_model_identified = self._on_model_identified
+        controller.on_download_progress = self._on_download_progress
 
         # Connect the ↻ chip-telemetry refresh button to the controller.
         self._sidebar._hw_refresh_btn.connect(
@@ -2665,6 +2674,7 @@ class MainWindow(Gtk.ApplicationWindow):
         )
         self._panel.show_config(entry, self._on_options_changed)
         self._panel.set_dev_launch_callback(self._on_dev_launch)
+        self._panel.set_download_callback(self._on_download_model)
         # After show_config resets to preset, sync saved per-model options back into UI.
         self._panel.load_options_in_config(self._ctrl.get_options())
         # Show hardware compatibility from compat catalog if available
@@ -2701,6 +2711,18 @@ class MainWindow(Gtk.ApplicationWindow):
         """Launch a model via the tt-developer-image container."""
         self._panel.show_logs()
         self._ctrl.launch_dev_image(compat_id, sw_stack)
+
+    def _on_download_model(self, hf_repo: str) -> None:
+        """Initiate HF model download; progress updates arrive via on_download_progress."""
+        self._panel.show_logs()
+        self._ctrl.download_model(hf_repo)
+
+    def _on_download_progress(self, hf_repo: str, fraction: float, status_line: str) -> None:
+        self._panel.update_download_progress(hf_repo, fraction, status_line)
+        if fraction >= 1.0:
+            # Re-scan HF cache to update the ✓ badge in tree + arch strip
+            if self._sidebar:
+                self._sidebar._scan_hf_cache_async()
 
     def _on_repo_change(self, path: Path) -> None:
         """Forward repo path changes to the controller so it can reload the

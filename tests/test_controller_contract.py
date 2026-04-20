@@ -55,6 +55,9 @@ class ViewContract(ABC):
     @abstractmethod
     def on_model_identified(self, entry): ...
 
+    @abstractmethod
+    def on_download_progress(self, hf_repo: str, fraction: float, status_line: str): ...
+
 
 class GtkViewStub(ViewContract):
     def on_state_changed(self, state, info): pass
@@ -71,6 +74,7 @@ class GtkViewStub(ViewContract):
     def on_compat_catalog_loaded(self, catalog): pass
     def on_docker_images(self, images): pass
     def on_model_identified(self, entry): pass
+    def on_download_progress(self, hf_repo, fraction, status_line): pass
 
 
 class TuiViewStub(ViewContract):
@@ -88,6 +92,7 @@ class TuiViewStub(ViewContract):
     def on_compat_catalog_loaded(self, catalog): pass
     def on_docker_images(self, images): pass
     def on_model_identified(self, entry): pass
+    def on_download_progress(self, hf_repo, fraction, status_line): pass
 
 
 def test_gtk_stub_satisfies_contract():

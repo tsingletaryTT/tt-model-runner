@@ -81,6 +81,7 @@ class ConfigPanel(Gtk.Box):
         self.on_dev_launch: Optional[Callable] = None  # (compat_id: str, sw_stack: str) → None
         self._arch_ctx_limit: int = 0  # model's actual max context_length from HF cache
         self._ctx_user_edited: bool = False   # True once user has manually changed ctx
+        self.on_download: Optional[Callable] = None  # (hf_repo: str) → None
         self._build()
 
     # ------------------------------------------------------------------ build
@@ -152,10 +153,24 @@ class ConfigPanel(Gtk.Box):
         self._strip_compat = Gtk.Label(label="")
         self._strip_compat.add_css_class("muted")
         self._strip_compat.set_halign(Gtk.Align.START)
-        self._strip_compat.set_margin_bottom(6)
+        self._strip_compat.set_margin_bottom(4)
         self._strip_compat.set_ellipsize(Pango.EllipsizeMode.END)
         self._strip_compat.set_visible(False)
         inner.append(self._strip_compat)
+
+        # Download row — shown for all models; ⬇ button triggers HF download
+        dl_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        dl_row.set_margin_bottom(6)
+        self._dl_btn = Gtk.Button(label="⬇  Download to HF cache")
+        self._dl_btn.set_hexpand(True)
+        self._dl_btn.connect("clicked", self._on_download_clicked)
+        dl_row.append(self._dl_btn)
+        self._dl_progress = Gtk.ProgressBar()
+        self._dl_progress.set_hexpand(True)
+        self._dl_progress.set_valign(Gtk.Align.CENTER)
+        self._dl_progress.set_visible(False)
+        dl_row.append(self._dl_progress)
+        inner.append(dl_row)
 
         inner.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
 
@@ -495,6 +510,9 @@ class ConfigPanel(Gtk.Box):
         self._arch_ctx_limit = 0
         self._ctx_user_edited = False
         self._ctx_warn_lbl.set_visible(False)
+        self._dl_btn.set_label("⬇  Download to HF cache")
+        self._dl_btn.set_sensitive(True)
+        self._dl_progress.set_visible(False)
         self._scan_arch_async(entry)
 
         # Rebuild use-case chips
@@ -534,6 +552,9 @@ class ConfigPanel(Gtk.Box):
         """Called on GTK thread after arch scan completes."""
         if self._entry is None or self._entry.hf_model_repo != hf_repo:
             return  # model changed while scan was in flight
+        if info.is_cached:
+            self._dl_btn.set_label("✓  Cached locally — re-download?")
+            self._dl_btn.set_sensitive(True)
         if not info.is_cached:
             return
         parts = []
@@ -605,6 +626,32 @@ class ConfigPanel(Gtk.Box):
     def _on_dev_launch_clicked(self, _btn, compat_id: str, sw: str) -> None:
         if self.on_dev_launch:
             self.on_dev_launch(compat_id, sw)
+
+    def _on_download_clicked(self, _btn) -> None:
+        if self._entry and self.on_download:
+            self._dl_btn.set_sensitive(False)
+            self._dl_btn.set_label("⬇  Downloading…")
+            self._dl_progress.set_visible(True)
+            self._dl_progress.set_fraction(0.0)
+            self.on_download(self._entry.hf_model_repo)
+
+    def update_download_progress(self, hf_repo: str, fraction: float, status_line: str) -> None:
+        """Called from the UI thread to update the download progress bar."""
+        if not self._entry or self._entry.hf_model_repo != hf_repo:
+            return
+        if fraction < 0:
+            # Error
+            self._dl_btn.set_label("⬇  Download failed — retry?")
+            self._dl_btn.set_sensitive(True)
+            self._dl_progress.set_visible(False)
+        elif fraction >= 1.0:
+            self._dl_btn.set_label("✓  Cached locally")
+            self._dl_btn.set_sensitive(False)
+            self._dl_progress.set_visible(False)
+        else:
+            self._dl_progress.set_fraction(fraction)
+            self._dl_progress.set_text(status_line[:40] if status_line else "")
+            self._dl_progress.set_show_text(True)
 
     def _auto_suggest_ctx(self) -> None:
         """When arch facts arrive, auto-snap ctx to the best option if user hasn't edited."""
