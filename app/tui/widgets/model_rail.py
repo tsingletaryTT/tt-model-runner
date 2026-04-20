@@ -6,6 +6,7 @@ from __future__ import annotations
 from typing import Callable, List, Optional, TYPE_CHECKING
 
 from textual.app import ComposeResult
+from textual.binding import Binding
 from textual.widget import Widget
 from textual.widgets import Button, Input, Label, ListItem, ListView, Static
 
@@ -60,6 +61,10 @@ class ModelRail(Widget):
     }
     """
 
+    BINDINGS = [
+        Binding("s", "toggle_star", "Star", show=False),
+    ]
+
     on_launch: Optional[Callable] = None
     on_stop:   Optional[Callable] = None
     on_model_select: Optional[Callable] = None
@@ -74,10 +79,15 @@ class ModelRail(Widget):
         # Instance-level lists — avoids the mutable class-level default pitfall.
         self._entries: list = []
         self._compat_entries: list = []  # (display_name, compat_entry, sw_stack) tuples
+        self._catalog = None
 
     def compose(self) -> ComposeResult:
         yield Static("[b]TT Model Runner[/b]", markup=True)
         yield Static("", id="state-pill")
+        yield Static("", id="starred-label", markup=True)
+        yield ListView(id="starred-list")
+        yield Static("", id="recent-label", markup=True)
+        yield ListView(id="recent-list")
         yield Label("Model:", classes="rail-section-label")
         yield ListView(id="model-list")
         yield Static("", id="discover-label")
@@ -103,13 +113,62 @@ class ModelRail(Widget):
             item._entry = entry
             item._compat_entry = None
             lv.append(item)
+        self._refresh_starred_recent()
+
+    def _refresh_starred_recent(self) -> None:
+        """Re-populate the STARRED and RECENT sections from settings."""
+        try:
+            from app_settings import settings as _settings
+        except Exception:
+            return
+        if not self._catalog:
+            return
+
+        # STARRED
+        starred_recs = _settings.starred_models or []
+        starred_entries = []
+        for rec in starred_recs:
+            e = self._catalog.get_entry(rec.get("model_name", ""), rec.get("device", ""))
+            if e:
+                starred_entries.append(e)
+        slv = self.query_one("#starred-list", ListView)
+        slv.clear()
+        slbl = self.query_one("#starred-label", Static)
+        if starred_entries:
+            slbl.update(f"[yellow]★ STARRED ({len(starred_entries)})[/yellow]")
+            for e in starred_entries:
+                item = ListItem(Label(f"★ {e.display_name[:16]}\n  {e.device_type}"))
+                item._entry = e
+                item._compat_entry = None
+                slv.append(item)
+        else:
+            slbl.update("")
+
+        # RECENT (up to 3)
+        recent_recs = (_settings.recent_models or [])[:3]
+        recent_entries = []
+        for rec in recent_recs:
+            e = self._catalog.get_entry(rec.get("model_name", ""), rec.get("device", ""))
+            if e:
+                recent_entries.append(e)
+        rlv = self.query_one("#recent-list", ListView)
+        rlv.clear()
+        rlbl = self.query_one("#recent-label", Static)
+        if recent_entries:
+            rlbl.update(f"[dim]RECENT ({len(recent_entries)})[/dim]")
+            for e in recent_entries:
+                item = ListItem(Label(f"{e.display_name[:17]}\n  {e.device_type}"))
+                item._entry = e
+                item._compat_entry = None
+                rlv.append(item)
+        else:
+            rlbl.update("")
 
     def load_compat_catalog(self, catalog, device_type: Optional[str] = None) -> None:
         """Add compat-only DISCOVER entries below the main model list."""
         known_names = {e.display_name.lower() for e in self._entries}
         self._compat_entries = []
         if device_type:
-            from compat_catalog import _HW_MAP
             for sw in ("tt-forge", "tt-metal"):
                 for ce in catalog.get_for_hardware(device_type, software=sw):
                     if ce.display_name.lower() not in known_names:
@@ -152,6 +211,22 @@ class ModelRail(Widget):
         else:
             btn.label = "■ Stop"
             btn.variant = "error"
+
+    def action_toggle_star(self) -> None:
+        """Toggle star on the currently selected model entry."""
+        if not self.selected_entry:
+            self.app.notify("Select a model to star/unstar", severity="warning")
+            return
+        app_ctrl = getattr(self.app, "_ctrl", None)
+        if not app_ctrl:
+            return
+        is_now_starred = app_ctrl.toggle_star(self.selected_entry)
+        name = self.selected_entry.display_name
+        if is_now_starred:
+            self.app.notify(f"★ Starred: {name}")
+        else:
+            self.app.notify(f"Unstarred: {name}")
+        self._refresh_starred_recent()
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         item = event.item

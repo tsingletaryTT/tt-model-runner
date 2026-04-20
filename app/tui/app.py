@@ -227,6 +227,10 @@ class TuiApp(App[None]):
     def _do_launch(self, entry, port: str) -> None:
         opts = self._ctrl.get_options()
         self._ctrl.launch(entry, port, opts)
+        # Refresh RECENT section after launch so the new entry appears immediately.
+        self.call_after_refresh(
+            lambda: self.query_one(ModelRail)._refresh_starred_recent()
+        )
 
     def action_switch_tab(self, tab_id: str) -> None:
         self.query_one(TabbedContent).active = tab_id
