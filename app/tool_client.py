@@ -108,7 +108,8 @@ def run_session(
     # Starts with the user's prompt; grows as the model and tool turns are added.
     messages: list = [{"role": "user", "content": prompt}]
 
-    with httpx.Client(timeout=120.0) as client:
+    headers = {"Authorization": "Bearer EMPTY"}
+    with httpx.Client(timeout=120.0, headers=headers) as client:
         while True:
             # ----------------------------------------------------------------
             # POST to the chat completions endpoint with the full history.
@@ -122,7 +123,13 @@ def run_session(
                     "tool_choice": "auto",
                 },
             )
-            resp.raise_for_status()
+            if not resp.is_success:
+                body = resp.text[:800]
+                raise httpx.HTTPStatusError(
+                    f"HTTP {resp.status_code} — {body}",
+                    request=resp.request,
+                    response=resp,
+                )
             data = resp.json()
             msg = data["choices"][0]["message"]
 

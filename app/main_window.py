@@ -51,6 +51,62 @@ _LOG_COLORS = {
     "CRITICAL": "#FF6B6B",
 }
 
+# ANSI 256-color terminal support for log view.
+# Maps SGR foreground codes → hex color strings matching the Tenstorrent palette.
+_ANSI_FG_COLORS = {
+    30: "#607D8B",  # black  → dark gray (legible on dark bg)
+    31: "#FF6B6B",  # red
+    32: "#27AE60",  # green
+    33: "#F4C471",  # yellow
+    34: "#5B9BD5",  # blue
+    35: "#EC96B8",  # magenta
+    36: "#4FD1C5",  # cyan
+    37: "#E8F0F2",  # white
+    90: "#546E7A",  # bright black
+    91: "#FF8A80",  # bright red
+    92: "#69F0AE",  # bright green
+    93: "#FFD740",  # bright yellow
+    94: "#82B1FF",  # bright blue
+    95: "#EA80FC",  # bright magenta
+    96: "#84FFFF",  # bright cyan
+    97: "#FFFFFF",  # bright white
+}
+
+import re as _re
+_ANSI_ESCAPE_RE = _re.compile(r'\033\[([0-9;]*)m')
+
+
+def _parse_ansi_segments(line: str) -> list:
+    """Split a line with ANSI SGR codes into (text, fg_code|None, bold) tuples."""
+    segments = []
+    pos = 0
+    active_fg = None
+    active_bold = False
+    for m in _ANSI_ESCAPE_RE.finditer(line):
+        if m.start() > pos:
+            segments.append((line[pos:m.start()], active_fg, active_bold))
+        params = m.group(1)
+        for part in (params.split(';') if params else ['']):
+            try:
+                code = int(part) if part else 0
+            except ValueError:
+                continue
+            if code == 0:
+                active_fg = None
+                active_bold = False
+            elif code == 1:
+                active_bold = True
+            elif code in (21, 22):
+                active_bold = False
+            elif (30 <= code <= 37) or (90 <= code <= 97):
+                active_fg = code
+            elif code == 39:
+                active_fg = None
+        pos = m.end()
+    if pos < len(line):
+        segments.append((line[pos:], active_fg, active_bold))
+    return segments
+
 
 def _format_param_count(param_count: Optional[float]) -> str:
     """Format param_count (raw float, e.g. 7e9) as a compact string like '7B', '335M'."""
@@ -1171,6 +1227,7 @@ class MainPanel(Gtk.Box):
         self._card_name_lbl.set_halign(Gtk.Align.START)
         self._card_name_lbl.set_hexpand(True)
         self._card_name_lbl.set_ellipsize(Pango.EllipsizeMode.END)
+        self._card_name_lbl.set_max_width_chars(1)
         card_row1.append(self._card_name_lbl)
         self._card_badges_lbl = Gtk.Label(label="")
         self._card_badges_lbl.add_css_class("muted")
@@ -1183,6 +1240,7 @@ class MainPanel(Gtk.Box):
         self._card_desc_lbl.add_css_class("muted")
         self._card_desc_lbl.set_halign(Gtk.Align.START)
         self._card_desc_lbl.set_ellipsize(Pango.EllipsizeMode.END)
+        self._card_desc_lbl.set_max_width_chars(1)
         self._card_desc_lbl.set_visible(False)
         card_box.append(self._card_desc_lbl)
 
@@ -1259,10 +1317,13 @@ class MainPanel(Gtk.Box):
         self._tour_left.set_halign(Gtk.Align.START); self._tour_left.set_valign(Gtk.Align.START)
         self._tour_left.set_margin_start(6); self._tour_left.set_margin_top(4)
         self._tour_left.set_hexpand(True)
+        self._tour_left.set_max_width_chars(1)
         tour_inner.append(self._tour_left)
         tour_inner.append(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL))
         self._tour_right = Gtk.Label(label="")
         self._tour_right.set_wrap(True)
+        self._tour_right.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+        self._tour_right.set_max_width_chars(1)
         self._tour_right.set_halign(Gtk.Align.START); self._tour_right.set_valign(Gtk.Align.START)
         self._tour_right.set_margin_start(8); self._tour_right.set_margin_end(6); self._tour_right.set_margin_top(4)
         self._tour_right.set_hexpand(True)
@@ -1392,6 +1453,7 @@ class MainPanel(Gtk.Box):
         # Created lazily on first show_config() call to avoid importing GTK
         # widgets before the window is fully constructed.
         self._config_panel = None
+        self._current_config_entry = None  # entry currently loaded into ConfigPanel
 
         # ── Logs page ─────────────────────────────────────────────────────────
         # Contains the filter toolbar and the scrollable log text view.
@@ -1462,6 +1524,9 @@ class MainPanel(Gtk.Box):
         for level, color in _LOG_COLORS.items():
             self._log_buf.create_tag(f"lvl_{level}", foreground=color)
         self._log_buf.create_tag("ts", foreground="#4FD1C5")
+        for code, color in _ANSI_FG_COLORS.items():
+            self._log_buf.create_tag(f"ansi_{code}", foreground=color)
+        self._log_buf.create_tag("ansi_bold", weight=Pango.Weight.BOLD)
 
         self._log_view = Gtk.TextView(buffer=self._log_buf)
         self._log_view.set_editable(False)
@@ -1816,7 +1881,12 @@ class MainPanel(Gtk.Box):
         if self._config_panel is None:
             self._config_panel = ConfigPanel(on_options_changed)
             self._stack.add_named(self._config_panel, "config")
-        self._config_panel.set_model(entry)
+        # Only call set_model (which resets to default preset) when the entry
+        # has actually changed.  Skipping it preserves any profile/options the
+        # user already applied via the model-card dropdown.
+        if entry is not self._current_config_entry:
+            self._config_panel.set_model(entry)
+            self._current_config_entry = entry
         self._stack.set_visible_child_name("config")
 
     def show_logs(self) -> None:
@@ -1927,7 +1997,6 @@ class MainPanel(Gtk.Box):
         return datetime.datetime.fromtimestamp(ts).strftime("%H:%M:%S")
 
     def _insert_line_to_buffer(self, line: str, level: str, ts: float = 0.0):
-        import time as _time
         buf = self._log_buf
         end = buf.get_end_iter()
         if buf.get_char_count() > 0:
@@ -1939,11 +2008,26 @@ class MainPanel(Gtk.Box):
             buf.insert_with_tags_by_name(end, ts_str, "ts")
             end = buf.get_end_iter()
             start_off = end.get_offset()
-        buf.insert(end, line)
-        tag_name = f"lvl_{level}" if level else None
-        if tag_name:
-            s = buf.get_iter_at_offset(start_off)
-            buf.apply_tag_by_name(tag_name, s, buf.get_end_iter())
+
+        if '\033[' in line:
+            for text, fg, bold in _parse_ansi_segments(line):
+                if not text:
+                    continue
+                s_off = buf.get_end_iter().get_offset()
+                buf.insert(buf.get_end_iter(), text)
+                if fg is not None or bold:
+                    s = buf.get_iter_at_offset(s_off)
+                    e = buf.get_end_iter()
+                    if fg is not None:
+                        buf.apply_tag_by_name(f"ansi_{fg}", s, e)
+                    if bold:
+                        buf.apply_tag_by_name("ansi_bold", s, e)
+        else:
+            buf.insert(end, line)
+            tag_name = f"lvl_{level}" if level else None
+            if tag_name:
+                s = buf.get_iter_at_offset(start_off)
+                buf.apply_tag_by_name(tag_name, s, buf.get_end_iter())
 
     def clear_log(self) -> None:
         """Clear the log view and internal buffer."""
@@ -1954,6 +2038,12 @@ class MainPanel(Gtk.Box):
 
     def append_log(self, line: str):
         import time as _time
+        # Normalise carriage-return progress output: keep only the final frame
+        # (the one that would be left on screen in a real terminal).
+        if '\r' in line:
+            line = line.split('\r')[-1]
+        if not line:
+            return
         level = self._detect_level(line)
         ts = _time.time()
         # Store (capped at _MAX_LOG_ENTRIES); keep buffer in sync on overflow.
