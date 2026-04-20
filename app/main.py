@@ -79,6 +79,9 @@ button:disabled { color: @tt_text_muted; border-color: @tt_bg_dark; }
 
 .hf-ok   { color: @tt_success; font-size: 11px; }
 .hf-warn { color: @tt_error; font-size: 11px; }
+.temp-ok   { color: @tt_success; }
+.temp-warm { color: @tt_warning; }
+.temp-hot  { color: @tt_error; }
 
 .tour-panel {
     background-color: @tt_bg_panel;

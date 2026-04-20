@@ -235,6 +235,8 @@ class AppController:
         self._pull_layers_done: int = 0   # layers that reached "Pull complete"
         self._pull_downloading: dict = {}  # layer_id → (current_bytes, total_bytes)
         self._emitted_error_hints: set = set()  # patterns already suggested this run
+        self._hw_poll_timer: Optional[threading.Timer] = None
+        self._hw_poll_active: bool = False  # set True after first repo load
 
         # Fetch compatibility catalog in the background — dispatches on_compat_catalog_loaded.
         def _on_compat(cat: Optional[CompatCatalog]) -> None:
@@ -315,6 +317,9 @@ class AppController:
             servers = _parse_running_servers()
             if servers:
                 self._emit("on_running_servers", servers)
+            # Start the 30-second periodic hardware poll.
+            self._hw_poll_active = True
+            self._schedule_hw_poll()
 
         threading.Thread(target=_detect, daemon=True).start()
 
@@ -633,6 +638,21 @@ class AppController:
             chips = get_chip_statuses_live()
             self._emit("on_hardware_status", chips)
         threading.Thread(target=_run, daemon=True).start()
+
+    _HW_POLL_INTERVAL_S: int = 30
+
+    def _schedule_hw_poll(self) -> None:
+        """Schedule next periodic hardware telemetry poll (30 s)."""
+        if not self._hw_poll_active:
+            return
+        self._hw_poll_timer = threading.Timer(self._HW_POLL_INTERVAL_S, self._hw_poll_tick)
+        self._hw_poll_timer.daemon = True
+        self._hw_poll_timer.start()
+
+    def _hw_poll_tick(self) -> None:
+        chips = get_chip_statuses_live()
+        self._emit("on_hardware_status", chips)
+        self._schedule_hw_poll()
 
     def scan_running_servers(self) -> None:
         """Scan for already-running TT inference containers in a background thread.

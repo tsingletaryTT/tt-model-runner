@@ -641,11 +641,12 @@ class Sidebar(Gtk.Box):
                 temp_lbl = Gtk.Label(label=f"{t:.0f}°C")
                 temp_lbl.set_width_chars(6)
                 temp_lbl.set_xalign(0.0)
-                # Colour-code: green <65, yellow <80, red >=80
                 if t >= 80:
-                    temp_lbl.set_css_classes(["hf-warn"])
+                    temp_lbl.add_css_class("temp-hot")
                 elif t >= 65:
-                    temp_lbl.add_css_class("muted")
+                    temp_lbl.add_css_class("temp-warm")
+                else:
+                    temp_lbl.add_css_class("temp-ok")
                 row.append(temp_lbl)
             if chip.aiclk_mhz is not None:
                 clk_lbl = Gtk.Label(label=f"{chip.aiclk_mhz}MHz")
