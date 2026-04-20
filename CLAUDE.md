@@ -123,7 +123,7 @@ Views treat DONE like IDLE (unlock sidebar, keep logs).
 |-----|--------|
 | L | Launch / Stop server |
 | Q | Quit |
-| 1–4 | Switch to Config / Logs / Tools / Bench tab |
+| 1–5 | Switch to Config / Logs / Tools / Bench / Images tab |
 | [ | Toggle ModelRail sidebar |
 | S | Star / unstar selected model |
 | R | Reconnect to detected running server |
