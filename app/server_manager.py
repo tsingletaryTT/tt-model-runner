@@ -246,11 +246,19 @@ def _scrub_env_key(env_path: Path, key: str) -> None:
 
 
 class ServerManager:
-    # Docker image-not-found patterns — capture the full image reference
+    # Docker image-not-found patterns — capture the full image reference.
+    # Covers:
+    #   containerd: failed to resolve reference "ghcr.io/..."
+    #   Docker daemon: Error response from daemon: ... "image:tag"... not found
+    #   GHCR registry: manifest unknown ... "image:tag"
+    #   Docker daemon: pull access denied for ghcr.io/..., repository does not exist
+    #   Docker daemon: repository ghcr.io/... not found
     _IMAGE_NOT_FOUND_RE = re.compile(
         r'failed to resolve reference\s+"([^"]+)"'
         r'|Error response from daemon[^"]*"([^"]+)".*not found'
-        r'|manifest unknown[^"]*"([^"]+)"',
+        r'|manifest unknown[^"]*"([^"]+)"'
+        r'|pull access denied for (ghcr\.io/[^,\s]+)'
+        r'|repository (ghcr\.io/[^\s]+) not found',
         re.I,
     )
 
@@ -424,7 +432,13 @@ class ServerManager:
         if not self._image_resolve_attempted:
             m = self._IMAGE_NOT_FOUND_RE.search(line)
             if m:
-                failed_ref = next(g for g in m.groups() if g)
+                raw_ref = next(g for g in m.groups() if g)
+                # Ensure we have a full ghcr.io reference — some patterns only
+                # capture the path component without the registry prefix.
+                if raw_ref.startswith("ghcr.io/"):
+                    failed_ref = raw_ref
+                else:
+                    failed_ref = f"ghcr.io/{raw_ref}"
                 self._image_resolve_attempted = True
                 self._resolving_image = True
                 log.warning("image not found: %s — starting GHCR resolution", failed_ref)
@@ -453,12 +467,31 @@ class ServerManager:
 
     def _try_resolve_image(self, failed_ref: str, on_log_line: Callable):
         """Background: resolve a better GHCR tag and restart the launch."""
-        from ghcr_resolver import resolve_latest_tag
+        from ghcr_resolver import resolve_latest_tag, parse_image_ref, \
+            _get_ghcr_token, _list_tags
 
         resolved = resolve_latest_tag(failed_ref, on_step=on_log_line)
         if not resolved:
             log.error("GHCR resolution failed for %s", failed_ref)
-            on_log_line("✗ Could not resolve a newer tag from GHCR — check image manually")
+            # Give the user a manual hint: show the most recent available tags.
+            try:
+                _, image_path, _ = parse_image_ref(failed_ref)
+                token = _get_ghcr_token(image_path)
+                if token:
+                    tags = _list_tags(image_path, token)
+                    if tags:
+                        def _num_key(t):
+                            return [int(n) for n in re.findall(r'\d+', t)] or [0]
+                        recent = sorted(tags, key=_num_key, reverse=True)[:5]
+                        on_log_line(
+                            f"  Most recent tags on GHCR: {', '.join(recent)}"
+                        )
+                        on_log_line(
+                            f"  Run: docker pull ghcr.io/{image_path}:<tag>"
+                        )
+            except Exception:
+                pass
+            on_log_line("✗ Could not auto-resolve image — see tags above or pull manually")
             self._resolving_image = False
             if self._on_state_cb:
                 self._on_state_cb(ServerState.ERROR)

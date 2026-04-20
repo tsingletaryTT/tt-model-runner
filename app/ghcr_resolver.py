@@ -2,9 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0
 """Resolve GHCR image tags.
 
-When a specific tag is not found, queries the GHCR OCI v2 API to find the
-latest available tag with the same version prefix, then falls back to the
-most recent tag overall. Only handles ghcr.io registries.
+Resolution strategy (in order):
+  1. GHCR OCI v2 tags/list — list all available tags, pick best match.
+  2. GitHub Releases API  — find latest release tag, probe manifest directly.
+  3. "latest" sentinel    — try the well-known :latest tag as last resort.
+
+Only handles ghcr.io registries.
 """
 import json
 import re
@@ -55,16 +58,60 @@ def _get_ghcr_token(image_path: str) -> Optional[str]:
 
 
 def _list_tags(image_path: str, token: str) -> List[str]:
-    """Return all tags listed by GHCR v2 API for image_path."""
-    url = f"https://ghcr.io/v2/{image_path}/tags/list"
+    """Return all tags listed by GHCR v2 API, following pagination links."""
+    tags: List[str] = []
+    url: Optional[str] = f"https://ghcr.io/v2/{image_path}/tags/list?n=100"
+    while url:
+        try:
+            req = urllib.request.Request(url, headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/json",
+            })
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read().decode())
+                tags.extend(data.get("tags") or [])
+                # Follow Link: <url>; rel="next" pagination header
+                link_hdr = resp.headers.get("Link", "")
+                url = None
+                for part in link_hdr.split(","):
+                    if 'rel="next"' in part:
+                        m = re.search(r'<([^>]+)>', part)
+                        if m:
+                            url = m.group(1)
+                        break
+        except Exception:
+            break
+    return tags
+
+
+def _check_manifest_exists(image_path: str, tag: str, token: str) -> bool:
+    """Return True if image_path:tag has a manifest on GHCR (HEAD request)."""
+    url = f"https://ghcr.io/v2/{image_path}/manifests/{tag}"
+    req = urllib.request.Request(url, headers={
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.docker.distribution.manifest.v2+json",
+    })
+    req.get_method = lambda: "HEAD"
+    try:
+        with urllib.request.urlopen(req, timeout=5):
+            return True
+    except urllib.error.HTTPError as e:
+        return e.code == 200
+    except Exception:
+        return False
+
+
+def _get_github_release_tags(owner: str, repo: str) -> List[str]:
+    """Return release tag_names from GitHub Releases API, newest first."""
+    url = f"https://api.github.com/repos/{owner}/{repo}/releases?per_page=10"
     try:
         req = urllib.request.Request(url, headers={
-            "Authorization": f"Bearer {token}",
-            "Accept": "application/json",
+            "Accept": "application/vnd.github.v3+json",
+            "User-Agent": "tt-model-runner/1.0",
         })
         with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read().decode())
-            return data.get("tags") or []
+            releases = json.loads(resp.read().decode())
+            return [r["tag_name"] for r in releases if r.get("tag_name")]
     except Exception:
         return []
 
@@ -84,10 +131,10 @@ def _best_tag(tags: List[str], failed_tag: str) -> Optional[str]:
     if not versioned:
         return "latest" if "latest" in tags else None
 
-    prefix_m = re.match(r'^([\d.]+)-', failed_tag)
+    prefix_m = re.match(r'^v?([\d.]+)-', failed_tag)
     if prefix_m:
         prefix = prefix_m.group(1)
-        same_prefix = [t for t in versioned if t.startswith(prefix + "-")]
+        same_prefix = [t for t in versioned if re.match(rf'^v?{re.escape(prefix)}-', t)]
         if same_prefix:
             def _build_num(t: str) -> int:
                 m = re.search(r'-(\d+)$', t)
@@ -104,6 +151,48 @@ def _best_tag(tags: List[str], failed_tag: str) -> Optional[str]:
     versioned.sort(key=_numeric_key, reverse=True)
     best = versioned[0]
     return best if best != failed_tag else None
+
+
+def _resolve_via_github_releases(
+    image_path: str,
+    token: str,
+    on_step,
+) -> Optional[str]:
+    """Try to find a working tag by checking GitHub Releases for the repo.
+
+    Infers owner/repo from image_path (e.g. "tenstorrent/tt-inference-server/vllm-tt-metal"
+    → owner="tenstorrent", repo="tt-inference-server").
+
+    For each release tag (newest first), tries both the bare tag and a v-stripped/v-prefixed
+    variant against the GHCR manifest API until one resolves.
+    """
+    parts = image_path.split("/")
+    if len(parts) < 2:
+        return None
+
+    owner, repo = parts[0], parts[1]
+    on_step(f"  → Querying GitHub Releases for {owner}/{repo}…")
+    gh_tags = _get_github_release_tags(owner, repo)
+    if not gh_tags:
+        on_step("  ✗ No GitHub releases found")
+        return None
+
+    on_step(f"  → Found {len(gh_tags)} release(s); probing GHCR manifests…")
+    for gh_tag in gh_tags:
+        # Try the tag as-is, then with/without leading 'v'
+        candidates = [gh_tag]
+        if gh_tag.startswith("v"):
+            candidates.append(gh_tag[1:])
+        else:
+            candidates.append(f"v{gh_tag}")
+
+        for candidate in candidates:
+            if _check_manifest_exists(image_path, candidate, token):
+                on_step(f"  → Found via GitHub release: {candidate}")
+                return candidate
+
+    on_step("  ✗ No GitHub release tag found on GHCR")
+    return None
 
 
 def resolve_latest_tag(
@@ -132,16 +221,29 @@ def resolve_latest_tag(
         _step("  ✗ Could not obtain GHCR token (repo may be private or rate-limited)")
         return None
 
-    _step(f"  → Listing available tags…")
+    # ── Strategy 1: GHCR tag listing ──────────────────────────────────────────
+    _step("  → Listing available tags from GHCR…")
     tags = _list_tags(image_path, token)
-    if not tags:
-        _step("  ✗ No tags returned from GHCR")
-        return None
-    _step(f"  → Found {len(tags)} tag(s); selecting best match for '{failed_tag}'…")
+    if tags:
+        _step(f"  → Found {len(tags)} tag(s); selecting best match for '{failed_tag}'…")
+        best = _best_tag(tags, failed_tag)
+        if best:
+            return f"{registry}/{image_path}:{best}"
+        _step(f"  ✗ No tag found that improves on '{failed_tag}' in GHCR listing")
+    else:
+        _step("  ✗ GHCR tag listing returned no results (rate-limited or private)")
 
-    best = _best_tag(tags, failed_tag)
-    if not best:
-        _step(f"  ✗ No tag found that improves on '{failed_tag}'")
-        return None
+    # ── Strategy 2: GitHub Releases probe ─────────────────────────────────────
+    best = _resolve_via_github_releases(image_path, token, _step)
+    if best:
+        return f"{registry}/{image_path}:{best}"
 
-    return f"{registry}/{image_path}:{best}"
+    # ── Strategy 3: :latest sentinel ──────────────────────────────────────────
+    if failed_tag != "latest":
+        _step("  → Trying :latest as last resort…")
+        if _check_manifest_exists(image_path, "latest", token):
+            _step("  → :latest exists on GHCR")
+            return f"{registry}/{image_path}:latest"
+        _step("  ✗ :latest not found either")
+
+    return None
