@@ -276,6 +276,9 @@ class AppController:
         self._hw_poll_timer: Optional[threading.Timer] = None
         self._hw_poll_active: bool = False  # set True after first repo load
         self._session_log = _SessionLog()
+        # Saved HealthWorker params — used to restart after an auto-retry kills it via ERROR.
+        self._last_health_port: Optional[str] = None
+        self._last_health_engine: str = "vllm"
 
         # Fetch compatibility catalog in the background — dispatches on_compat_catalog_loaded.
         def _on_compat(cat: Optional[CompatCatalog]) -> None:
@@ -571,12 +574,15 @@ class AppController:
         _settings.recent_models = recents[:5]
         _settings.save()
 
+        _engine = "media" if entry.inference_engine == "media" else "vllm"
+        self._last_health_port = port
+        self._last_health_engine = _engine
         self._health_worker = HealthWorker(
             port=port,
             on_ready=self._on_health_ready,
             on_lost=self._on_health_lost,
             dispatch_fn=self._dispatch,
-            engine="media" if entry.inference_engine == "media" else "vllm",
+            engine=_engine,
         )
         self._health_worker.start()
         self._server_mgr.launch(config, self._handle_log_line, self._on_server_state)
@@ -1126,6 +1132,19 @@ class AppController:
         if state == ServerState.PULLING_IMAGE:
             self._pull_layers_done = 0
             self._pull_downloading.clear()
+            # Restart HealthWorker if it was stopped by a prior ERROR transition.
+            # This happens when image-resolution or network-retry relaunches the process
+            # after an error: ERROR stops the worker, then the retry re-enters PULLING_IMAGE
+            # without going through controller.launch(), so we restart it here.
+            if self._health_worker is None and self._last_health_port:
+                self._health_worker = HealthWorker(
+                    port=self._last_health_port,
+                    on_ready=self._on_health_ready,
+                    on_lost=self._on_health_lost,
+                    dispatch_fn=self._dispatch,
+                    engine=self._last_health_engine,
+                )
+                self._health_worker.start()
         elif state == ServerState.LAUNCHING:
             # Persist launch metadata for cross-engine reset warnings and reboot detection.
             self._last_error_hint = ""   # fresh slate for the new run

@@ -264,6 +264,19 @@ class ServerManager:
         re.I,
     )
 
+    # Transient network errors during docker pull — trigger a retry without re-resolving.
+    # Covers TCP resets, timeouts, and HTTP cancellations mid-layer-download.
+    _NETWORK_PULL_ERROR_RE = re.compile(
+        r'failed to copy: read tcp'
+        r'|connection reset by peer'
+        r'|dial tcp[^:]*: i/o timeout'
+        r'|net/http: request canceled'
+        r'|TLS handshake timeout'
+        r'|read: connection timed out',
+        re.I,
+    )
+    _MAX_PULL_RETRIES = 3
+
     # ModuleNotFoundError / ImportError — capture the top-level module name
     _MISSING_MODULE_RE = re.compile(
         r"ModuleNotFoundError: No module named '([^'.]+)",
@@ -298,6 +311,9 @@ class ServerManager:
         self._on_state_cb: Optional[Callable] = None
         self._resolving_image: bool = False
         self._image_resolve_attempted: bool = False
+        # auto-action state — network pull retry
+        self._pull_retry_count: int = 0
+        self._network_pull_retrying: bool = False
         # auto-action state — missing deps
         self._installed_modules: set = set()   # modules already pip-installed this session
         self._installing_module: bool = False
@@ -318,9 +334,11 @@ class ServerManager:
         self._on_state_cb = on_state
         self._resolving_image = False
         self._installing_module = False
+        self._network_pull_retrying = False
         if not _auto_retry:
             self._image_resolve_attempted = False
             self._installed_modules = set()
+            self._pull_retry_count = 0
 
         cmd = [
             "python3", "run.py",
@@ -430,8 +448,26 @@ class ServerManager:
         regardless of whether run.py emits them to its own log or to stderr.
         Guards prevent duplicate triggers.
         """
-        # --- Docker image not found ---
-        if not self._image_resolve_attempted:
+        # --- Transient docker pull network error — retry without re-resolving ---
+        if (not self._network_pull_retrying
+                and not self._resolving_image
+                and self._pull_retry_count < self._MAX_PULL_RETRIES):
+            if self._NETWORK_PULL_ERROR_RE.search(line):
+                self._pull_retry_count += 1
+                self._network_pull_retrying = True
+                n, mx = self._pull_retry_count, self._MAX_PULL_RETRIES
+                log.warning("docker pull network error (retry %d/%d)", n, mx)
+                on_log_line(
+                    f"⚠ Docker pull interrupted by network error — retrying ({n}/{mx})…"
+                )
+                threading.Thread(
+                    target=self._retry_pull_after_network_error,
+                    args=(on_log_line,),
+                    daemon=True,
+                ).start()
+
+        # --- Docker image not found (skip if a network retry is already in flight) ---
+        if not self._image_resolve_attempted and not self._network_pull_retrying:
             m = self._IMAGE_NOT_FOUND_RE.search(line)
             if m:
                 raw_ref = next(g for g in m.groups() if g)
@@ -528,8 +564,29 @@ class ServerManager:
             docker_image_override=resolved,
             options=new_options if new_options is not None else self._config.options,
         )
+        # Reset pull retry count — new image gets its own 3 network retries.
+        self._pull_retry_count = 0
         # _auto_retry=True keeps _image_resolve_attempted=True to prevent a second loop
         self.launch(new_config, on_log_line, self._on_state_cb, _auto_retry=True)
+
+    def _retry_pull_after_network_error(self, on_log_line: Callable):
+        """Background: wait for current process to exit, then relaunch with same config.
+
+        Called when a transient network error interrupts docker pull mid-download.
+        Re-uses self._config unchanged so the already-resolved image tag is kept.
+        """
+        if self._proc:
+            for _ in range(40):
+                if self._proc.poll() is not None:
+                    break
+                time.sleep(0.25)
+
+        self._stop_event.set()
+        time.sleep(0.3)
+        self._network_pull_retrying = False
+
+        if self._config and self._on_state_cb:
+            self.launch(self._config, on_log_line, self._on_state_cb, _auto_retry=True)
 
     def _try_install_module(self, module: str, package: str, on_log_line: Callable):
         """Background: pip-install a missing module then restart the launch."""
