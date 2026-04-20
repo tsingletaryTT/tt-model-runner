@@ -79,6 +79,7 @@ class ConfigPanel(Gtk.Box):
         self._inhibit_signals: bool = False   # suppress change callbacks while updating UI
         self._arch_scan_model: str = ""       # hf_model_repo of in-flight arch scan
         self.on_dev_launch: Optional[Callable] = None  # (compat_id: str, sw_stack: str) → None
+        self._arch_ctx_limit: int = 0  # model's actual max context_length from HF cache
         self._build()
 
     # ------------------------------------------------------------------ build
@@ -216,6 +217,10 @@ class ConfigPanel(Gtk.Box):
         self._ctx_combo.set_active(_CTX_OPTIONS.index(131072))
         self._ctx_combo.get_child().connect("changed", self._on_ctx_changed)
         ctx_row.append(self._ctx_combo)
+        self._ctx_warn_lbl = Gtk.Label(label="")
+        self._ctx_warn_lbl.add_css_class("muted")
+        self._ctx_warn_lbl.set_visible(False)
+        ctx_row.append(self._ctx_warn_lbl)
         seq_lbl = Gtk.Label(label="Max concurrent")
         seq_lbl.add_css_class("muted")
         seq_lbl.set_hexpand(True)
@@ -486,6 +491,8 @@ class ConfigPanel(Gtk.Box):
         self._strip_arch.set_visible(False)
         self._strip_compat.set_visible(False)
         self._dev_launch_rev.set_reveal_child(False)
+        self._arch_ctx_limit = 0
+        self._ctx_warn_lbl.set_visible(False)
         self._scan_arch_async(entry)
 
         # Rebuild use-case chips
@@ -539,6 +546,9 @@ class ConfigPanel(Gtk.Box):
                 parts.append(f"ctx {a.context_length:,}")
             if a.vocab_size:
                 parts.append(f"vocab {a.vocab_size:,}")
+        if info.arch and info.arch.context_length:
+            self._arch_ctx_limit = info.arch.context_length
+            self._check_ctx_warn()
         if info.total_bytes:
             gb = info.total_bytes / 1e9
             parts.append(f"{gb:.1f} GB cached")
@@ -593,6 +603,28 @@ class ConfigPanel(Gtk.Box):
     def _on_dev_launch_clicked(self, _btn, compat_id: str, sw: str) -> None:
         if self.on_dev_launch:
             self.on_dev_launch(compat_id, sw)
+
+    def _check_ctx_warn(self) -> None:
+        """Show a warning if selected context length exceeds the model's max."""
+        if not self._arch_ctx_limit:
+            self._ctx_warn_lbl.set_visible(False)
+            return
+        try:
+            selected = int(self._ctx_combo.get_child().get_text())
+        except ValueError:
+            self._ctx_warn_lbl.set_visible(False)
+            return
+        if selected > self._arch_ctx_limit:
+            self._ctx_warn_lbl.set_markup(
+                f"<span foreground='#F4C471'>⚠ max {self._arch_ctx_limit:,}</span>"
+            )
+            self._ctx_warn_lbl.set_tooltip_text(
+                f"Model's actual max context_length is {self._arch_ctx_limit:,}. "
+                "Setting a higher value may cause errors at launch."
+            )
+            self._ctx_warn_lbl.set_visible(True)
+        else:
+            self._ctx_warn_lbl.set_visible(False)
 
     # ------------------------------------------------------------- use cases
 
@@ -690,6 +722,7 @@ class ConfigPanel(Gtk.Box):
                 self._options.max_model_len = int(text)
             except ValueError:
                 pass
+        self._check_ctx_warn()
         self._deselect_use_case_chip()
         self._schedule_preview_update()
 
