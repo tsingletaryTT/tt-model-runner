@@ -101,7 +101,7 @@ class Sidebar(Gtk.Box):
         self._catalog: Optional[ModelCatalog] = None
         self._selected_entry: Optional[ModelEntry] = None
         self._selected_device: Optional[str] = None
-        self._device_buttons: dict = {}
+        self._device_names: list = []
         self._locked = False
         self._launch_connected_to_launch = True
         self._search_filter: str = ""
@@ -209,16 +209,16 @@ class Sidebar(Gtk.Box):
         self.append(scroll)
         self.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
 
-        # Device buttons
-        dbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        # Device dropdown
+        dbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         dbox.set_margin_start(8); dbox.set_margin_end(8)
         dbox.set_margin_top(6);   dbox.set_margin_bottom(4)
-        dl = Gtk.Label(label="DEVICE"); dl.add_css_class("section-label"); dl.set_halign(Gtk.Align.START)
+        dl = Gtk.Label(label="DEVICE"); dl.add_css_class("section-label")
         dbox.append(dl)
-        self._device_flow = Gtk.FlowBox()
-        self._device_flow.set_selection_mode(Gtk.SelectionMode.NONE)
-        self._device_flow.set_max_children_per_line(4)
-        dbox.append(self._device_flow)
+        self._device_dropdown = Gtk.DropDown()
+        self._device_dropdown.set_hexpand(True)
+        self._device_dropdown.connect("notify::selected", self._on_device_dropdown_changed)
+        dbox.append(self._device_dropdown)
         self.append(dbox)
         self.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
 
@@ -267,10 +267,12 @@ class Sidebar(Gtk.Box):
         self._hw_refresh_btn.connect("clicked", self._on_hw_refresh_clicked)
         hw_header.append(self._hw_refresh_btn)
         hw_box.append(hw_header)
-        # Per-chip telemetry grid (hidden until data arrives)
+        # Per-chip telemetry — collapsible expander, hidden until data arrives
+        self._chip_exp = Gtk.Expander(label="Chips")
+        self._chip_exp.set_visible(False)
         self._chip_grid = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
-        self._chip_grid.set_visible(False)
-        hw_box.append(self._chip_grid)
+        self._chip_exp.set_child(self._chip_grid)
+        hw_box.append(self._chip_exp)
         self._reset_btn = Gtk.Button(label="Reset Devices")
         self._reset_btn.add_css_class("destructive-action")
         self._reset_btn.set_hexpand(True)
@@ -491,36 +493,33 @@ class Sidebar(Gtk.Box):
             self._rebuild_tree(None)
 
     def _build_device_buttons(self, all_devices: List[str], compatible: List[str]):
-        while child := self._device_flow.get_first_child():
-            self._device_flow.remove(child)
-        self._device_buttons.clear()
-
         ordered = [d for d in _DEVICE_ORDER if d in all_devices] + [d for d in all_devices if d not in _DEVICE_ORDER]
-        last = _settings.last_device
+        self._device_names = ordered
 
+        string_list = Gtk.StringList()
         for dev in ordered:
-            btn = Gtk.ToggleButton(label=dev)
-            is_compat = dev in compatible or not compatible
-            btn.set_sensitive(is_compat)
-            if not compatible:
-                btn.set_tooltip_text("tt-smi not found — showing all devices")
-            self._device_flow.append(btn)
-            self._device_buttons[dev] = btn
+            string_list.append(dev)
 
-            active = (dev == last) or (not last and dev == ordered[0] and is_compat)
-            if active and not self._selected_device:
-                btn.set_active(True)
-                self._selected_device = dev
-            btn.connect("toggled", self._on_device_toggled, dev)
+        self._device_dropdown.handler_block_by_func(self._on_device_dropdown_changed)
+        self._device_dropdown.set_model(string_list)
+        last = _settings.last_device
+        if last in ordered:
+            idx = ordered.index(last)
+        else:
+            idx = next((i for i, d in enumerate(ordered) if d in compatible or not compatible), 0)
+        self._device_dropdown.set_selected(idx)
+        self._device_dropdown.handler_unblock_by_func(self._on_device_dropdown_changed)
 
-    def _on_device_toggled(self, btn, device):
-        if not btn.get_active():
+        if ordered:
+            self._selected_device = ordered[idx]
+
+    def _on_device_dropdown_changed(self, dropdown, _param):
+        idx = dropdown.get_selected()
+        if idx == Gtk.INVALID_LIST_POSITION or idx >= len(self._device_names):
             return
-        for d, b in self._device_buttons.items():
-            if d != device:
-                b.handler_block_by_func(self._on_device_toggled)
-                b.set_active(False)
-                b.handler_unblock_by_func(self._on_device_toggled)
+        device = self._device_names[idx]
+        if device == self._selected_device:
+            return
         self._selected_device = device
         _settings.last_device = device
         _settings.save()
@@ -800,8 +799,7 @@ class Sidebar(Gtk.Box):
         self._tree_view.set_sensitive(not locked)
         self._search_entry.set_sensitive(not locked)
         self._repo_entry.set_sensitive(not locked)
-        for btn in self._device_buttons.values():
-            btn.set_sensitive(not locked)
+        self._device_dropdown.set_sensitive(not locked)
         self._port_entry.set_sensitive(not locked)
         self._reset_btn.set_sensitive(not locked)
         self._pull_btn.set_sensitive(not locked)
@@ -870,7 +868,7 @@ class Sidebar(Gtk.Box):
                 fw_lbl.set_ellipsize(Pango.EllipsizeMode.END)
                 row.append(fw_lbl)
             self._chip_grid.append(row)
-        self._chip_grid.set_visible(bool(chips))
+        self._chip_exp.set_visible(bool(chips))
 
     def refresh_git_info(self, branch: str, sha: str) -> None:
         """Update the git branch/commit label below the repo entry."""
