@@ -15,11 +15,12 @@ from textual.widgets import Footer, Header, TabbedContent, TabPane
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from tui.widgets.model_rail import ModelRail
-from tui.widgets.log_pane   import LogPane
+from tui.widgets.model_rail  import ModelRail
+from tui.widgets.log_pane    import LogPane
 from tui.widgets.config_pane import ConfigPane
-from tui.widgets.tool_pane  import ToolPane
-from tui.widgets.bench_pane import BenchPane
+from tui.widgets.tool_pane   import ToolPane
+from tui.widgets.bench_pane  import BenchPane
+from tui.widgets.images_pane import ImagesPane
 
 
 class TuiApp(App[None]):
@@ -51,6 +52,7 @@ class TuiApp(App[None]):
         Binding("2", "switch_tab('logs')",    "Logs",    show=False),
         Binding("3", "switch_tab('tools')",   "Tools",   show=False),
         Binding("4", "switch_tab('bench')",   "Bench",   show=False),
+        Binding("5", "switch_tab('images')",  "Images",  show=False),
         Binding("[",       "toggle_rail",      "Rail",      show=False),
         Binding("r",       "reconnect",        "Reconnect", show=False),
         Binding("ctrl+r",  "restart_server",   "Restart",   show=False),
@@ -71,6 +73,8 @@ class TuiApp(App[None]):
                 yield ToolPane()
             with TabPane("Bench",  id="bench"):
                 yield BenchPane()
+            with TabPane("Images", id="images"):
+                yield ImagesPane()
         yield Footer()
 
     def on_mount(self) -> None:
@@ -97,7 +101,7 @@ class TuiApp(App[None]):
         self._ctrl.on_hardware_status = self._on_hardware_status
         self._ctrl.on_running_servers = self._on_running_servers
         self._ctrl.on_compat_catalog_loaded = self._on_compat_catalog_loaded
-        self._ctrl.on_docker_images = lambda _imgs: None  # TUI has no Docker panel
+        self._ctrl.on_docker_images = self._on_docker_images
 
         self._set_ready_tabs_enabled(False)
 
@@ -126,6 +130,8 @@ class TuiApp(App[None]):
 
         # Pre-populate bench history from persisted data.
         self.call_after_refresh(self._load_bench_history)
+        # Scan Docker images on startup.
+        self.call_after_refresh(self._ctrl.scan_docker_images_async)
 
     def _on_state_changed(self, state, info: str) -> None:
         from server_manager import ServerState
@@ -210,6 +216,9 @@ class TuiApp(App[None]):
 
     def _on_tool_result(self, rt) -> None:
         self.query_one(ToolPane).append_round_trip(rt)
+
+    def _on_docker_images(self, images: list) -> None:
+        self.query_one(ImagesPane).load_images(images)
 
     def action_launch_stop(self) -> None:
         from server_manager import ServerState
