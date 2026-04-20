@@ -274,9 +274,15 @@ class ModelRail(Widget):
     def _apply_search(self, search: str) -> None:
         lv = self.query_one("#model-list", ListView)
         lv.clear()
-        entries = self._entries if not search else [
-            e for e in self._entries if search in e.display_name.lower()
-        ]
+        if not search:
+            entries = self._entries
+        else:
+            entries = [
+                e for e in self._entries
+                if search in e.display_name.lower()
+                or search in getattr(e, "model_type", "").lower()
+                or search in getattr(e, "device_type", "").lower()
+            ]
         for entry in entries:
             size = _fmt_size(getattr(entry, "param_count", None))
             suffix = f"  {size}" if size else ""
