@@ -728,6 +728,7 @@ class ConfigPanel(Gtk.Box):
             btn.handler_unblock_by_func(self._on_uc_toggled)
         self._sync_widgets_to_options()
         self._inhibit_signals = False
+        self._schedule_preview_update()
 
     def _apply_use_case(self, use_case: str) -> None:
         """Set active chip and fill quick-settings fields from preset."""
@@ -745,6 +746,7 @@ class ConfigPanel(Gtk.Box):
         # Fill quick-settings widgets from options
         self._sync_widgets_to_options()
         self._inhibit_signals = False
+        self._schedule_preview_update()
 
     def _sync_widgets_to_options(self) -> None:
         """Push current self._options values into all widgets (no callbacks fired)."""
