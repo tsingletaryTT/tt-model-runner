@@ -117,6 +117,22 @@ Views treat DONE like IDLE (unlock sidebar, keep logs).
       test_benchmark_runner.py     — Metric parsing + pass/fail tests (Plan 2)
       (existing tests unchanged)
 
+## TUI key bindings
+
+| Key | Action |
+|-----|--------|
+| L | Launch / Stop server |
+| Q | Quit |
+| 1–4 | Switch to Config / Logs / Tools / Bench tab |
+| [ | Toggle ModelRail sidebar |
+| S | Star / unstar selected model |
+| R | Reconnect to detected running server |
+| Ctrl+R | Restart server (same model, no re-pull) |
+| Ctrl+H | Refresh chip telemetry (tt-smi -s) |
+| Ctrl+T (×2) | Hardware reset (tt-smi -r) — requires two presses within 5 s |
+| Ctrl+U | Copy test curl command to clipboard (READY only) |
+| Ctrl+F | Open log search (Esc to close, D/I/W/E to toggle levels) |
+
 ## Running tests
 
 ```bash
