@@ -47,6 +47,14 @@ class ConfigPane(Widget):
         height: 2;
         color: $text-muted;
     }
+    #desc-strip {
+        color: $text-muted;
+        height: auto;
+    }
+    #compat-strip {
+        color: $text-muted;
+        height: auto;
+    }
     #use-case-row {
         height: 3;
         layout: horizontal;
@@ -72,6 +80,8 @@ class ConfigPane(Widget):
 
     def compose(self) -> ComposeResult:
         yield Static("Select a model to configure", id="model-strip")
+        yield Static("", id="desc-strip")
+        yield Static("", id="compat-strip")
         yield Label("USE CASE")
         yield Widget(id="use-case-row")
         yield Label("QUICK SETTINGS")
@@ -96,6 +106,9 @@ class ConfigPane(Widget):
         self.query_one("#model-strip", Static).update(
             f"[b]{entry.display_name}[/b]  {entry.model_type} · {entry.inference_engine} · {entry.device_type}"
         )
+        # Clear compat info until set_compat_info() is called
+        self.query_one("#desc-strip", Static).update("")
+        self.query_one("#compat-strip", Static).update("")
 
         row = self.query_one("#use-case-row")
         row.remove_children()
@@ -111,6 +124,26 @@ class ConfigPane(Widget):
         if self._on_options_changed and self._options:
             self._on_options_changed(self._options)
         self._update_preview()
+
+    def set_compat_info(self, compat_entry, compatible_hw: list) -> None:
+        """Show description and hardware compatibility from compat catalog."""
+        if compat_entry and compat_entry.model_description:
+            self.query_one("#desc-strip", Static).update(compat_entry.model_description)
+        else:
+            self.query_one("#desc-strip", Static).update("")
+
+        if compat_entry:
+            hw_parts = []
+            for c in compat_entry.compatibility:
+                if c.status != "Not Supported":
+                    marker = "✓" if c.status == "Supported" else "~"
+                    hw_parts.append(f"{c.hardware.upper()} {marker}")
+            if hw_parts:
+                self.query_one("#compat-strip", Static).update("Compat: " + "  ·  ".join(hw_parts))
+            else:
+                self.query_one("#compat-strip", Static).update("")
+        else:
+            self.query_one("#compat-strip", Static).update("")
 
     # ---------------------------------------------------------------- event handlers
 

@@ -143,6 +143,12 @@ class TuiApp(App[None]):
         self._ctrl.select_model(entry)
         config_pane = self.query_one(ConfigPane)
         config_pane.set_model(entry, self._on_options_changed)
+        # Show compat info if catalog has been loaded
+        compat = self._ctrl.compat_catalog
+        if compat:
+            compat_entry = (compat.lookup(entry.display_name.lower().replace(" ", "-"))
+                            or compat.lookup_by_display_name(entry.display_name))
+            config_pane.set_compat_info(compat_entry, [])
 
     def _on_options_changed(self, options) -> None:
         self._ctrl.set_options(options)
