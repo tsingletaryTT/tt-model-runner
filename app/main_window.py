@@ -512,10 +512,18 @@ class Sidebar(Gtk.Box):
 
     def _append_discover_results(self, search: str) -> None:
         """Add DISCOVER tree section from compat catalog for search query."""
+        from compat_catalog import _HW_MAP
         # Build the set of display names already shown by model_spec catalog.
         known_names: set = set()
         if self._catalog:
             known_names = {e.display_name.lower() for e in self._catalog.all_entries()}
+
+        # When a device is selected, map its ID back to catalog hardware names.
+        active_hw: set = set()
+        if self._selected_device:
+            dt = self._selected_device
+            active_hw = {hw for hw, mapped in _HW_MAP.items() if mapped == dt}
+            active_hw.add(dt.lower())  # also accept the device ID itself
 
         # Gather matching compat entries not already in model_spec.
         sw_buckets: dict = {}  # software_stack → [CompatEntry]
@@ -530,6 +538,9 @@ class Sidebar(Gtk.Box):
             # Determine applicable software stacks from all compatibility records.
             for compat in entry.compatibility:
                 if compat.status == "Not Supported":
+                    continue
+                # Filter by selected device if one is active.
+                if active_hw and compat.hardware.lower() not in active_hw:
                     continue
                 for sw in compat.software:
                     if sw not in sw_buckets:
