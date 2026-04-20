@@ -2528,9 +2528,32 @@ class MainWindow(Gtk.ApplicationWindow):
         self._ctrl.reset_hardware(on_complete=_after_reset)
 
     def _on_hardware_reset(self) -> None:
-        """Called from the sidebar Reset button — run tt-smi -r and stream output."""
-        self._panel.show_logs()
-        self._ctrl.reset_hardware()
+        """Called from the sidebar Reset button — confirm then run tt-smi -r."""
+        dialog = Gtk.MessageDialog(
+            transient_for=self,
+            modal=True,
+            message_type=Gtk.MessageType.WARNING,
+            text="Reset all TT devices?",
+        )
+        dialog.format_secondary_text(
+            "tt-smi -r will soft-reset all Tenstorrent devices.\n"
+            "Any running server will be killed immediately.\n\n"
+            "Use this to clear device state when switching model families\n"
+            "or to recover from a hung/error state."
+        )
+        dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
+        reset_btn = dialog.add_button("↺  Reset", Gtk.ResponseType.ACCEPT)
+        reset_btn.add_css_class("destructive-action")
+        dialog.set_default_response(Gtk.ResponseType.CANCEL)
+
+        def _on_response(dlg, resp: int) -> None:
+            dlg.destroy()
+            if resp == Gtk.ResponseType.ACCEPT:
+                self._panel.show_logs()
+                self._ctrl.reset_hardware()
+
+        dialog.connect("response", _on_response)
+        dialog.present()
 
     def _on_model_select(self, entry: ModelEntry) -> None:
         """Tell the controller a new model was selected and update the banner
