@@ -2647,9 +2647,18 @@ class MainWindow(Gtk.ApplicationWindow):
     def _on_bench_progress(self, line: str) -> None:
         """Forward a benchmark live-output line to the bench log buffer.
 
+        Intercepts the §BENCH_DONE§ sentinel emitted by BenchmarkRunner to
+        restore the Run Benchmark button after the subprocess exits.
+
         Called via controller.on_bench_progress, dispatched through
         GLib.idle_add so this always runs on the GTK main thread.
         """
+        if line == "§BENCH_DONE§":
+            from server_manager import ServerState
+            btn = self._panel._bench_run_btn
+            btn.set_label("▶ Run Benchmark")
+            btn.set_sensitive(self._ctrl.state == ServerState.READY)
+            return
         self._panel.append_bench_progress(line)
 
     def _on_bench_result(self, result) -> None:
@@ -2679,6 +2688,9 @@ class MainWindow(Gtk.ApplicationWindow):
             # Clear previous live output and results before starting a new run.
             self._panel._bench_log_buf.set_text("")
             self._panel._bench_results_buf.set_text("")
+            # Show running state; will be restored when §BENCH_DONE§ sentinel arrives.
+            _btn.set_label("⏳ Running…")
+            _btn.set_sensitive(False)
             self._ctrl.run_benchmark(mode=mode, concurrency_sweeps=sweeps,
                                      percentile_report=pct)
 

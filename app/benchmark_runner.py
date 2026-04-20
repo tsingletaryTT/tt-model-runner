@@ -236,6 +236,7 @@ class BenchmarkRunner:
             proc.wait()
         except Exception as exc:
             self._on_progress(f"Error launching benchmark: {exc}")
+            self._on_progress("§BENCH_DONE§")
             return
 
         # Collect benchmark JSON files that appeared during this run
@@ -289,6 +290,12 @@ class BenchmarkRunner:
             )
             self._persist(result)
             self._on_result(result)
+
+        n = len(new_files)
+        summary = (f"✓ Benchmark done — {n} result file(s)" if n > 0
+                   else "✓ Benchmark done — no new result files in workflow_logs/")
+        self._on_progress(summary)
+        self._on_progress("§BENCH_DONE§")
 
     def _persist(self, result: BenchResult) -> None:
         """Append a BenchResult to the JSON history file.
