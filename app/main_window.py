@@ -1855,15 +1855,23 @@ class MainPanel(Gtk.Box):
         self._progress_rev.set_reveal_child(active and state != ServerState.READY)
         self._tour_rev.set_reveal_child(loading)
 
-        # Show tab bar only when READY; default to Logs tab when first entering READY.
         ready = (state == ServerState.READY)
-        self._tab_bar.set_visible(ready)
+        # Show tab bar once any server op begins; keep visible until back to IDLE.
+        # This lets users access bench history and logs even after an error or during loading.
+        was_tabs_visible = self._tab_bar.get_visible()
+        show_tabs = state != ServerState.IDLE
+        self._tab_bar.set_visible(show_tabs)
+        # Gate "Run Benchmark" on the server being actually live and ready.
+        self._bench_run_btn.set_sensitive(ready)
         self._copy_curl_btn.set_visible(ready)
         self._open_api_btn.set_visible(ready)
         # Restart button: show when READY or ERROR (so user can retry after failure)
         self._restart_btn.set_visible(state in (ServerState.READY, ServerState.ERROR))
         if ready:
             self._stack.set_visible_child_name("logs")
+            self._update_tab_buttons("logs")
+        elif show_tabs and not was_tabs_visible:
+            # Tab bar just became visible (IDLE → LAUNCHING): default to Logs
             self._update_tab_buttons("logs")
 
         if state in (ServerState.LAUNCHING, ServerState.PULLING_IMAGE):
@@ -2666,6 +2674,8 @@ class MainWindow(Gtk.ApplicationWindow):
             mode = self._panel._bench_mode_combo.get_active_text() or "smoke-test"
             sweeps = self._panel._bench_sweeps_check.get_active()
             pct    = self._panel._bench_pct_check.get_active()
+            # Switch to bench tab so live output is visible immediately.
+            self._panel.show_bench()
             # Clear previous live output and results before starting a new run.
             self._panel._bench_log_buf.set_text("")
             self._panel._bench_results_buf.set_text("")
