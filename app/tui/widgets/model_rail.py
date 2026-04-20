@@ -314,7 +314,7 @@ class ModelRail(Widget):
         if event.button.id == "launch-btn":
             from server_manager import ServerState
             app_ctrl = getattr(self.app, "_ctrl", None)
-            if app_ctrl and app_ctrl.state not in (ServerState.IDLE, ServerState.ERROR):
+            if app_ctrl and app_ctrl.state not in (ServerState.IDLE, ServerState.ERROR, ServerState.DONE):
                 if self.on_stop:
                     self.on_stop()
             else:
