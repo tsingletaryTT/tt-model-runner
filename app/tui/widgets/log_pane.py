@@ -113,7 +113,7 @@ class LogPane(Widget):
         with Widget(id="log-search-row"):
             yield Input(placeholder="Search logs… (Esc to close)", id="log-search-input")
         yield Static(self._filter_markup(), id="log-filter-bar", markup=True)
-        yield RichLog(id="log-output", highlight=False, markup=False, wrap=True)
+        yield RichLog(id="log-output", highlight=True, markup=False, wrap=True)
 
     def update_state(self, state, info: str = "") -> None:
         name = state.name if hasattr(state, "name") else str(state)

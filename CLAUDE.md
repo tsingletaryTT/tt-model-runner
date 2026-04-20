@@ -131,6 +131,7 @@ Views treat DONE like IDLE (unlock sidebar, keep logs).
 | Ctrl+H | Refresh chip telemetry (tt-smi -s) |
 | Ctrl+T (×2) | Hardware reset (tt-smi -r) — requires two presses within 5 s |
 | Ctrl+U | Copy test curl command to clipboard (READY only) |
+| Ctrl+G | git pull the configured server repo |
 | Ctrl+F | Open log search (Esc to close, D/I/W/E to toggle levels) |
 
 ## Running tests

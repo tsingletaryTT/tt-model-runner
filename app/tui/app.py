@@ -59,6 +59,7 @@ class TuiApp(App[None]):
         Binding("ctrl+h",  "hw_refresh",       "HW",        show=False),
         Binding("ctrl+t",  "hw_reset",         "HW Reset",  show=False),
         Binding("ctrl+u",  "copy_curl",        "Curl",      show=False),
+        Binding("ctrl+g",  "git_pull",         "Git pull",  show=False),
     ]
 
     def compose(self) -> ComposeResult:
@@ -336,6 +337,20 @@ class TuiApp(App[None]):
         """Refresh chip telemetry (tt-smi -s)."""
         self._ctrl.refresh_hardware_status()
         self.notify("Refreshing chip telemetry…", timeout=3)
+
+    def action_git_pull(self) -> None:
+        """git pull the configured server repo (Ctrl+G)."""
+        self.query_one(TabbedContent).active = "logs"
+
+        def _on_done(success: bool, summary: str) -> None:
+            if success:
+                branch, sha = self._ctrl.get_repo_git_info()
+                info = f"  [{branch} @{sha}]" if branch else ""
+                self.notify(f"git pull complete{info}", title="Repo updated")
+            else:
+                self.notify(f"git pull failed: {summary}", severity="error", title="Git pull")
+
+        self._ctrl.pull_repo(on_complete=_on_done)
 
     def action_hw_reset(self) -> None:
         """Run tt-smi -r — requires two presses within 5 s to confirm."""
