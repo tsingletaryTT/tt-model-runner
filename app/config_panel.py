@@ -504,19 +504,23 @@ class ConfigPanel(Gtk.Box):
         """Called on GTK thread after arch scan completes."""
         if self._entry is None or self._entry.hf_model_repo != hf_repo:
             return  # model changed while scan was in flight
-        if not info.is_cached or info.arch is None:
+        if not info.is_cached:
             return
-        a = info.arch
         parts = []
-        if a.num_layers:
-            parts.append(f"{a.num_layers} layers")
-        if a.num_heads:
-            kv = f" / {a.num_kv_heads} KV" if a.num_kv_heads and a.num_kv_heads != a.num_heads else ""
-            parts.append(f"{a.num_heads}{kv} heads")
-        if a.context_length:
-            parts.append(f"ctx {a.context_length:,}")
-        if a.vocab_size:
-            parts.append(f"vocab {a.vocab_size:,}")
+        if info.arch:
+            a = info.arch
+            if a.num_layers:
+                parts.append(f"{a.num_layers} layers")
+            if a.num_heads:
+                kv = f"/{a.num_kv_heads} KV" if a.num_kv_heads and a.num_kv_heads != a.num_heads else ""
+                parts.append(f"{a.num_heads}{kv} heads")
+            if a.context_length:
+                parts.append(f"ctx {a.context_length:,}")
+            if a.vocab_size:
+                parts.append(f"vocab {a.vocab_size:,}")
+        if info.total_bytes:
+            gb = info.total_bytes / 1e9
+            parts.append(f"{gb:.1f} GB cached")
         if parts:
             self._strip_arch.set_text("  ·  ".join(parts))
             self._strip_arch.set_visible(True)

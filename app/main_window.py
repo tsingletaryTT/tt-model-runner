@@ -159,9 +159,15 @@ class Sidebar(Gtk.Box):
         self._port_entry = Gtk.Entry()
         self._port_entry.set_text(_settings.last_port or "8000")
         self._port_entry.set_hexpand(True)
-        self._port_entry.connect("changed", lambda e: self._save_port())
+        self._port_entry.connect("changed", self._on_port_changed)
         pbox.append(self._port_entry)
+        self._port_indicator = Gtk.Label(label="●")
+        self._port_indicator.set_tooltip_text("Port availability")
+        self._port_indicator.set_markup("<span foreground='#607D8B'>●</span>")
+        pbox.append(self._port_indicator)
         self.append(pbox)
+        self._port_check_timer: Optional[int] = None
+        GLib.timeout_add(600, self._schedule_port_check)  # initial check after UI settles
 
         # Launch button
         btnbox = Gtk.Box(); btnbox.set_margin_start(8); btnbox.set_margin_end(8)
@@ -213,9 +219,54 @@ class Sidebar(Gtk.Box):
         self.append(self._hf_label)
         self._update_hf_status()
 
+    def _on_port_changed(self, entry: Gtk.Entry) -> None:
+        self._save_port()
+        self._schedule_port_check()
+
     def _save_port(self):
         _settings.last_port = self._port_entry.get_text()
         _settings.save()
+
+    def _schedule_port_check(self) -> bool:
+        """Debounce: cancel any pending check and schedule a new one in 400ms."""
+        if self._port_check_timer is not None:
+            GLib.source_remove(self._port_check_timer)
+        self._port_check_timer = GLib.timeout_add(400, self._run_port_check)
+        return False  # one-shot when called from timeout_add
+
+    def _run_port_check(self) -> bool:
+        """Kick off a background socket check for the configured port."""
+        import socket
+        import threading
+        self._port_check_timer = None
+        port_str = self._port_entry.get_text().strip()
+
+        def _check():
+            try:
+                port = int(port_str)
+            except ValueError:
+                GLib.idle_add(self._set_port_indicator, None)
+                return
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=0.3):
+                    GLib.idle_add(self._set_port_indicator, True)
+            except OSError:
+                GLib.idle_add(self._set_port_indicator, False)
+
+        threading.Thread(target=_check, daemon=True).start()
+        return False  # one-shot
+
+    def _set_port_indicator(self, in_use: Optional[bool]) -> None:
+        """Update port indicator: None=unknown, False=free, True=in use."""
+        if in_use is None:
+            self._port_indicator.set_markup("<span foreground='#607D8B'>●</span>")
+            self._port_indicator.set_tooltip_text("Invalid port")
+        elif in_use:
+            self._port_indicator.set_markup("<span foreground='#FF6B6B'>●</span>")
+            self._port_indicator.set_tooltip_text("Port in use")
+        else:
+            self._port_indicator.set_markup("<span foreground='#27AE60'>●</span>")
+            self._port_indicator.set_tooltip_text("Port free")
 
     def _trigger_repo_change(self):
         text = self._repo_entry.get_text()
