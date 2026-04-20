@@ -51,6 +51,10 @@ class ConfigPane(Widget):
         color: $text-muted;
         height: auto;
     }
+    #timing-strip {
+        color: $text-muted;
+        height: auto;
+    }
     #desc-strip {
         color: $text-muted;
         height: auto;
@@ -88,6 +92,7 @@ class ConfigPane(Widget):
     def compose(self) -> ComposeResult:
         yield Static("Select a model to configure", id="model-strip")
         yield Static("", id="arch-strip")
+        yield Static("", id="timing-strip")
         yield Static("", id="desc-strip")
         yield Static("", id="compat-strip")
         yield Label("USE CASE")
@@ -118,6 +123,7 @@ class ConfigPane(Widget):
         )
         # Clear derived info until callbacks populate it
         self.query_one("#arch-strip", Static).update("")
+        self.query_one("#timing-strip", Static).update(self._make_timing_label(entry))
         self.query_one("#desc-strip", Static).update("")
         self.query_one("#compat-strip", Static).update("")
         self._scan_arch_async(entry)
@@ -179,6 +185,34 @@ class ConfigPane(Widget):
 
     def set_dev_launch_callback(self, callback) -> None:
         self._on_dev_launch = callback
+
+    # ---------------------------------------------------------------- timing estimate
+
+    @staticmethod
+    def _make_timing_label(entry) -> str:
+        try:
+            from timing_store import TimingStore
+            ts = TimingStore()
+            result = ts.estimate_load(
+                hf_repo=getattr(entry, "hf_model_repo", ""),
+                device=getattr(entry, "device_type", ""),
+                cold=False,
+                size_gb=getattr(entry, "min_disk_gb", None) or 0.0,
+                family=getattr(entry, "family", ""),
+            )
+            if result.confidence == "none" or result.seconds is None:
+                return ""
+            secs = result.seconds
+            if secs < 60:
+                time_str = f"~{secs:.0f}s"
+            elif secs < 3600:
+                time_str = f"~{secs / 60:.0f} min"
+            else:
+                time_str = f"~{secs / 3600:.1f} h"
+            conf_tag = "" if result.confidence == "high" else f"  ({result.confidence})"
+            return f"Est. load: {time_str}{conf_tag}"
+        except Exception:
+            return ""
 
     # ---------------------------------------------------------------- arch scan
 
