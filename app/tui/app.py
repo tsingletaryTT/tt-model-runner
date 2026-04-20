@@ -27,6 +27,8 @@ class TuiApp(App[None]):
 
     # Stores (port, container_name) when a running server is detected on startup.
     _pending_reconnect: "Optional[tuple]" = None
+    # Two-press confirmation for tt-smi -r: stores monotonic timestamp of first press.
+    _hw_reset_confirm_ts: float = 0.0
 
     CSS = """
     Screen {
@@ -49,8 +51,10 @@ class TuiApp(App[None]):
         Binding("2", "switch_tab('logs')",    "Logs",    show=False),
         Binding("3", "switch_tab('tools')",   "Tools",   show=False),
         Binding("4", "switch_tab('bench')",   "Bench",   show=False),
-        Binding("[", "toggle_rail",            "Rail",    show=False),
-        Binding("r", "reconnect",              "Reconnect", show=False),
+        Binding("[",       "toggle_rail",      "Rail",      show=False),
+        Binding("r",       "reconnect",        "Reconnect", show=False),
+        Binding("ctrl+h",  "hw_refresh",       "HW",        show=False),
+        Binding("ctrl+t",  "hw_reset",         "HW Reset",  show=False),
     ]
 
     def compose(self) -> ComposeResult:
@@ -285,3 +289,29 @@ class TuiApp(App[None]):
         self._pending_reconnect = None
         self.query_one(LogPane).append_line(f"⟳ Reconnecting to {container_name} on port {port}…")
         self._ctrl.adopt_running_server(port, container_name)
+
+    def action_hw_refresh(self) -> None:
+        """Refresh chip telemetry (tt-smi -s)."""
+        self._ctrl.refresh_hardware_status()
+        self.notify("Refreshing chip telemetry…", timeout=3)
+
+    def action_hw_reset(self) -> None:
+        """Run tt-smi -r — requires two presses within 5 s to confirm."""
+        import time
+        now = time.monotonic()
+        if now - self._hw_reset_confirm_ts < 5.0:
+            self._hw_reset_confirm_ts = 0.0
+            from server_manager import ServerState
+            if self._ctrl.state not in (ServerState.IDLE, ServerState.ERROR, ServerState.DONE):
+                self.notify("Stop the server before resetting hardware", severity="warning")
+                return
+            self.query_one(LogPane).append_line("⟳ Running tt-smi -r…")
+            self._ctrl.reset_hardware()
+        else:
+            self._hw_reset_confirm_ts = now
+            self.notify(
+                "Press Ctrl+T again within 5s to confirm tt-smi -r reset",
+                title="Hardware reset",
+                severity="warning",
+                timeout=5,
+            )
