@@ -131,6 +131,31 @@ class LaunchConfig:
     inference_engine: str = ""
 
 
+# Container-side CACHE_ROOT mount point — constant across all tt-inference-server images.
+# run_docker_server.py sets this for media/forge engines but not for vLLM; the container's
+# docker-entrypoint.sh unconditionally does `stat "$CACHE_ROOT"` and fails when it's empty.
+_CONTAINER_CACHE_ROOT = "/home/container_app_user/cache_root"
+
+
+def _inject_cache_root_env(repo_path: Path) -> None:
+    """Write CACHE_ROOT into the server repo's .env so docker --env-file picks it up.
+
+    run_docker_server.py passes --env-file .env to every docker run call, so any
+    variable written here reaches the container.  We also ensure the host subprocess
+    has CACHE_ROOT set (even if empty) before run.py calls load_dotenv(), so
+    load_dotenv(override=False) cannot inject the container-side path into the host
+    environment and break the host's workflow log directory creation.
+    """
+    env_path = repo_path / ".env"
+    try:
+        content = env_path.read_text() if env_path.exists() else ""
+        if "CACHE_ROOT=" not in content:
+            with env_path.open("a") as f:
+                f.write(f"\nCACHE_ROOT={_CONTAINER_CACHE_ROOT}\n")
+    except OSError:
+        pass
+
+
 class ServerManager:
     # Docker image-not-found patterns — capture the full image reference
     _IMAGE_NOT_FOUND_RE = re.compile(
@@ -235,9 +260,17 @@ class ServerManager:
 
             cmd += build_extra_args(config.options, _EntryProxy())
 
+        # Write CACHE_ROOT to .env before run.py starts so docker --env-file
+        # propagates it into the container's environment.
+        _inject_cache_root_env(config.repo_path)
+
         env = dict(os.environ)
         if config.hf_token:
             env["HF_TOKEN"] = config.hf_token
+        # Ensure CACHE_ROOT is already present in the subprocess env so that
+        # run.py's load_dotenv(override=False) cannot clobber it with the
+        # container-side path, which would break host-side log dir creation.
+        env.setdefault("CACHE_ROOT", "")
 
         log.info("launch: %s  (cwd=%s)", " ".join(cmd), config.repo_path)
         on_log_line(f"$ {' '.join(cmd)}")
