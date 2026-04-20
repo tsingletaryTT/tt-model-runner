@@ -122,6 +122,44 @@ from tool_client import run_session as _tc_run_session
 
 _CONFIG_DIR = Path.home() / ".config" / "tt-runner-gui"
 _TIMING_PATH = _CONFIG_DIR / "timing.json"
+_SESSION_LOG_DIR = Path.home() / ".local" / "share" / "tt-runner-gui" / "logs"
+
+
+class _SessionLog:
+    """Append every log line to a per-session file for post-hoc inspection."""
+
+    def __init__(self):
+        _SESSION_LOG_DIR.mkdir(parents=True, exist_ok=True)
+        ts = time.strftime("%Y-%m-%d_%H-%M-%S")
+        self._path = _SESSION_LOG_DIR / f"session-{ts}.log"
+        try:
+            self._fh = self._path.open("a", encoding="utf-8", buffering=1)
+        except OSError:
+            self._fh = None
+
+    @property
+    def path(self) -> Path:
+        return self._path
+
+    def write(self, line: str) -> None:
+        if self._fh:
+            self._fh.write(line + "\n")
+
+    def close(self) -> None:
+        if self._fh:
+            try:
+                self._fh.close()
+            except OSError:
+                pass
+            self._fh = None
+
+    @staticmethod
+    def list_sessions(max_count: int = 10) -> "list[Path]":
+        """Return the most recent session log paths, newest first."""
+        if not _SESSION_LOG_DIR.exists():
+            return []
+        logs = sorted(_SESSION_LOG_DIR.glob("session-*.log"), reverse=True)
+        return logs[:max_count]
 
 # ── Stage/tour constants (shared with views for display labels) ──────────────
 STAGE_LABELS: dict = {
@@ -237,6 +275,7 @@ class AppController:
         self._emitted_error_hints: set = set()  # patterns already suggested this run
         self._hw_poll_timer: Optional[threading.Timer] = None
         self._hw_poll_active: bool = False  # set True after first repo load
+        self._session_log = _SessionLog()
 
         # Fetch compatibility catalog in the background — dispatches on_compat_catalog_loaded.
         def _on_compat(cat: Optional[CompatCatalog]) -> None:
@@ -278,6 +317,22 @@ class AppController:
     @property
     def compat_catalog(self) -> Optional[CompatCatalog]:
         return self._compat_catalog
+
+    @property
+    def session_log_path(self) -> Path:
+        return self._session_log.path
+
+    def list_session_logs(self, max_count: int = 10) -> "list[Path]":
+        """Return paths to recent session logs, newest first (excludes current session)."""
+        all_logs = _SessionLog.list_sessions(max_count + 1)
+        return [p for p in all_logs if p != self._session_log.path][:max_count]
+
+    def load_session_log(self, path: Path) -> "list[str]":
+        """Read all lines from a session log file."""
+        try:
+            return path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            return []
 
     # ── Internal helpers ────────────────────────────────────────────────────
 
@@ -893,6 +948,7 @@ class AppController:
 
     def _handle_log_line(self, line: str) -> None:
         """Forward a log line to views and update state/substage from it."""
+        self._session_log.write(line)
         self._emit("on_log_line", line)
         # Keep the last actionable error message for the ERROR state banner.
         if re.search(r'ERROR|failed|✗|⚠.*[Cc]ontainer|exit.*code\s*[1-9]', line):

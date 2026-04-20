@@ -1744,6 +1744,13 @@ class MainPanel(Gtk.Box):
             s = buf.get_iter_at_offset(start_off)
             buf.apply_tag_by_name(tag_name, s, buf.get_end_iter())
 
+    def clear_log(self) -> None:
+        """Clear the log view and internal buffer."""
+        self._log_entries.clear()
+        self._log_buf.set_text("")
+        self._jump_error_btn.set_visible(False)
+        self._update_log_count()
+
     def append_log(self, line: str):
         import time as _time
         level = self._detect_level(line)
@@ -2712,6 +2719,64 @@ class MainWindow(Gtk.ApplicationWindow):
         self._panel.show_logs()
         self._ctrl.launch_dev_image(compat_id, sw_stack)
 
+    def _on_load_prev_session_log(self) -> None:
+        """Open a chooser dialog to pick a previous session log and display it in the log view."""
+        logs = self._ctrl.list_session_logs(max_count=8)
+        if not logs:
+            dialog = Gtk.MessageDialog(
+                transient_for=self,
+                modal=True,
+                message_type=Gtk.MessageType.INFO,
+                buttons=Gtk.ButtonsType.OK,
+                text="No previous session logs found",
+                secondary_text=f"Logs are stored in\n~/.local/share/tt-runner-gui/logs/",
+            )
+            dialog.connect("response", lambda d, _: d.destroy())
+            dialog.present()
+            return
+
+        # Build a simple popover / dialog with a list of log files
+        dialog = Gtk.Dialog(title="Load Previous Session Log", transient_for=self, modal=True)
+        dialog.set_default_size(460, 300)
+        ca = dialog.get_content_area()
+        ca.set_spacing(6)
+        ca.set_margin_start(12); ca.set_margin_end(12)
+        ca.set_margin_top(8); ca.set_margin_bottom(8)
+        lbl = Gtk.Label(label="Select a session log to load into the log view:")
+        lbl.set_halign(Gtk.Align.START)
+        ca.append(lbl)
+        lb = Gtk.ListBox()
+        lb.set_selection_mode(Gtk.SelectionMode.SINGLE)
+        for log_path in logs:
+            row = Gtk.ListBoxRow()
+            lrow_lbl = Gtk.Label(label=log_path.name)
+            lrow_lbl.set_halign(Gtk.Align.START)
+            lrow_lbl.set_margin_start(8); lrow_lbl.set_margin_end(8)
+            lrow_lbl.set_margin_top(4); lrow_lbl.set_margin_bottom(4)
+            row.set_child(lrow_lbl)
+            row._log_path = log_path
+            lb.append(row)
+        lb.select_row(lb.get_row_at_index(0))
+        ca.append(lb)
+        dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
+        dialog.add_button("Load", Gtk.ResponseType.OK)
+        dialog.set_default_response(Gtk.ResponseType.OK)
+
+        def _on_response(d, resp):
+            if resp == Gtk.ResponseType.OK:
+                row = lb.get_selected_row()
+                if row and hasattr(row, "_log_path"):
+                    lines = self._ctrl.load_session_log(row._log_path)
+                    self._panel.show_logs()
+                    self._panel.clear_log()
+                    for line in lines:
+                        self._panel.append_log(line)
+                    self._panel.append_log(f"── Loaded {row._log_path.name} ({len(lines)} lines) ──")
+            d.destroy()
+
+        dialog.connect("response", _on_response)
+        dialog.present()
+
     def _on_download_model(self, hf_repo: str) -> None:
         """Initiate HF model download; progress updates arrive via on_download_progress."""
         self._panel.show_logs()
@@ -2923,11 +2988,13 @@ class MainWindow(Gtk.ApplicationWindow):
         _act("jump-error",    lambda: self._panel._jump_error_btn.emit("clicked"),  "<Primary>k")
         _act("save-log",      lambda: self._panel._save_log_btn.emit("clicked"),    "<Primary><Shift>s")
         _act("copy-curl",     lambda: self._panel._copy_curl_btn.emit("clicked"),   "<Primary>u")
+        _act("load-prev-log", lambda: self._on_load_prev_session_log(),             "")
 
         log_menu = Gio.Menu()
-        log_menu.append("Jump to last error",  "win.jump-error")
-        log_menu.append("Save log to file",    "win.save-log")
-        log_menu.append("Copy curl command",   "win.copy-curl")
+        log_menu.append("Jump to last error",     "win.jump-error")
+        log_menu.append("Save log to file",       "win.save-log")
+        log_menu.append("Copy curl command",      "win.copy-curl")
+        log_menu.append("Load previous session…", "win.load-prev-log")
         log_btn = Gtk.MenuButton(label="Log")
         log_btn.set_menu_model(log_menu)
         log_btn.add_css_class("flat")

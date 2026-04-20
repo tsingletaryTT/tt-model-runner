@@ -62,6 +62,7 @@ class TuiApp(App[None]):
         Binding("ctrl+b",  "open_browser",     "Browser",   show=False),
         Binding("ctrl+g",  "git_pull",         "Git pull",  show=False),
         Binding("ctrl+l",  "copy_log",         "Copy log",  show=False),
+        Binding("ctrl+p",  "load_prev_log",    "Prev log",  show=False),
     ]
 
     def compose(self) -> ComposeResult:
@@ -412,6 +413,27 @@ class TuiApp(App[None]):
                 self.notify(f"git pull failed: {summary}", severity="error", title="Git pull")
 
         self._ctrl.pull_repo(on_complete=_on_done)
+
+    def action_load_prev_log(self) -> None:
+        """Ctrl+P — pick a previous session log and load it into the log pane."""
+        logs = self._ctrl.list_session_logs(max_count=8)
+        if not logs:
+            self.notify("No previous session logs found", title="Session Log")
+            return
+        # Load the most recent previous session into the log pane
+        from textual.widgets import RichLog as _RL
+        log_pane = self.query_one(LogPane)
+        newest = logs[0]
+        lines = self._ctrl.load_session_log(newest)
+        try:
+            log_pane.query_one("#log-output", _RL).clear()
+        except Exception:
+            pass
+        for line in lines:
+            log_pane.append_line(line)
+        log_pane.append_line(f"── Loaded {newest.name} ({len(lines)} lines) ──")
+        self.query_one(TabbedContent).active = "logs"
+        self.notify(f"Loaded {newest.name}", title="Previous Session Log")
 
     def action_hw_reset(self) -> None:
         """Run tt-smi -r — requires two presses within 5 s to confirm."""

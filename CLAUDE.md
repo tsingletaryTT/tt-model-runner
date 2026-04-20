@@ -135,6 +135,7 @@ Views treat DONE like IDLE (unlock sidebar, keep logs).
 | Ctrl+G | git pull the configured server repo |
 | Ctrl+L | Copy all visible log lines to clipboard |
 | Ctrl+F | Open log search (Esc to close, D/I/W/E to toggle levels) |
+| Ctrl+P | Load most recent previous session log into log view |
 
 ## Running tests
 
