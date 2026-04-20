@@ -1446,9 +1446,10 @@ class MainPanel(Gtk.Box):
         self._log_view.add_css_class("log-view")
         self._log_view.set_monospace(True)
 
-        # Right-click context menu for copy actions.
+        # Right-click context menu — parent is assigned lazily in the handler
+        # because Gtk.Popover with autohide (grabbing) must be parented to a
+        # native surface (GtkWindow), not a deep widget like GtkTextView.
         self._log_ctx_popover = self._build_log_context_popover()
-        self._log_ctx_popover.set_parent(self._log_view)
         _rclick = Gtk.GestureClick(button=3)
         _rclick.connect("pressed", self._on_log_right_click)
         self._log_view.add_controller(_rclick)
@@ -2019,10 +2020,25 @@ class MainPanel(Gtk.Box):
         return pop
 
     def _on_log_right_click(self, gesture, _n, x, y) -> None:
+        # Grabbing popovers must be parented to a native surface (GtkWindow).
+        # Reparent lazily here rather than at construction time, so the root
+        # window is available and we avoid "non-top most parent" GDK warnings.
+        root = self._log_view.get_root()
+        if root and self._log_ctx_popover.get_parent() is not root:
+            self._log_ctx_popover.unparent()
+            self._log_ctx_popover.set_parent(root)
+
+        # Convert click position from log_view coords → window coords so the
+        # popover anchor rectangle is correct relative to its new parent.
+        if root:
+            _, win_x, win_y = self._log_view.translate_coordinates(root, x, y)
+        else:
+            win_x, win_y = x, y
         r = Gdk.Rectangle()
-        r.x, r.y, r.width, r.height = int(x), int(y), 1, 1
+        r.x, r.y, r.width, r.height = int(win_x), int(win_y), 1, 1
         self._log_ctx_popover.set_pointing_to(r)
-        # Store the click iter offset so "Copy line" knows which line to copy.
+
+        # Iter position uses log_view-local coords (unaffected by reparenting).
         buf_x, buf_y = self._log_view.window_to_buffer_coords(
             Gtk.TextWindowType.WIDGET, int(x), int(y)
         )
