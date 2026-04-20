@@ -29,6 +29,10 @@ _DEFAULTS = {
     #   "concurrency", "mean_ttft_ms", "p95_ttft_ms", "mean_tps", "tps_decode",
     #   "mean_e2el_ms", "request_throughput", "tier_pass"}]
     "benchmark_history": [],
+    # Per-model launch option overrides: {model_name: {field: value, ...}}
+    # Only non-default fields are stored. Merged on top of the use-case preset when
+    # the user selects that model again.
+    "model_options": {},
 }
 
 

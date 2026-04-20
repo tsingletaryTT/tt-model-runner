@@ -324,9 +324,18 @@ class AppController:
         threading.Thread(target=_detect, daemon=True).start()
 
     def select_model(self, entry: ModelEntry) -> None:
-        """Called when user selects a model; triggers HF cache scan."""
+        """Called when user selects a model; triggers HF cache scan and restores saved options."""
         self._current_entry = entry
         self._cache_info = None
+        # Restore any per-model option overrides saved from a previous session.
+        saved_overrides: dict = (_settings.model_options or {}).get(entry.model_name, {})
+        if saved_overrides:
+            from dataclasses import asdict, fields as dc_fields
+            valid_fields = {f.name for f in dc_fields(LaunchOptions)}
+            filtered = {k: v for k, v in saved_overrides.items() if k in valid_fields}
+            self._options = LaunchOptions(**filtered)
+        else:
+            self._options = LaunchOptions()
 
         def _scan():
             info = scan_model_cache(entry.hf_model_repo)
@@ -1091,6 +1100,22 @@ class AppController:
 
     def set_options(self, options: LaunchOptions) -> None:
         self._options = options
+        # Persist per-model overrides so the user's settings survive session restarts.
+        if self._current_entry:
+            from dataclasses import asdict as _asdict
+            defaults = LaunchOptions()
+            from dataclasses import asdict as _asdict2
+            overrides = {
+                k: v for k, v in _asdict(options).items()
+                if v != getattr(defaults, k)
+            }
+            model_opts = dict(_settings.model_options or {})
+            if overrides:
+                model_opts[self._current_entry.model_name] = overrides
+            elif self._current_entry.model_name in model_opts:
+                del model_opts[self._current_entry.model_name]
+            _settings.model_options = model_opts
+            _settings.save()
 
     def run_benchmark(
         self,
