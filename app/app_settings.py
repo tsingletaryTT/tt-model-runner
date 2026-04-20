@@ -42,6 +42,13 @@ _DEFAULTS = {
     # Host directory bind-mounted into Docker containers as CACHE_ROOT.
     # Auto-created on first launch if it doesn't exist.
     "cache_root_path": str(Path.home() / ".cache" / "tt-model-runner"),
+    # Host HuggingFace cache dir passed as --host-hf-cache so the container reuses
+    # already-downloaded weights instead of re-downloading them.
+    # Set to "" to disable (download always happens inside the container volume).
+    "hf_cache_path": str(Path.home() / ".cache" / "huggingface"),
+    # Host weights dir passed as --host-weights-dir when non-empty.
+    # Useful if weights live outside the HF cache (e.g. manually downloaded).
+    "host_weights_dir": "",
 }
 
 

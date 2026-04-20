@@ -447,6 +447,11 @@ class ServerManager:
 
         self._log_path = log_path
 
+        _HEARTBEAT_INTERVAL = 10.0   # seconds of silence before first nudge
+        _HEARTBEAT_REPEAT   = 15.0   # seconds between subsequent nudges
+        _last_line_t  = time.monotonic()
+        _last_nudge_t = _last_line_t
+
         with open(log_path, "r", errors="replace") as f:
             while not self._stop_event.is_set():
                 line = f.readline()
@@ -459,9 +464,25 @@ class ServerManager:
                         if rc != 0 and not self._container_name:
                             on_state(ServerState.ERROR)
                         break
+
+                    now = time.monotonic()
+                    silent_for = now - _last_line_t
+                    due_for_nudge = (
+                        silent_for >= _HEARTBEAT_INTERVAL
+                        and (now - _last_nudge_t) >= _HEARTBEAT_REPEAT
+                    )
+                    if due_for_nudge:
+                        on_log_line(
+                            f"⏳  Still working… ({int(silent_for)}s since last output)"
+                            "  — check docker / network if this takes more than a few minutes"
+                        )
+                        _last_nudge_t = now
+
                     time.sleep(0.05)
                     continue
 
+                _last_line_t  = time.monotonic()
+                _last_nudge_t = _last_line_t
                 line = line.rstrip("\n")
                 on_log_line(line)
                 self._check_line(line, on_log_line)
@@ -532,6 +553,11 @@ class ServerManager:
         # Check every 15 s while loading; expensive docker inspect avoided during idle.
         container_check_interval = 15.0
 
+        _HEARTBEAT_INTERVAL = 20.0
+        _HEARTBEAT_REPEAT   = 30.0
+        _last_line_t  = time.monotonic()
+        _last_nudge_t = _last_line_t
+
         with open(docker_log, "r", errors="replace") as f:
             while not self._stop_event.is_set():
                 line = f.readline()
@@ -548,9 +574,19 @@ class ServerManager:
                                 f"⚠ Container {self._container_name} stopped unexpectedly")
                             on_state(ServerState.ERROR)
                             break
+
+                    silent_for = now - _last_line_t
+                    if silent_for >= _HEARTBEAT_INTERVAL and (now - _last_nudge_t) >= _HEARTBEAT_REPEAT:
+                        on_log_line(
+                            f"⏳  Container loading… ({int(silent_for)}s since last output)"
+                        )
+                        _last_nudge_t = now
+
                     time.sleep(0.1)
                     continue
 
+                _last_line_t  = time.monotonic()
+                _last_nudge_t = _last_line_t
                 line = line.rstrip("\n")
                 on_log_line(line)
                 self._check_line(line, on_log_line)

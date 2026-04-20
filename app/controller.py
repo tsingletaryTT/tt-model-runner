@@ -433,24 +433,6 @@ class AppController:
         except (OSError, ValueError):
             return False
 
-    @staticmethod
-    def _ensure_cache_root_env(repo_path: Path) -> None:
-        """Write CACHE_ROOT to the server repo's .env if not already present.
-
-        The container's docker-entrypoint.sh reads $CACHE_ROOT to set permissions
-        on the mounted volume.  Release images bake it in via Dockerfile ENV; dev
-        images may not.  Writing it to .env (passed via --env-file) covers both.
-        """
-        env_path = repo_path / ".env"
-        container_cache_root = "/home/container_app_user/cache_root"
-        try:
-            content = env_path.read_text() if env_path.exists() else ""
-            if "CACHE_ROOT=" not in content:
-                with env_path.open("a") as f:
-                    f.write(f"\nCACHE_ROOT={container_cache_root}\n")
-        except OSError:
-            pass
-
     def launch(self, entry: ModelEntry, port: str,
                options: Optional[LaunchOptions] = None) -> None:
         """Start the inference server for the given model entry.
@@ -512,28 +494,62 @@ class AppController:
             self._emit("on_log_line", f"⚠ run.py not found at {repo_path}")
             return
 
+        # Transition to LAUNCHING first so the view clears stale log content
+        # (e.g. errors from the previous run) before we start emitting new lines.
+        # All subsequent _emit calls are queued after this on the GTK main thread.
+        self._transition(ServerState.LAUNCHING)
+        self._emit("on_log_line",
+                   f"▶ Launching {entry.display_name} on {entry.device_type} · port {port}")
+
         hf_token = self._read_hf_token(repo_path)
         if not hf_token:
             self._emit("on_log_line",
                        "⚠ HF_TOKEN not found in environment or .env — launch may fail")
 
-        # Ensure host_volume is set so the container gets a writable CACHE_ROOT.
-        # If the user hasn't specified one, use (and create) the default cache dir.
-        if not self._options.host_volume:
+        # ── Smart cache defaults ─────────────────────────────────────────────
+        # run.py enforces that only ONE of --host-hf-cache, --host-weights-dir,
+        # --host-volume may be passed.  Apply in priority order and stop at the
+        # first match so we never set two at once.
+        #
+        # Priority: host_weights_dir > host_hf_cache > host_volume
+        # (most-specific wins; host_volume is the generic fallback)
+
+        _cache_set = (
+            bool(self._options.host_weights_dir)
+            or bool(self._options.host_hf_cache)
+            or bool(self._options.host_volume)
+        )
+
+        if not _cache_set:
+            # 1. Explicit weights dir from settings (most specific).
+            wd = _settings.host_weights_dir
+            if wd:
+                wd_path = Path(wd).expanduser()
+                if wd_path.exists():
+                    self._options.host_weights_dir = str(wd_path)
+                    self._emit("on_log_line", f"ℹ Weights dir → {wd_path}")
+                    _cache_set = True
+
+        if not _cache_set:
+            # 2. HF cache — reuses already-downloaded weights, skips re-download.
+            hf_cache = _settings.hf_cache_path
+            if hf_cache:
+                hf_dir = Path(hf_cache).expanduser()
+                if hf_dir.exists():
+                    self._options.host_hf_cache = str(hf_dir)
+                    self._emit("on_log_line", f"ℹ HF cache  → {hf_dir}")
+                    _cache_set = True
+
+        if not _cache_set:
+            # 3. Generic CACHE_ROOT volume (created on first use).
             cache_dir = Path(_settings.cache_root_path).expanduser()
             try:
                 cache_dir.mkdir(parents=True, exist_ok=True)
                 self._options.host_volume = str(cache_dir)
-                self._emit("on_log_line",
-                           f"ℹ Cache dir → {cache_dir}  (set cache_root_path in settings to change)")
+                self._emit("on_log_line", f"ℹ Cache dir → {cache_dir}")
             except OSError as exc:
                 self._emit("on_log_line",
                            f"⚠ Could not create cache dir {cache_dir}: {exc} — launch may fail")
-
-        # Ensure CACHE_ROOT is set in the server repo's .env so the Docker
-        # entrypoint can resolve the mounted volume path. Some dev images don't
-        # bake ENV CACHE_ROOT into the Dockerfile; the --env-file covers them.
-        self._ensure_cache_root_env(repo_path)
 
         config = LaunchConfig(
             repo_path=repo_path,
@@ -554,10 +570,6 @@ class AppController:
         recents.insert(0, rec)
         _settings.recent_models = recents[:5]
         _settings.save()
-
-        self._emit("on_log_line",
-                   f"▶ Launching {entry.display_name} on {entry.device_type} · port {port}")
-        self._transition(ServerState.LAUNCHING)
 
         self._health_worker = HealthWorker(
             port=port,

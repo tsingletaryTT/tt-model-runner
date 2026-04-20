@@ -198,17 +198,6 @@ class ConfigPanel(Gtk.Box):
         inner.append(profile_bar)
         inner.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
 
-        # --- USE CASE chips ---
-        uc_lbl = Gtk.Label(label="USE CASE")
-        uc_lbl.add_css_class("muted")
-        uc_lbl.set_halign(Gtk.Align.START)
-        uc_lbl.set_margin_top(8)
-        uc_lbl.set_margin_bottom(4)
-        inner.append(uc_lbl)
-        self._uc_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        self._uc_box.set_margin_bottom(8)
-        inner.append(self._uc_box)
-
         # --- QUICK SETTINGS ---
         qs_lbl = Gtk.Label(label="QUICK SETTINGS")
         qs_lbl.add_css_class("muted")
@@ -721,16 +710,8 @@ class ConfigPanel(Gtk.Box):
     # ------------------------------------------------------------- use cases
 
     def _populate_use_cases(self, entry: ModelEntry) -> None:
-        for child in list(self._uc_box):
-            self._uc_box.remove(child)
+        # Use-case selection lives in the model card dropdown; nothing to do here.
         self._use_case_btns.clear()
-        use_cases = MODEL_TYPE_USE_CASES.get(entry.model_type, ["dev"])
-        for uc in use_cases:
-            btn = Gtk.ToggleButton(label=USE_CASE_LABELS.get(uc, uc))
-            btn.add_css_class("chip")
-            btn.connect("toggled", self._on_uc_toggled, uc)
-            self._uc_box.append(btn)
-            self._use_case_btns[uc] = btn
 
     def load_options(self, options: "LaunchOptions") -> None:
         """Sync UI widgets to the given options (e.g., restored from per-model settings).
