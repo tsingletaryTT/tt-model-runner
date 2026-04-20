@@ -67,17 +67,21 @@ class ModelRail(Widget):
     selected_entry: Optional["ModelEntry"] = None
     port_value: str = "8000"
 
+    on_compat_select: Optional[Callable] = None
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        # Instance-level list — avoids the mutable class-level default pitfall
-        # where all ModelRail instances would share the same list object.
+        # Instance-level lists — avoids the mutable class-level default pitfall.
         self._entries: list = []
+        self._compat_entries: list = []  # (display_name, compat_entry, sw_stack) tuples
 
     def compose(self) -> ComposeResult:
         yield Static("[b]TT Model Runner[/b]", markup=True)
         yield Static("", id="state-pill")
         yield Label("Model:", classes="rail-section-label")
         yield ListView(id="model-list")
+        yield Static("", id="discover-label")
+        yield ListView(id="discover-list")
         yield Label("Port:", classes="rail-section-label")
         yield Static("8000", id="port-display")
         yield Button("▶ Launch", id="launch-btn", variant="success")
@@ -89,6 +93,7 @@ class ModelRail(Widget):
                              if e.device_type in compatible_devices]
         else:
             self._entries = list(catalog.all_entries())
+        self._catalog = catalog
         lv = self.query_one("#model-list", ListView)
         lv.clear()
         for entry in self._entries:
@@ -96,7 +101,40 @@ class ModelRail(Widget):
             suffix = f"  {size}" if size else ""
             item = ListItem(Label(f"{entry.display_name}{suffix}\n  {entry.device_type}"))
             item._entry = entry
+            item._compat_entry = None
             lv.append(item)
+
+    def load_compat_catalog(self, catalog, device_type: Optional[str] = None) -> None:
+        """Add compat-only DISCOVER entries below the main model list."""
+        known_names = {e.display_name.lower() for e in self._entries}
+        self._compat_entries = []
+        if device_type:
+            from compat_catalog import _HW_MAP
+            for sw in ("tt-forge", "tt-metal"):
+                for ce in catalog.get_for_hardware(device_type, software=sw):
+                    if ce.display_name.lower() not in known_names:
+                        self._compat_entries.append((ce.display_name, ce, sw))
+        else:
+            seen = set()
+            for ce in catalog.all_entries():
+                if ce.display_name.lower() not in known_names and ce.id not in seen:
+                    seen.add(ce.id)
+                    sw = ce.compatibility[0].software[0] if ce.compatibility and ce.compatibility[0].software else "?"
+                    self._compat_entries.append((ce.display_name, ce, sw))
+
+        dlv = self.query_one("#discover-list", ListView)
+        dlv.clear()
+        lbl = self.query_one("#discover-label", Static)
+        if self._compat_entries:
+            lbl.update(f"[dim]— DISCOVER ({len(self._compat_entries)}) —[/dim]")
+            for name, ce, sw in self._compat_entries:
+                short_sw = sw.replace("tt-", "")
+                item = ListItem(Label(f"{name[:18]}\n  [{short_sw}]"))
+                item._entry = None
+                item._compat_entry = ce
+                dlv.append(item)
+        else:
+            lbl.update("")
 
     def update_state(self, state, info: str) -> None:
         """Update the state pill and toggle the launch/stop button label."""
@@ -118,10 +156,14 @@ class ModelRail(Widget):
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         item = event.item
         entry = getattr(item, "_entry", None)
+        compat_entry = getattr(item, "_compat_entry", None)
         if entry is not None:
             self.selected_entry = entry
             if self.on_model_select:
                 self.on_model_select(entry)
+        elif compat_entry is not None:
+            if self.on_compat_select:
+                self.on_compat_select(compat_entry)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "launch-btn":

@@ -86,7 +86,7 @@ class TuiApp(App[None]):
         self._ctrl.on_tool_result     = self._on_tool_result
         self._ctrl.on_hardware_status = self._on_hardware_status
         self._ctrl.on_running_servers = self._on_running_servers
-        self._ctrl.on_compat_catalog_loaded = lambda _cat: None  # TUI: compat catalog not used yet
+        self._ctrl.on_compat_catalog_loaded = self._on_compat_catalog_loaded
 
         self._set_ready_tabs_enabled(False)
 
@@ -150,6 +150,21 @@ class TuiApp(App[None]):
         rail = self.query_one(ModelRail)
         rail.load_catalog(catalog, compatible_devices)
         rail.on_model_select = self._on_model_select
+        rail.on_compat_select = self._on_compat_select
+        # If compat catalog already loaded, populate DISCOVER section now.
+        if self._ctrl.compat_catalog:
+            device = getattr(self, "_detected_device", None)
+            rail.load_compat_catalog(self._ctrl.compat_catalog, device)
+
+    def _on_compat_catalog_loaded(self, catalog) -> None:
+        """Wire compat catalog into the model rail DISCOVER section."""
+        device = getattr(self, "_detected_device", None)
+        self.query_one(ModelRail).load_compat_catalog(catalog, device)
+
+    def _on_compat_select(self, compat_entry) -> None:
+        """Show compat catalog entry details in the ConfigPane."""
+        config_pane = self.query_one(ConfigPane)
+        config_pane.set_compat_info(compat_entry, [])
 
     def _on_model_select(self, entry) -> None:
         self._ctrl.select_model(entry)
@@ -216,6 +231,10 @@ class TuiApp(App[None]):
         """Show chip telemetry summary as an info log line."""
         if not chips:
             return
+        # Track the detected device type for DISCOVER section filtering.
+        device_type = getattr(chips[0], "device_type", None) if chips else None
+        if device_type:
+            self._detected_device = device_type
         parts = []
         for c in chips:
             temp = f"{c.temp_c:.0f}°C" if c.temp_c is not None else "?"
