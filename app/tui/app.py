@@ -276,6 +276,7 @@ class TuiApp(App[None]):
             clk  = f"{c.aiclk_mhz}MHz" if c.aiclk_mhz else ""
             parts.append(f"#{c.index} {c.board_type}  {temp}  {clk}".strip())
         self.query_one(LogPane).append_line("HW  " + "  |  ".join(parts))
+        self.query_one(ModelRail).update_hardware(chips)
 
     def _on_running_servers(self, servers: list) -> None:
         """Store detected server and offer reconnect via [R] key."""

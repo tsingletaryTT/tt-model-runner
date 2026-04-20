@@ -59,6 +59,9 @@ class ModelRail(Widget):
         color: $text-muted;
         text-style: bold;
     }
+    #hw-strip {
+        color: $text-muted;
+    }
     """
 
     BINDINGS = [
@@ -94,6 +97,7 @@ class ModelRail(Widget):
         yield ListView(id="model-list")
         yield Static("", id="discover-label")
         yield ListView(id="discover-list")
+        yield Static("", id="hw-strip", markup=True)
         yield Label("Port:", classes="rail-section-label")
         yield Input(value="8000", id="port-input", placeholder="8000")
         yield Button("▶ Launch", id="launch-btn", variant="success")
@@ -262,6 +266,22 @@ class ModelRail(Widget):
         elif compat_entry is not None:
             if self.on_compat_select:
                 self.on_compat_select(compat_entry)
+
+    def update_hardware(self, chips: list) -> None:
+        """Update the hw-strip with a compact chip telemetry summary."""
+        if not chips:
+            return
+        parts = []
+        for c in chips:
+            temp = f"{c.temp_c:.0f}°C" if c.temp_c is not None else ""
+            clk  = f"{c.aiclk_mhz}MHz" if c.aiclk_mhz else ""
+            board = getattr(c, "board_type", "") or ""
+            summary = f"#{c.index} {temp}"
+            if clk:
+                summary += f" {clk}"
+            parts.append(summary.strip())
+        label = "[dim]HW:[/dim] " + "  ".join(parts)
+        self.query_one("#hw-strip", Static).update(label)
 
     def set_port(self, port: str) -> None:
         """Update the port input and cached value (called from TuiApp.on_mount)."""
