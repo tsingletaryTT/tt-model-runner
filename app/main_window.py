@@ -172,7 +172,8 @@ class Sidebar(Gtk.Box):
         self._settings_btn.connect("clicked", self._on_settings_clicked)
         ml_header.append(self._settings_btn)
         self._settings_popover = self._build_settings_popover()
-        self._settings_popover.set_parent(self._settings_btn)
+        # NOTE: do NOT set_parent here — reparented lazily to the root window
+        # in _on_settings_clicked so the grabbing popup has a native surface.
         ml_box.append(ml_header)
         self._search_entry = Gtk.SearchEntry()
         self._search_entry.set_placeholder_text("Search models…")
@@ -344,6 +345,21 @@ class Sidebar(Gtk.Box):
 
     def _on_settings_clicked(self, _btn) -> None:
         self._update_hf_status()
+        # Grabbing popovers must be parented to a native surface (the root window).
+        # Reparent lazily and point at the button's screen rect so the popover
+        # appears in the right place despite being anchored to the window.
+        root = self._settings_btn.get_root()
+        if root:
+            if self._settings_popover.get_parent() is not root:
+                if self._settings_popover.get_parent():
+                    self._settings_popover.unparent()
+                self._settings_popover.set_parent(root)
+            btn_x, btn_y = self._settings_btn.translate_coordinates(root, 0.0, 0.0)
+            alloc = self._settings_btn.get_allocation()
+            r = Gdk.Rectangle()
+            r.x, r.y = int(btn_x), int(btn_y)
+            r.width, r.height = alloc.width, alloc.height
+            self._settings_popover.set_pointing_to(r)
         self._settings_popover.popup()
 
     def update_docker_images(self, images: list) -> None:

@@ -144,12 +144,16 @@ def _best_tag(tags: List[str], failed_tag: str) -> Optional[str]:
             if best != failed_tag:
                 return best
 
-    # Fall back: sort by all numeric components descending
+    # Fall back: sort by all numeric components descending, but only consider
+    # tags that are strictly newer than (or equal to) the failed one.
     def _numeric_key(t: str) -> List[int]:
         return [int(n) for n in re.findall(r'\d+', t)] or [0]
 
-    versioned.sort(key=_numeric_key, reverse=True)
-    best = versioned[0]
+    failed_key = _numeric_key(failed_tag)
+    newer = [t for t in versioned if _numeric_key(t) > failed_key]
+    candidates = newer if newer else versioned
+    candidates.sort(key=_numeric_key, reverse=True)
+    best = candidates[0]
     return best if best != failed_tag else None
 
 

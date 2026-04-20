@@ -515,7 +515,19 @@ class ServerManager:
         time.sleep(0.3)
 
         import dataclasses
-        new_config = dataclasses.replace(self._config, docker_image_override=resolved)
+        # Patch BOTH the flat field and options.docker_image_override so the
+        # resolved tag wins regardless of which field takes precedence in the
+        # command builder (options beats flat; clear options to let flat win).
+        new_options = None
+        if self._config.options is not None:
+            new_options = dataclasses.replace(
+                self._config.options, docker_image_override=resolved
+            )
+        new_config = dataclasses.replace(
+            self._config,
+            docker_image_override=resolved,
+            options=new_options if new_options is not None else self._config.options,
+        )
         # _auto_retry=True keeps _image_resolve_attempted=True to prevent a second loop
         self.launch(new_config, on_log_line, self._on_state_cb, _auto_retry=True)
 
