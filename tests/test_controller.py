@@ -168,6 +168,42 @@ def test_missing_callback_does_not_raise():
     ctrl._emit("on_log_line", "ignored")
 
 
+# ── Error recovery hints ─────────────────────────────────────────────────────
+
+def test_error_hint_emitted_on_known_pattern():
+    ctrl, view = make_controller()
+    ctrl._handle_log_line("Cannot connect to the Docker daemon at unix:///var/run/docker.sock")
+    hints = [l for l in view.log_lines if l.startswith("💡")]
+    assert hints, "Expected a 💡 hint for Docker daemon error"
+    assert "docker" in hints[0].lower() or "Docker" in hints[0]
+
+
+def test_error_hint_emitted_only_once_per_run():
+    ctrl, view = make_controller()
+    ctrl._handle_log_line("Cannot connect to the Docker daemon")
+    ctrl._handle_log_line("Cannot connect to the Docker daemon")
+    hints = [l for l in view.log_lines if l.startswith("💡")]
+    assert len(hints) == 1, "Duplicate hints should be suppressed within a run"
+
+
+def test_error_hints_reset_on_new_launch():
+    ctrl, view = make_controller()
+    ctrl._handle_log_line("Cannot connect to the Docker daemon")
+    count_before = len([l for l in view.log_lines if l.startswith("💡")])
+    # Simulate a new launch cycle resetting the emitted set
+    ctrl._emitted_error_hints.clear()
+    ctrl._handle_log_line("Cannot connect to the Docker daemon")
+    hints_after = [l for l in view.log_lines if l.startswith("💡")]
+    assert len(hints_after) > count_before, "Hint should re-emit after reset"
+
+
+def test_unknown_error_line_emits_no_hint():
+    ctrl, view = make_controller()
+    ctrl._handle_log_line("Some random line with no known pattern XYZ123")
+    hints = [l for l in view.log_lines if l.startswith("💡")]
+    assert not hints, "No hint for unrecognized log lines"
+
+
 # ── Tool calls ────────────────────────────────────────────────────────────────
 
 _SAMPLE_TOOLS = [
