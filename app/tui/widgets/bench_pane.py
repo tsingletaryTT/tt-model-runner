@@ -50,6 +50,24 @@ class BenchPane(Widget):
         table.add_columns("Pass", "ISL", "OSL", "Con", "TTFT ms",
                           "TPS", "E2EL ms", "Req/s", "Timestamp")
 
+    def load_history(self, history: list) -> None:
+        """Pre-populate results table from persisted history (newest first)."""
+        table = self.query_one("#bench-results", DataTable)
+        table.clear()
+        for r in history:
+            icon = {"PASS": "✓", "BELOW_TARGET": "⚠", "FAIL": "✗"}.get(r.get("tier_pass", ""), "?")
+            table.add_row(
+                f"{icon} {r.get('tier_pass', '?')}",
+                str(r.get("isl", "")),
+                str(r.get("osl", "")),
+                str(r.get("concurrency", "")),
+                f"{r.get('mean_ttft_ms', 0):.0f}",
+                f"{r.get('mean_tps', 0):.1f}",
+                f"{r.get('mean_e2el_ms', 0):.0f}",
+                f"{r.get('request_throughput', 0):.2f}",
+                r.get("timestamp", "")[:16],
+            )
+
     def append_progress(self, line: str) -> None:
         self.query_one("#bench-live-log", RichLog).write(line)
 

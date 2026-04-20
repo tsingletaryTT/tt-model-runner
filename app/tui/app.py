@@ -110,6 +110,9 @@ class TuiApp(App[None]):
         if repo_path:
             self.call_after_refresh(lambda: self._ctrl.load_repo(repo_path))
 
+        # Pre-populate bench history from persisted data.
+        self.call_after_refresh(self._load_bench_history)
+
     def _on_state_changed(self, state, info: str) -> None:
         from server_manager import ServerState
         rail     = self.query_one(ModelRail)
@@ -161,6 +164,11 @@ class TuiApp(App[None]):
 
     def _on_options_changed(self, options) -> None:
         self._ctrl.set_options(options)
+
+    def _load_bench_history(self) -> None:
+        history = self._ctrl.get_bench_history()
+        if history:
+            self.query_one(BenchPane).load_history(history)
 
     def _on_bench_progress(self, line: str) -> None:
         self.query_one(BenchPane).append_progress(line)
