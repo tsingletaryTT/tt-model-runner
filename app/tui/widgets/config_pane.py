@@ -47,6 +47,10 @@ class ConfigPane(Widget):
         height: 2;
         color: $text-muted;
     }
+    #arch-strip {
+        color: $text-muted;
+        height: auto;
+    }
     #desc-strip {
         color: $text-muted;
         height: auto;
@@ -79,9 +83,11 @@ class ConfigPane(Widget):
         self._syncing: bool = False   # suppress change callbacks during sync
         self._on_dev_launch: Optional[Callable] = None  # (model_id, sw_stack) → None
         self._dev_stacks: list = []   # ["tt-forge", "tt-metal", ...] for current model
+        self._arch_scan_model: str = ""  # hf_model_repo of in-flight arch scan
 
     def compose(self) -> ComposeResult:
         yield Static("Select a model to configure", id="model-strip")
+        yield Static("", id="arch-strip")
         yield Static("", id="desc-strip")
         yield Static("", id="compat-strip")
         yield Label("USE CASE")
@@ -110,9 +116,11 @@ class ConfigPane(Widget):
         self.query_one("#model-strip", Static).update(
             f"[b]{entry.display_name}[/b]  {entry.model_type} · {entry.inference_engine} · {entry.device_type}"
         )
-        # Clear compat info until set_compat_info() is called
+        # Clear derived info until callbacks populate it
+        self.query_one("#arch-strip", Static).update("")
         self.query_one("#desc-strip", Static).update("")
         self.query_one("#compat-strip", Static).update("")
+        self._scan_arch_async(entry)
 
         row = self.query_one("#use-case-row")
         row.remove_children()
@@ -171,6 +179,46 @@ class ConfigPane(Widget):
 
     def set_dev_launch_callback(self, callback) -> None:
         self._on_dev_launch = callback
+
+    # ---------------------------------------------------------------- arch scan
+
+    def _scan_arch_async(self, entry) -> None:
+        """Background HF cache scan; surfaces arch facts in #arch-strip when done."""
+        import threading
+        from hf_cache import scan_model_cache
+        hf_repo = getattr(entry, "hf_model_repo", None)
+        if not hf_repo:
+            return
+        self._arch_scan_model = hf_repo
+
+        def _run():
+            info = scan_model_cache(hf_repo)
+            self.app.call_from_thread(self._on_arch_scanned, hf_repo, info)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _on_arch_scanned(self, hf_repo: str, info) -> None:
+        if self._entry is None or getattr(self._entry, "hf_model_repo", "") != hf_repo:
+            return  # model changed while scan was in flight
+        if not info.is_cached:
+            return
+        parts = []
+        if info.arch:
+            a = info.arch
+            if a.num_layers:
+                parts.append(f"{a.num_layers} layers")
+            if a.num_heads:
+                kv = f"/{a.num_kv_heads} KV" if a.num_kv_heads and a.num_kv_heads != a.num_heads else ""
+                parts.append(f"{a.num_heads}{kv} heads")
+            if a.context_length:
+                parts.append(f"ctx {a.context_length:,}")
+            if a.vocab_size:
+                parts.append(f"vocab {a.vocab_size:,}")
+        if info.total_bytes:
+            gb = info.total_bytes / 1e9
+            parts.append(f"{gb:.1f} GB cached")
+        if parts:
+            self.query_one("#arch-strip", Static).update("  ·  ".join(parts))
 
     # ---------------------------------------------------------------- event handlers
 
