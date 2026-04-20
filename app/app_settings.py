@@ -39,6 +39,9 @@ _DEFAULTS = {
     # HuggingFace token — stored here so it survives shell restarts.
     # Written to ~/.huggingface/token on save so hf libraries pick it up automatically.
     "hf_token": "",
+    # Host directory bind-mounted into Docker containers as CACHE_ROOT.
+    # Auto-created on first launch if it doesn't exist.
+    "cache_root_path": str(Path.home() / ".cache" / "tt-model-runner"),
 }
 
 

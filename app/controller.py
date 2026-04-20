@@ -433,6 +433,24 @@ class AppController:
         except (OSError, ValueError):
             return False
 
+    @staticmethod
+    def _ensure_cache_root_env(repo_path: Path) -> None:
+        """Write CACHE_ROOT to the server repo's .env if not already present.
+
+        The container's docker-entrypoint.sh reads $CACHE_ROOT to set permissions
+        on the mounted volume.  Release images bake it in via Dockerfile ENV; dev
+        images may not.  Writing it to .env (passed via --env-file) covers both.
+        """
+        env_path = repo_path / ".env"
+        container_cache_root = "/home/container_app_user/cache_root"
+        try:
+            content = env_path.read_text() if env_path.exists() else ""
+            if "CACHE_ROOT=" not in content:
+                with env_path.open("a") as f:
+                    f.write(f"\nCACHE_ROOT={container_cache_root}\n")
+        except OSError:
+            pass
+
     def launch(self, entry: ModelEntry, port: str,
                options: Optional[LaunchOptions] = None) -> None:
         """Start the inference server for the given model entry.
@@ -498,6 +516,24 @@ class AppController:
         if not hf_token:
             self._emit("on_log_line",
                        "⚠ HF_TOKEN not found in environment or .env — launch may fail")
+
+        # Ensure host_volume is set so the container gets a writable CACHE_ROOT.
+        # If the user hasn't specified one, use (and create) the default cache dir.
+        if not self._options.host_volume:
+            cache_dir = Path(_settings.cache_root_path).expanduser()
+            try:
+                cache_dir.mkdir(parents=True, exist_ok=True)
+                self._options.host_volume = str(cache_dir)
+                self._emit("on_log_line",
+                           f"ℹ Cache dir → {cache_dir}  (set cache_root_path in settings to change)")
+            except OSError as exc:
+                self._emit("on_log_line",
+                           f"⚠ Could not create cache dir {cache_dir}: {exc} — launch may fail")
+
+        # Ensure CACHE_ROOT is set in the server repo's .env so the Docker
+        # entrypoint can resolve the mounted volume path. Some dev images don't
+        # bake ENV CACHE_ROOT into the Dockerfile; the --env-file covers them.
+        self._ensure_cache_root_env(repo_path)
 
         config = LaunchConfig(
             repo_path=repo_path,

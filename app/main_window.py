@@ -81,7 +81,7 @@ def _entry_label(entry, cached_repos: set) -> str:
 
 
 class Sidebar(Gtk.Box):
-    """Left sidebar: repo path picker, model tree, device toggles, port, launch/stop, HF status."""
+    """Left sidebar: model discovery tree, device/port, hardware, launch."""
 
     def __init__(self, on_launch, on_stop, on_model_select, on_device_select, on_repo_change,
                  on_reset=None, on_pull=None, on_docker_refresh=None, on_docker_prune=None):
@@ -95,6 +95,7 @@ class Sidebar(Gtk.Box):
         self._on_repo_change = on_repo_change
         self._on_reset = on_reset
         self._on_pull = on_pull
+        # docker_refresh/prune kept for compat but no longer wired to UI
         self._on_docker_refresh = on_docker_refresh
         self._on_docker_prune = on_docker_prune
 
@@ -116,35 +117,37 @@ class Sidebar(Gtk.Box):
         self._build()
 
     def _build(self):
-        # Repo path
-        rbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
-        rbox.set_margin_start(8); rbox.set_margin_end(8)
-        rbox.set_margin_top(8);   rbox.set_margin_bottom(4)
-        rl = Gtk.Label(label="SERVER REPO"); rl.add_css_class("section-label")
-        rl.set_halign(Gtk.Align.START); rbox.append(rl)
+        # Create repo entry, pull btn, git info as instance variables (used by other methods),
+        # but don't add them to the main layout — they live in the settings popover instead.
         self._repo_entry = Gtk.Entry()
         self._repo_entry.set_placeholder_text("~/code/tt-inference-server")
         saved = _settings.server_repo_path
-        if saved: self._repo_entry.set_text(str(saved))
+        if saved:
+            self._repo_entry.set_text(str(saved))
         self._repo_entry.connect("activate", lambda e: self._trigger_repo_change())
-        self._repo_entry.set_hexpand(True)
-        repo_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
-        repo_row.append(self._repo_entry)
         self._pull_btn = Gtk.Button(icon_name="software-update-available-symbolic")
         self._pull_btn.add_css_class("flat")
         self._pull_btn.set_tooltip_text("git pull — update inference-server repo to latest")
         self._pull_btn.connect("clicked", lambda _: self._on_pull() if self._on_pull else None)
-        repo_row.append(self._pull_btn)
-        rbox.append(repo_row)
         self._git_info_label = Gtk.Label(label="")
         self._git_info_label.add_css_class("muted")
         self._git_info_label.set_halign(Gtk.Align.START)
         self._git_info_label.set_margin_start(2)
-        rbox.append(self._git_info_label)
-        self.append(rbox)
-        self.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+        # HF token widgets — live in settings popover, kept as instance vars for compat
+        self._hf_entry = Gtk.Entry()
+        self._hf_entry.set_visibility(False)
+        self._hf_entry.set_placeholder_text("hf_…  (paste token, Enter to save)")
+        self._hf_entry.set_hexpand(True)
+        self._hf_entry.set_icon_from_icon_name(Gtk.EntryIconPosition.SECONDARY, "dialog-password-symbolic")
+        self._hf_entry.set_icon_tooltip_text(Gtk.EntryIconPosition.SECONDARY, "Toggle visibility")
+        self._hf_entry.connect("icon-press", lambda e, pos: e.set_visibility(not e.get_visibility()))
+        self._hf_entry.connect("activate", lambda _: self._save_hf_token())
+        self._hf_status_label = Gtk.Label()
+        self._hf_status_label.add_css_class("muted")
+        self._hf_label = Gtk.Label()
+        self._hf_label.set_visible(False)
 
-        # Model section label + search
+        # Model section header with search + settings gear
         ml_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         ml_box.set_margin_start(8); ml_box.set_margin_end(8)
         ml_box.set_margin_top(6); ml_box.set_margin_bottom(2)
@@ -162,6 +165,14 @@ class Sidebar(Gtk.Box):
         self._collapse_all_btn.set_tooltip_text("Collapse all model groups")
         self._collapse_all_btn.connect("clicked", lambda _: self._tree_view.collapse_all())
         ml_header.append(self._collapse_all_btn)
+        # Settings gear — opens popover with server repo path, HF token, etc.
+        self._settings_btn = Gtk.Button(icon_name="preferences-system-symbolic")
+        self._settings_btn.add_css_class("flat")
+        self._settings_btn.set_tooltip_text("Settings — server repo path, HuggingFace token")
+        self._settings_btn.connect("clicked", self._on_settings_clicked)
+        ml_header.append(self._settings_btn)
+        self._settings_popover = self._build_settings_popover()
+        self._settings_popover.set_parent(self._settings_btn)
         ml_box.append(ml_header)
         self._search_entry = Gtk.SearchEntry()
         self._search_entry.set_placeholder_text("Search models…")
@@ -284,71 +295,60 @@ class Sidebar(Gtk.Box):
         self._reset_btn.connect("clicked", self._on_reset_clicked)
         hw_box.append(self._reset_btn)
         self.append(hw_box)
-        self.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
 
-        # Docker images — collapsible section
-        docker_exp = Gtk.Expander()
-        docker_exp.set_margin_start(8); docker_exp.set_margin_end(8)
-        docker_exp.set_margin_top(4);   docker_exp.set_margin_bottom(2)
-        docker_hdr = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
-        docker_hdr_lbl = Gtk.Label(label="DOCKER IMAGES")
-        docker_hdr_lbl.add_css_class("section-label")
-        docker_hdr_lbl.set_hexpand(True)
-        docker_hdr.append(docker_hdr_lbl)
-        self._docker_refresh_btn = Gtk.Button(icon_name="view-refresh-symbolic")
-        self._docker_refresh_btn.add_css_class("flat")
-        self._docker_refresh_btn.set_tooltip_text("Refresh local image list")
-        self._docker_refresh_btn.connect(
-            "clicked", lambda _: self._on_docker_refresh() if self._on_docker_refresh else None)
-        docker_hdr.append(self._docker_refresh_btn)
-        self._docker_prune_btn = Gtk.Button(icon_name="user-trash-symbolic")
-        self._docker_prune_btn.add_css_class("flat")
-        self._docker_prune_btn.set_tooltip_text("Prune unused Docker images (docker image prune -f)")
-        self._docker_prune_btn.connect(
-            "clicked", lambda _: self._on_docker_prune() if self._on_docker_prune else None)
-        docker_hdr.append(self._docker_prune_btn)
-        docker_exp.set_label_widget(docker_hdr)
-        self._docker_list_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
-        self._docker_list_box.set_margin_top(4)
-        self._docker_empty_lbl = Gtk.Label(label="No TT images found")
-        self._docker_empty_lbl.add_css_class("muted")
-        self._docker_empty_lbl.set_halign(Gtk.Align.START)
-        self._docker_list_box.append(self._docker_empty_lbl)
-        docker_exp.set_child(self._docker_list_box)
-        self.append(docker_exp)
-        self.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+        self._update_hf_status()
+
+    def _build_settings_popover(self) -> Gtk.Popover:
+        """Build the settings popover containing server repo path and HF token."""
+        popover = Gtk.Popover()
+        popover.set_autohide(True)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        box.set_margin_start(12); box.set_margin_end(12)
+        box.set_margin_top(10);   box.set_margin_bottom(10)
+        box.set_size_request(300, -1)
+
+        # Server repo section
+        repo_lbl = Gtk.Label(label="SERVER REPO")
+        repo_lbl.add_css_class("section-label")
+        repo_lbl.set_halign(Gtk.Align.START)
+        box.append(repo_lbl)
+        repo_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        self._repo_entry.set_hexpand(True)
+        repo_row.append(self._repo_entry)
+        repo_row.append(self._pull_btn)
+        box.append(repo_row)
+        box.append(self._git_info_label)
+
+        box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
 
         # HF token section
-        hf_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
-        hf_box.set_margin_start(8); hf_box.set_margin_end(8)
-        hf_box.set_margin_top(4); hf_box.set_margin_bottom(6)
         hf_hdr = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
-        hf_lbl = Gtk.Label(label="HF TOKEN"); hf_lbl.add_css_class("section-label")
-        hf_lbl.set_halign(Gtk.Align.START); hf_lbl.set_hexpand(True)
+        hf_lbl = Gtk.Label(label="HF TOKEN")
+        hf_lbl.add_css_class("section-label")
+        hf_lbl.set_halign(Gtk.Align.START)
+        hf_lbl.set_hexpand(True)
         hf_hdr.append(hf_lbl)
-        self._hf_status_label = Gtk.Label()
-        self._hf_status_label.add_css_class("muted")
         hf_hdr.append(self._hf_status_label)
-        hf_box.append(hf_hdr)
+        box.append(hf_hdr)
         hf_entry_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
-        self._hf_entry = Gtk.Entry()
-        self._hf_entry.set_visibility(False)  # password mask
-        self._hf_entry.set_placeholder_text("hf_…  (paste token, Enter to save)")
         self._hf_entry.set_hexpand(True)
-        self._hf_entry.set_icon_from_icon_name(Gtk.EntryIconPosition.SECONDARY, "dialog-password-symbolic")
-        self._hf_entry.set_icon_tooltip_text(Gtk.EntryIconPosition.SECONDARY, "Toggle visibility")
-        self._hf_entry.connect("icon-press", lambda e, pos: e.set_visibility(not e.get_visibility()))
-        self._hf_entry.connect("activate", lambda _: self._save_hf_token())
         hf_entry_row.append(self._hf_entry)
         hf_save_btn = Gtk.Button(icon_name="document-save-symbolic")
         hf_save_btn.set_tooltip_text("Save HF token")
         hf_save_btn.connect("clicked", lambda _: self._save_hf_token())
         hf_entry_row.append(hf_save_btn)
-        hf_box.append(hf_entry_row)
-        self._hf_label = Gtk.Label()  # keep for set_locked compat
-        self._hf_label.set_visible(False)
-        self.append(hf_box)
+        box.append(hf_entry_row)
+
+        popover.set_child(box)
+        return popover
+
+    def _on_settings_clicked(self, _btn) -> None:
         self._update_hf_status()
+        self._settings_popover.popup()
+
+    def update_docker_images(self, images: list) -> None:
+        """No-op — Docker image list was removed from the sidebar."""
+        pass
 
     def _on_port_changed(self, entry: Gtk.Entry) -> None:
         self._save_port()
@@ -877,35 +877,6 @@ class Sidebar(Gtk.Box):
         else:
             self._git_info_label.set_text("")
 
-    def update_docker_images(self, images: list) -> None:
-        """Repopulate the Docker images list in the collapsible section."""
-        # Clear existing rows
-        child = self._docker_list_box.get_first_child()
-        while child:
-            nxt = child.get_next_sibling()
-            self._docker_list_box.remove(child)
-            child = nxt
-        if not images:
-            self._docker_empty_lbl = Gtk.Label(label="No TT images found")
-            self._docker_empty_lbl.add_css_class("muted")
-            self._docker_empty_lbl.set_halign(Gtk.Align.START)
-            self._docker_list_box.append(self._docker_empty_lbl)
-            return
-        for img in images:
-            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
-            name_lbl = Gtk.Label(label=img.short_tag)
-            name_lbl.set_hexpand(True)
-            name_lbl.set_halign(Gtk.Align.START)
-            name_lbl.set_ellipsize(Pango.EllipsizeMode.END)
-            if img.created_str == "not pulled":
-                name_lbl.add_css_class("muted")
-            row.append(name_lbl)
-            size_lbl = Gtk.Label(label=img.size_str)
-            size_lbl.add_css_class("muted")
-            size_lbl.set_xalign(1.0)
-            row.append(size_lbl)
-            self._docker_list_box.append(row)
-
     def get_selected_entry(self) -> Optional[ModelEntry]:
         return self._selected_entry
 
@@ -1169,6 +1140,58 @@ class MainPanel(Gtk.Box):
 
         self.append(banner)
         self.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+
+        # ── Model info card (revealed when a model is selected) ──────────────
+        self._model_card_rev = Gtk.Revealer()
+        self._model_card_rev.set_transition_type(Gtk.RevealerTransitionType.SLIDE_DOWN)
+        card_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
+        card_box.set_margin_start(10); card_box.set_margin_end(10)
+        card_box.set_margin_top(6);    card_box.set_margin_bottom(6)
+
+        # Row 1: bold model name + param count + status badge
+        card_row1 = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self._card_name_lbl = Gtk.Label(label="")
+        self._card_name_lbl.set_halign(Gtk.Align.START)
+        self._card_name_lbl.set_hexpand(True)
+        self._card_name_lbl.set_ellipsize(Pango.EllipsizeMode.END)
+        card_row1.append(self._card_name_lbl)
+        self._card_badges_lbl = Gtk.Label(label="")
+        self._card_badges_lbl.add_css_class("muted")
+        self._card_badges_lbl.set_halign(Gtk.Align.END)
+        card_row1.append(self._card_badges_lbl)
+        card_box.append(card_row1)
+
+        # Row 2: description (single ellipsized line)
+        self._card_desc_lbl = Gtk.Label(label="")
+        self._card_desc_lbl.add_css_class("muted")
+        self._card_desc_lbl.set_halign(Gtk.Align.START)
+        self._card_desc_lbl.set_ellipsize(Pango.EllipsizeMode.END)
+        self._card_desc_lbl.set_visible(False)
+        card_box.append(self._card_desc_lbl)
+
+        # Row 3: use-case dropdown + Configure button
+        card_row3 = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        uc_lbl = Gtk.Label(label="Use case:")
+        uc_lbl.add_css_class("muted")
+        card_row3.append(uc_lbl)
+        self._card_uc_dropdown = Gtk.DropDown()
+        self._card_uc_dropdown.set_hexpand(True)
+        self._card_uc_dropdown.connect("notify::selected", self._on_card_uc_changed)
+        card_row3.append(self._card_uc_dropdown)
+        self._card_config_btn = Gtk.Button(icon_name="preferences-system-symbolic")
+        self._card_config_btn.add_css_class("flat")
+        self._card_config_btn.set_tooltip_text("Advanced configuration")
+        card_row3.append(self._card_config_btn)
+        card_box.append(card_row3)
+
+        self._model_card_rev.set_child(card_box)
+        self.append(self._model_card_rev)
+        self.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+
+        # Internal state for the model card
+        self._card_entry = None
+        self._card_uc_names: list = []
+        self._card_uc_callback = None   # set by MainWindow
 
         # Stepper (revealed during LOADING)
         self._stepper_rev = Gtk.Revealer()
@@ -1608,10 +1631,144 @@ class MainPanel(Gtk.Box):
 
         self.append(self._stack)
 
+        # ── Context-sensitive action strip ───────────────────────────────────
+        # Shown below the log/stack area; content changes based on server state.
+        self._action_sep = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
+        self._action_sep.set_visible(False)
+        self.append(self._action_sep)
+        self._action_rev = Gtk.Revealer()
+        self._action_rev.set_transition_type(Gtk.RevealerTransitionType.SLIDE_UP)
+        self._action_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        self._action_box.set_margin_start(10); self._action_box.set_margin_end(10)
+        self._action_box.set_margin_top(6);    self._action_box.set_margin_bottom(6)
+        self._action_rev.set_child(self._action_box)
+        self.append(self._action_rev)
+
         # Always-on ad unit at the bottom of the main panel
         self.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
         self._ad_unit = AdUnit()
         self.append(self._ad_unit)
+
+    # ---------------------------------------------------------------- stack navigation
+
+    # ---------------------------------------------------------------- model card
+
+    def set_model_info(self, entry, on_uc_changed=None) -> None:
+        """Show/update the model info card above the log area."""
+        self._card_entry = entry
+        self._card_uc_callback = on_uc_changed
+        if entry is None:
+            self._model_card_rev.set_reveal_child(False)
+            return
+        # Name + badges
+        name = entry.display_name
+        self._card_name_lbl.set_markup(f"<b>{name}</b>")
+        badges = []
+        size = _format_param_count(getattr(entry, "param_count", None))
+        if size:
+            badges.append(size)
+        mtype = getattr(entry, "model_type", "") or ""
+        if mtype:
+            badges.append(mtype)
+        if getattr(entry, "status", "") == "EXPERIMENTAL":
+            badges.append("⚠")
+        self._card_badges_lbl.set_text("  ".join(badges))
+        # Description
+        desc = getattr(entry, "model_description", "") or ""
+        if desc:
+            self._card_desc_lbl.set_text(desc)
+            self._card_desc_lbl.set_visible(True)
+        else:
+            self._card_desc_lbl.set_visible(False)
+        # Use-case dropdown
+        from launch_options import MODEL_TYPE_USE_CASES, USE_CASE_LABELS
+        use_cases = MODEL_TYPE_USE_CASES.get(mtype, ["dev"])
+        self._card_uc_names = use_cases
+        sl = Gtk.StringList()
+        for uc in use_cases:
+            sl.append(USE_CASE_LABELS.get(uc, uc))
+        self._card_uc_dropdown.handler_block_by_func(self._on_card_uc_changed)
+        self._card_uc_dropdown.set_model(sl)
+        self._card_uc_dropdown.set_selected(0)
+        self._card_uc_dropdown.handler_unblock_by_func(self._on_card_uc_changed)
+        self._model_card_rev.set_reveal_child(True)
+
+    def sync_card_use_case(self, use_case: str) -> None:
+        """Update the model card's use-case dropdown to reflect restored options."""
+        if not self._card_uc_names:
+            return
+        try:
+            idx = self._card_uc_names.index(use_case)
+        except ValueError:
+            return
+        self._card_uc_dropdown.handler_block_by_func(self._on_card_uc_changed)
+        self._card_uc_dropdown.set_selected(idx)
+        self._card_uc_dropdown.handler_unblock_by_func(self._on_card_uc_changed)
+
+    def _on_card_uc_changed(self, dropdown, _pspec) -> None:
+        idx = dropdown.get_selected()
+        if not self._card_uc_names or idx >= len(self._card_uc_names):
+            return
+        uc = self._card_uc_names[idx]
+        if self._card_entry and self._card_uc_callback:
+            from launch_options import apply_preset
+            opts = apply_preset(uc, self._card_entry)
+            self._card_uc_callback(opts)
+        # Sync the config panel's use-case chips if it's been created
+        if self._config_panel is not None:
+            self._config_panel._apply_use_case(uc)
+
+    # ---------------------------------------------------------------- action strip
+
+    def update_action_strip(self, state: "ServerState", bench_cb=None,
+                             tools_cb=None, copy_curl_cb=None, retry_cb=None,
+                             copy_log_cb=None) -> None:
+        """Rebuild the action strip based on the current server state."""
+        # Clear old children
+        while child := self._action_box.get_first_child():
+            self._action_box.remove(child)
+
+        show = False
+        if state == ServerState.READY:
+            show = True
+            btn_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            if bench_cb:
+                b = Gtk.Button(label="▶ Benchmark")
+                b.add_css_class("suggested-action")
+                b.connect("clicked", lambda _: bench_cb())
+                btn_row.append(b)
+            if tools_cb:
+                t = Gtk.Button(label="🔧 Tool calls")
+                t.add_css_class("flat")
+                t.connect("clicked", lambda _: tools_cb())
+                btn_row.append(t)
+            if copy_curl_cb:
+                c = Gtk.Button(label="📋 curl")
+                c.add_css_class("flat")
+                c.connect("clicked", lambda _: copy_curl_cb())
+                btn_row.append(c)
+            self._action_box.append(btn_row)
+        elif state == ServerState.ERROR:
+            show = True
+            hint_lbl = Gtk.Label(label="⚠  Server failed — check logs above for details")
+            hint_lbl.add_css_class("muted")
+            hint_lbl.set_halign(Gtk.Align.START)
+            self._action_box.append(hint_lbl)
+            btn_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            if retry_cb:
+                r = Gtk.Button(label="↺ Retry launch")
+                r.add_css_class("suggested-action")
+                r.connect("clicked", lambda _: retry_cb())
+                btn_row.append(r)
+            if copy_log_cb:
+                cl = Gtk.Button(label="📋 Copy log")
+                cl.add_css_class("flat")
+                cl.connect("clicked", lambda _: copy_log_cb())
+                btn_row.append(cl)
+            self._action_box.append(btn_row)
+
+        self._action_sep.set_visible(show)
+        self._action_rev.set_reveal_child(show)
 
     # ---------------------------------------------------------------- stack navigation
 
@@ -2442,6 +2599,15 @@ class MainWindow(Gtk.ApplicationWindow):
             # window is hidden behind other apps.
             self._notify_ready(entry)
 
+        self._panel.update_action_strip(
+            state,
+            bench_cb=lambda: self._panel._bench_run_btn.activate(),
+            tools_cb=lambda: self._panel.show_tools(),
+            copy_curl_cb=self._panel._on_copy_curl,
+            retry_cb=lambda: self._ctrl.restart(),
+            copy_log_cb=self._panel._on_copy_log,
+        )
+
     def _notify_ready(self, entry) -> None:
         """Send a desktop notification announcing the model is ready."""
         try:
@@ -2693,18 +2859,27 @@ class MainWindow(Gtk.ApplicationWindow):
         dialog.choose(self, None, _on_choose)
 
     def _on_model_select(self, entry: ModelEntry) -> None:
-        """Tell the controller a new model was selected and update the banner
-        and config panel immediately so the user sees feedback."""
+        """Tell the controller a new model was selected and update the banner,
+        model card, and config panel immediately so the user sees feedback."""
         self._ctrl.select_model(entry)  # restores per-model options into controller
         self._panel._banner_info.set_text(
             f"{entry.display_name}  ·  {entry.device_type}"
             f"  ·  {entry.inference_engine}"
         )
+        # Populate the always-visible model info card.
+        self._panel.set_model_info(entry, on_uc_changed=self._on_options_changed)
+        # Wire the Configure button to show the full config panel.
+        self._panel._card_config_btn.connect(
+            "clicked",
+            lambda _: self._panel.show_config(entry, self._on_options_changed),
+        )
         self._panel.show_config(entry, self._on_options_changed)
         self._panel.set_dev_launch_callback(self._on_dev_launch)
         self._panel.set_download_callback(self._on_download_model)
         # After show_config resets to preset, sync saved per-model options back into UI.
-        self._panel.load_options_in_config(self._ctrl.get_options())
+        opts = self._ctrl.get_options()
+        self._panel.load_options_in_config(opts)
+        self._panel.sync_card_use_case(opts.use_case)
         # Show hardware compatibility from compat catalog if available
         cat = self._ctrl.compat_catalog
         if cat is not None:
