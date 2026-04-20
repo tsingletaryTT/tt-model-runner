@@ -52,6 +52,16 @@ _LOG_COLORS = {
 }
 
 
+def _entry_label(entry, cached_repos: set) -> str:
+    """Build model tree leaf label with optional ✓ (cached) and ⚠ (experimental) badges."""
+    label = entry.display_name
+    if entry.hf_model_repo in cached_repos:
+        label += "  ✓"
+    if getattr(entry, "status", "") == "EXPERIMENTAL":
+        label += "  ⚠"
+    return label
+
+
 class Sidebar(Gtk.Box):
     """Left sidebar: repo path picker, model tree, device toggles, port, launch/stop, HF status."""
 
@@ -403,9 +413,7 @@ class Sidebar(Gtk.Box):
                     None, [f"RECENT ({len(recent_entries)})", "", "", False]
                 )
                 for entry in recent_entries:
-                    label = entry.display_name
-                    if entry.hf_model_repo in self._cached_repos:
-                        label += "  ✓"
+                    label = _entry_label(entry, self._cached_repos)
                     leaf_it = self._tree_store.append(
                         rec_it, [label, entry.model_name, entry.device_type, True]
                     )
@@ -438,9 +446,7 @@ class Sidebar(Gtk.Box):
             for family, entries in sorted(filtered_families.items()):
                 fam_it = self._tree_store.append(type_it, [family, "", "", False])
                 for entry in entries:
-                    label = entry.display_name
-                    if entry.hf_model_repo in self._cached_repos:
-                        label += "  ✓"
+                    label = _entry_label(entry, self._cached_repos)
                     leaf_it = self._tree_store.append(
                         fam_it, [label, entry.model_name, entry.device_type, True]
                     )
