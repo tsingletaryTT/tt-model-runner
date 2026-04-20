@@ -526,10 +526,19 @@ class ConfigPanel(Gtk.Box):
             self._strip_arch.set_visible(True)
 
     def set_compat_info(self, compat_entry) -> None:
-        """Show hardware compatibility from the TT compat catalog."""
+        """Show hardware compatibility from the TT compat catalog.
+
+        Also fills in model description from compat catalog when the local
+        data/model-descriptions.json doesn't have one.
+        """
         if compat_entry is None:
             self._strip_compat.set_visible(False)
             return
+        # Fill in description from compat catalog if not already shown
+        if not self._strip_desc.get_visible() and compat_entry.model_description:
+            self._strip_desc.set_text(compat_entry.model_description)
+            self._strip_desc.set_visible(True)
+        # Build compat hardware pills (tt-inference-server stack only)
         parts = []
         for c in compat_entry.compatibility:
             if "tt-inference-server" not in c.software:
