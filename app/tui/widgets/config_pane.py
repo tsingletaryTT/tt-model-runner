@@ -77,6 +77,8 @@ class ConfigPane(Widget):
         self._options = None
         self._on_options_changed: Optional[Callable] = None
         self._syncing: bool = False   # suppress change callbacks during sync
+        self._on_dev_launch: Optional[Callable] = None  # (model_id, sw_stack) → None
+        self._dev_stacks: list = []   # ["tt-forge", "tt-metal", ...] for current model
 
     def compose(self) -> ComposeResult:
         yield Static("Select a model to configure", id="model-strip")
@@ -95,6 +97,8 @@ class ConfigPane(Widget):
             yield Checkbox("Disable trace capture",   id="no-trace-check")
         yield Label("COMMAND PREVIEW")
         yield Static("", id="command-preview")
+        yield Static("", id="dev-image-strip")
+        yield Widget(id="dev-image-row")
 
     def set_model(self, entry, on_options_changed: Callable) -> None:
         """Update ConfigPane for a newly selected model entry."""
@@ -126,7 +130,7 @@ class ConfigPane(Widget):
         self._update_preview()
 
     def set_compat_info(self, compat_entry, compatible_hw: list) -> None:
-        """Show description and hardware compatibility from compat catalog."""
+        """Show description, hardware compatibility, and dev image buttons from compat catalog."""
         if compat_entry and compat_entry.model_description:
             self.query_one("#desc-strip", Static).update(compat_entry.model_description)
         else:
@@ -142,8 +146,31 @@ class ConfigPane(Widget):
                 self.query_one("#compat-strip", Static).update("Compat: " + "  ·  ".join(hw_parts))
             else:
                 self.query_one("#compat-strip", Static).update("")
+
+            # Collect dev image stacks for this model
+            self._dev_stacks = []
+            for c in compat_entry.compatibility:
+                for sw in ("tt-forge", "tt-metal"):
+                    if sw in c.software and sw not in self._dev_stacks:
+                        self._dev_stacks.append(sw)
+
+            row = self.query_one("#dev-image-row")
+            row.remove_children()
+            if self._dev_stacks:
+                self.query_one("#dev-image-strip", Static).update("ALSO VIA DEVELOPER IMAGE")
+                for sw in self._dev_stacks:
+                    btn = Button(f"▶ {sw}", id=f"dev-{sw.replace('-', '_')}")
+                    row.mount(btn)
+            else:
+                self.query_one("#dev-image-strip", Static).update("")
         else:
             self.query_one("#compat-strip", Static).update("")
+            self.query_one("#dev-image-strip", Static).update("")
+            self.query_one("#dev-image-row").remove_children()
+            self._dev_stacks = []
+
+    def set_dev_launch_callback(self, callback) -> None:
+        self._on_dev_launch = callback
 
     # ---------------------------------------------------------------- event handlers
 
@@ -158,6 +185,9 @@ class ConfigPane(Widget):
                 self._update_preview()
                 if self._on_options_changed and self._options:
                     self._on_options_changed(self._options)
+        elif btn_id.startswith("dev-") and self._on_dev_launch and self._entry:
+            sw = btn_id[4:].replace("_", "-")
+            self._on_dev_launch(self._entry.display_name.lower().replace(" ", "-"), sw)
 
     def on_input_changed(self, event: Input.Changed) -> None:
         if self._syncing or not self._options:

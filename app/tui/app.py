@@ -143,6 +143,7 @@ class TuiApp(App[None]):
         self._ctrl.select_model(entry)
         config_pane = self.query_one(ConfigPane)
         config_pane.set_model(entry, self._on_options_changed)
+        config_pane.set_dev_launch_callback(self._ctrl.launch_dev_image)
         # Show compat info if catalog has been loaded
         compat = self._ctrl.compat_catalog
         if compat:
