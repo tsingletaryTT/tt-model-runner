@@ -1253,6 +1253,21 @@ class AppController:
                 # Best-effort — if parsing fails, run without targets
                 pass
 
+        # Surface perf targets in the live output so the user knows what to expect.
+        if perf_targets:
+            parts = []
+            for tier, metrics in perf_targets.items():
+                items = []
+                for k, v in metrics.items():
+                    if isinstance(v, (int, float)):
+                        is_tput = "tps" in k or "throughput" in k
+                        items.append(f"{k}{'≥' if is_tput else '≤'}{v}")
+                if items:
+                    parts.append(f"{tier}: {', '.join(items)}")
+            if parts:
+                self._emit("on_bench_progress",
+                           "Targets: " + "  |  ".join(parts))
+
         def _on_result(r):
             self._persist_bench_result(r)
             self._emit("on_bench_result", r)
