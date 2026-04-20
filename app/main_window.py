@@ -2280,10 +2280,14 @@ class MainWindow(Gtk.ApplicationWindow):
     """
 
     def __init__(self, controller, **kwargs):
+        # Cap saved dimensions so a stale value from a larger/maximized session
+        # never starts the window larger than any reasonable single monitor.
+        safe_w = min(_settings.window_width,  3840)
+        safe_h = min(_settings.window_height, 2160)
         super().__init__(
             title="TT Model Runner",
-            default_width=_settings.window_width,
-            default_height=_settings.window_height,
+            default_width=safe_w,
+            default_height=safe_h,
             **kwargs,
         )
         self._ctrl = controller
