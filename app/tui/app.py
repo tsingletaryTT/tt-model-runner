@@ -56,6 +56,7 @@ class TuiApp(App[None]):
         Binding("ctrl+r",  "restart_server",   "Restart",   show=False),
         Binding("ctrl+h",  "hw_refresh",       "HW",        show=False),
         Binding("ctrl+t",  "hw_reset",         "HW Reset",  show=False),
+        Binding("ctrl+u",  "copy_curl",        "Curl",      show=False),
     ]
 
     def compose(self) -> ComposeResult:
@@ -294,6 +295,24 @@ class TuiApp(App[None]):
         self._pending_reconnect = None
         self.query_one(LogPane).append_line(f"⟳ Reconnecting to {container_name} on port {port}…")
         self._ctrl.adopt_running_server(port, container_name)
+
+    def action_copy_curl(self) -> None:
+        """Copy a test curl command for the running server to clipboard (Ctrl+U)."""
+        from server_manager import ServerState
+        if self._ctrl.state != ServerState.READY:
+            self.notify("Server must be READY to copy curl", severity="warning")
+            return
+        rail = self.query_one(ModelRail)
+        port = rail.port_value or "8000"
+        entry = self._ctrl.current_entry
+        model = entry.hf_model_repo if entry else "default"
+        cmd = (
+            f'curl http://localhost:{port}/v1/chat/completions \\\n'
+            f'  -H "Content-Type: application/json" \\\n'
+            f'  -d \'{{"model": "{model}", "messages": [{{"role": "user", "content": "Hello!"}}]}}\''
+        )
+        self.copy_to_clipboard(cmd)
+        self.notify(f"Copied curl for port {port}", title="Clipboard")
 
     def action_restart_server(self) -> None:
         """Restart the server with the same model and options (Ctrl+R)."""
