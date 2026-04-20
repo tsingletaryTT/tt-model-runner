@@ -88,6 +88,7 @@ class ConfigPane(Widget):
         self._on_dev_launch: Optional[Callable] = None  # (model_id, sw_stack) → None
         self._dev_stacks: list = []   # ["tt-forge", "tt-metal", ...] for current model
         self._arch_scan_model: str = ""  # hf_model_repo of in-flight arch scan
+        self._arch_ctx_limit: int = 0   # model's actual max context_length from HF cache
 
     def compose(self) -> ComposeResult:
         yield Static("Select a model to configure", id="model-strip")
@@ -122,6 +123,7 @@ class ConfigPane(Widget):
             f"[b]{entry.display_name}[/b]  {entry.model_type} · {entry.inference_engine} · {entry.device_type}"
         )
         # Clear derived info until callbacks populate it
+        self._arch_ctx_limit = 0
         self.query_one("#arch-strip", Static).update("")
         self.query_one("#timing-strip", Static).update(self._make_timing_label(entry))
         self.query_one("#desc-strip", Static).update("")
@@ -248,11 +250,41 @@ class ConfigPane(Widget):
                 parts.append(f"ctx {a.context_length:,}")
             if a.vocab_size:
                 parts.append(f"vocab {a.vocab_size:,}")
+        if info.arch and info.arch.context_length:
+            self._arch_ctx_limit = info.arch.context_length
+            self._auto_suggest_ctx()
         if info.total_bytes:
             gb = info.total_bytes / 1e9
             parts.append(f"{gb:.1f} GB cached")
         if parts:
             self.query_one("#arch-strip", Static).update("  ·  ".join(parts))
+
+    _CTX_OPTIONS = [1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144]
+
+    def _auto_suggest_ctx(self) -> None:
+        """Snap ctx-input to best standard option ≤ arch's context_length (if user hasn't set one)."""
+        if not self._arch_ctx_limit or not self._options:
+            return
+        try:
+            current = self.query_one("#ctx-input", Input).value.strip()
+        except Exception:
+            return
+        # Only auto-snap when the field is empty (no explicit user value)
+        if current:
+            return
+        best = max(
+            (v for v in self._CTX_OPTIONS if v <= self._arch_ctx_limit),
+            default=self._CTX_OPTIONS[0],
+        )
+        self._syncing = True
+        try:
+            self.query_one("#ctx-input", Input).value = str(best)
+        finally:
+            self._syncing = False
+        self._options.max_model_len = best
+        self._update_preview()
+        if self._on_options_changed:
+            self._on_options_changed(self._options)
 
     # ---------------------------------------------------------------- event handlers
 
