@@ -164,6 +164,8 @@ class Sidebar(Gtk.Box):
         col = Gtk.TreeViewColumn("Model", Gtk.CellRendererText(), text=0, sensitive=3)
         self._tree_view.append_column(col)
         self._tree_view.get_selection().connect("changed", self._on_tree_selection)
+        self._tree_view.set_has_tooltip(True)
+        self._tree_view.connect("query-tooltip", self._on_tree_tooltip)
         scroll.set_child(self._tree_view)
         self.append(scroll)
         self.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
@@ -595,6 +597,63 @@ class Sidebar(Gtk.Box):
     def _on_launch_clicked(self, btn):
         if self._selected_entry:
             self._on_launch(self._selected_entry, self._port_entry.get_text() or "8000")
+
+    def _on_tree_tooltip(self, widget, x, y, keyboard_mode, tooltip) -> bool:
+        """Show a rich tooltip when hovering over a model row."""
+        bx, by = widget.convert_widget_to_bin_window_coords(x, y)
+        result = widget.get_path_at_pos(bx, by)
+        if result is None:
+            return False
+        path, _col, _cx, _cy = result
+        it = self._tree_store.get_iter(path)
+        if it is None or not self._tree_store.get_value(it, 3):  # only leaf rows
+            return False
+        model_key = self._tree_store.get_value(it, 1)
+        device    = self._tree_store.get_value(it, 2)
+
+        if model_key.startswith("__compat__:"):
+            # Compat catalog entry.
+            entry_id = model_key[len("__compat__:"):]
+            if not self._compat_catalog:
+                return False
+            ce = self._compat_catalog.lookup(entry_id)
+            if not ce:
+                return False
+            stacks = sorted({sw for c in ce.compatibility for sw in c.software
+                             if c.status != "Not Supported"})
+            hw_names = sorted({c.hardware for c in ce.compatibility
+                               if c.status != "Not Supported"})
+            parts = [f"<b>{ce.display_name}</b>"]
+            if ce.model_description:
+                parts.append(ce.model_description[:200])
+            if ce.model_size:
+                parts.append(f"Size: {ce.model_size}")
+            if stacks:
+                parts.append(f"Software: {', '.join(stacks)}")
+            if hw_names:
+                parts.append(f"Hardware: {', '.join(hw_names[:6])}")
+            tooltip.set_markup("\n".join(parts))
+            widget.set_tooltip_row(tooltip, path)
+            return True
+
+        # Regular model_spec entry.
+        if not self._catalog:
+            return False
+        entry = self._catalog.get_entry(model_key, device)
+        if not entry:
+            return False
+        parts = [f"<b>{entry.display_name}</b>"]
+        if hasattr(entry, "model_description") and entry.model_description:
+            parts.append(entry.model_description[:200])
+        if entry.device_type:
+            parts.append(f"Device: {entry.device_type}")
+        if hasattr(entry, "param_count") and entry.param_count:
+            parts.append(f"Params: {_format_param_count(entry.param_count)}")
+        if hasattr(entry, "status") and entry.status:
+            parts.append(f"Status: {entry.status}")
+        tooltip.set_markup("\n".join(parts))
+        widget.set_tooltip_row(tooltip, path)
+        return True
 
     def set_locked(self, locked: bool):
         self._locked = locked
