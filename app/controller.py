@@ -706,6 +706,14 @@ class AppController:
             pull_summary = self._update_pull_progress(line)
             if pull_summary:
                 self._emit("on_substage", "⬇", pull_summary, "", "")
+                # Emit a fractional progress when we have download size data.
+                active = list(self._pull_downloading.values())
+                if active:
+                    size_total = sum(t for _, t in active)
+                    cur_total  = sum(c for c, _ in active)
+                    if size_total > 0:
+                        frac = min(cur_total / size_total * 0.85, 0.85)
+                        self._emit("on_progress", frac, pull_summary)
 
     def _on_server_state(self, state: ServerState) -> None:
         """Callback from ServerManager when a state change is detected in the log."""
