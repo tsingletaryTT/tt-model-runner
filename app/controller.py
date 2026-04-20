@@ -234,6 +234,7 @@ class AppController:
         self._dev_launcher = DevImageLauncher()
         self._pull_layers_done: int = 0   # layers that reached "Pull complete"
         self._pull_downloading: dict = {}  # layer_id → (current_bytes, total_bytes)
+        self._emitted_error_hints: set = set()  # patterns already suggested this run
 
         # Fetch compatibility catalog in the background — updates _compat_catalog when done.
         def _on_compat(cat: Optional[CompatCatalog]) -> None:
@@ -699,6 +700,13 @@ class AppController:
             stripped = line.strip()
             if stripped and not re.search(r'error_handler|on_error|ErrorHandler', stripped):
                 self._last_error_hint = stripped[:120]
+        # Emit a recovery suggestion for well-known error patterns (once per pattern per run).
+        for pattern, hint in self._ERROR_HINTS:
+            pid = id(pattern)
+            if pid not in self._emitted_error_hints and pattern.search(line):
+                self._emitted_error_hints.add(pid)
+                self._emit("on_log_line", f"💡 {hint}")
+                break
         new_state = self._server_mgr.parser.feed(line)
         if new_state:
             self._transition(new_state)
@@ -792,6 +800,7 @@ class AppController:
         elif state == ServerState.LAUNCHING:
             # Persist launch metadata for cross-engine reset warnings and reboot detection.
             self._last_error_hint = ""   # fresh slate for the new run
+            self._emitted_error_hints.clear()
             if self._current_entry:
                 _settings.last_launched_engine = self._current_entry.inference_engine
                 _settings.last_launched_model_display = self._current_entry.display_name
@@ -917,6 +926,38 @@ class AppController:
             self._emit("on_progress", frac, f"~{ts} remaining · {est.source}")
         else:
             self._emit("on_progress", -1.0, "")
+
+    # Error recovery hints ──────────────────────────────────────────────────────
+
+    # Each tuple: (compiled pattern, suggestion string).
+    # Matched against raw log lines; first match wins per ERROR transition.
+    _ERROR_HINTS: list = [
+        (re.compile(r'Cannot connect to the Docker daemon', re.I),
+         "Docker is not running. Start it: sudo systemctl start docker"),
+        (re.compile(r'permission denied.*docker', re.I),
+         "Add your user to the docker group: sudo usermod -aG docker $USER  (then log out/in)"),
+        (re.compile(r'no space left on device', re.I),
+         "Disk full — free up space or point HF_HOME to a larger volume"),
+        (re.compile(r'pull access denied|unauthorized: authentication', re.I),
+         "Docker image access denied. Try: docker login ghcr.io"),
+        (re.compile(r'/dev/tenstorrent.*No such file|device not found', re.I),
+         "TT device not found — check: ls /dev/tenstorrent* and ensure drivers are loaded"),
+        (re.compile(r'tt.smi|firmware|device reset', re.I),
+         "TT device error — try resetting: tt-smi -r"),
+        (re.compile(r'401.*Unauthorized|HF_TOKEN.*not found|Token.*invalid', re.I),
+         "HuggingFace token missing or invalid — set HF_TOKEN in your .env or environment"),
+        (re.compile(r'model_spec\.json.*not found|model_spec.*missing', re.I),
+         "model_spec.json not found — verify the server repo path in Settings"),
+        (re.compile(r'max_model_len|context_length.*exceed|KV cache.*full', re.I),
+         "Context too large — reduce max_model_len in the Config panel Quick Settings"),
+        (re.compile(r'out of memory|ENOMEM|cannot allocate', re.I),
+         "Out of memory — try a smaller model, reduce context, or reset the TT device: tt-smi -r"),
+        (re.compile(r'exec format error|wrong ELF class', re.I),
+         "Binary architecture mismatch — try pulling the image again: docker pull <image>"),
+        (re.compile(r'connection refused.*health|health.*refused', re.I),
+         "Server did not respond to health check — check log for earlier startup errors"),
+    ]
+    _emitted_error_hints: set  # instance var, init in __init__
 
     # Docker pull progress ──────────────────────────────────────────────────────
 
