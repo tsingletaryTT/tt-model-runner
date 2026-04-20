@@ -787,6 +787,14 @@ class MainPanel(Gtk.Box):
         self._copy_curl_btn.connect("clicked", self._on_copy_curl)
         banner.append(self._copy_curl_btn)
 
+        # "Open API" button — opens http://localhost:{port}/docs in default browser
+        self._open_api_btn = Gtk.Button(label="⤤ API")
+        self._open_api_btn.add_css_class("flat")
+        self._open_api_btn.set_tooltip_text("Open API explorer in default browser")
+        self._open_api_btn.set_visible(False)
+        self._open_api_btn.connect("clicked", self._on_open_api)
+        banner.append(self._open_api_btn)
+
         self.append(banner)
         self.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
 
@@ -1239,6 +1247,7 @@ class MainPanel(Gtk.Box):
         ready = (state == ServerState.READY)
         self._tab_bar.set_visible(ready)
         self._copy_curl_btn.set_visible(ready)
+        self._open_api_btn.set_visible(ready)
         # Restart button: show when READY or ERROR (so user can retry after failure)
         self._restart_btn.set_visible(state in (ServerState.READY, ServerState.ERROR))
         if ready:
@@ -1423,6 +1432,18 @@ class MainPanel(Gtk.Box):
         clipboard.set(cmd)
         self._copy_curl_btn.set_label("✓ copied")
         GLib.timeout_add(2000, lambda: self._copy_curl_btn.set_label("⧉ curl") or False)
+
+    def _on_open_api(self, _btn) -> None:
+        port = getattr(self, "_curl_port", "8000")
+        import subprocess
+        url = f"http://localhost:{port}/docs"
+        try:
+            subprocess.Popen(["xdg-open", url])
+        except FileNotFoundError:
+            try:
+                subprocess.Popen(["open", url])
+            except Exception:
+                pass
 
     def set_ad_cards(self, cards: list) -> None:
         """Update the rotating ad unit card pool."""
