@@ -63,6 +63,44 @@ class DevImageLauncher:
                   / config.model_id / f"{config.software_stack}.py")
         return script.exists()
 
+    @staticmethod
+    def get_available_stacks(dev_image_repo: Path, model_id: str) -> list:
+        """Return list of software stacks that have scripts for model_id.
+
+        Returns e.g. ["tt-forge", "tt-metal"] based on which .py files exist.
+        Empty list when dev_image_repo doesn't exist or has no models/ dir.
+        """
+        model_dir = dev_image_repo / "models" / model_id
+        if not model_dir.exists():
+            return []
+        stacks = []
+        for sw in ("tt-forge", "tt-metal", "tt-vllm"):
+            if (model_dir / f"{sw}.py").exists():
+                stacks.append(sw)
+        return stacks
+
+    @staticmethod
+    def scan_all_models(dev_image_repo: Path) -> dict:
+        """Return {model_id: [stacks]} for every model in dev_image_repo/models/.
+
+        Used to surface the inventory in the UI without querying per-model.
+        Returns empty dict when repo doesn't exist.
+        """
+        models_dir = dev_image_repo / "models"
+        if not models_dir.exists():
+            return {}
+        result = {}
+        for model_dir in sorted(models_dir.iterdir()):
+            if not model_dir.is_dir():
+                continue
+            stacks = []
+            for sw in ("tt-forge", "tt-metal", "tt-vllm"):
+                if (model_dir / f"{sw}.py").exists():
+                    stacks.append(sw)
+            if stacks:
+                result[model_dir.name] = stacks
+        return result
+
     def launch(self, config: DevLaunchConfig,
                on_log_line: Callable[[str], None],
                on_state: Callable[[ServerState], None]) -> None:

@@ -608,20 +608,38 @@ class ConfigPanel(Gtk.Box):
             self._strip_compat.set_visible(True)
         else:
             self._strip_compat.set_visible(False)
-        # Dev image launch buttons (tt-forge / tt-metal stacks)
+        # Dev image launch buttons — only show stacks with scripts on disk
         while child := self._dev_btn_box.get_first_child():
             self._dev_btn_box.remove(child)
-        dev_stacks = []
+        from dev_image_launcher import DevImageLauncher
+        from app_settings import settings as _cfg
+        from pathlib import Path as _Path
+        dev_repo = _Path(_cfg.dev_image_repo_path)
+        # Intersection: stacks from compat catalog AND scripts on disk
+        catalog_stacks = []
         for c in compat_entry.compatibility:
             for sw in ("tt-forge", "tt-metal"):
-                if sw in c.software and sw not in dev_stacks:
-                    dev_stacks.append(sw)
-        for sw in dev_stacks:
-            btn = Gtk.Button(label=f"▶  {sw}")
-            btn.set_tooltip_text(f"Launch via tt-developer-image using {sw}")
-            btn.connect("clicked", self._on_dev_launch_clicked, compat_entry.id, sw)
-            self._dev_btn_box.append(btn)
-        self._dev_launch_rev.set_reveal_child(bool(dev_stacks))
+                if sw in c.software and sw not in catalog_stacks:
+                    catalog_stacks.append(sw)
+        if catalog_stacks:
+            on_disk = DevImageLauncher.get_available_stacks(dev_repo, compat_entry.id)
+            dev_stacks = [sw for sw in catalog_stacks if sw in on_disk]
+            # Show all catalog stacks but disable missing ones (tooltip explains)
+            for sw in catalog_stacks:
+                btn = Gtk.Button(label=f"▶  {sw}")
+                if sw in dev_stacks:
+                    btn.set_tooltip_text(f"Launch via tt-developer-image using {sw}")
+                    btn.connect("clicked", self._on_dev_launch_clicked, compat_entry.id, sw)
+                else:
+                    btn.set_sensitive(False)
+                    btn.set_tooltip_text(f"Script not found: {dev_repo}/models/{compat_entry.id}/{sw}.py")
+                self._dev_btn_box.append(btn)
+            if catalog_stacks and not on_disk:
+                no_scripts_lbl = Gtk.Label(label=f"No scripts in {dev_repo.name}/models/{compat_entry.id}/")
+                no_scripts_lbl.add_css_class("muted")
+                no_scripts_lbl.set_halign(Gtk.Align.START)
+                self._dev_btn_box.append(no_scripts_lbl)
+        self._dev_launch_rev.set_reveal_child(bool(catalog_stacks))
 
     def _on_dev_launch_clicked(self, _btn, compat_id: str, sw: str) -> None:
         if self.on_dev_launch:

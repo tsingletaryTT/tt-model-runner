@@ -179,20 +179,34 @@ class ConfigPane(Widget):
             else:
                 self.query_one("#compat-strip", Static).update("")
 
-            # Collect dev image stacks for this model
-            self._dev_stacks = []
+            # Collect dev image stacks from compat catalog
+            catalog_stacks = []
             for c in compat_entry.compatibility:
                 for sw in ("tt-forge", "tt-metal"):
-                    if sw in c.software and sw not in self._dev_stacks:
-                        self._dev_stacks.append(sw)
+                    if sw in c.software and sw not in catalog_stacks:
+                        catalog_stacks.append(sw)
 
+            # Check which stacks have scripts on disk
+            from dev_image_launcher import DevImageLauncher
+            from app_settings import settings as _cfg
+            from pathlib import Path as _Path
+            dev_repo = _Path(_cfg.dev_image_repo_path)
+            on_disk = set(DevImageLauncher.get_available_stacks(dev_repo, compat_entry.id))
+
+            self._dev_stacks = catalog_stacks
             row = self.query_one("#dev-image-row")
             row.remove_children()
-            if self._dev_stacks:
+            if catalog_stacks:
                 self.query_one("#dev-image-strip", Static).update("ALSO VIA DEVELOPER IMAGE")
-                for sw in self._dev_stacks:
+                for sw in catalog_stacks:
                     btn = Button(f"▶ {sw}", id=f"dev-{sw.replace('-', '_')}")
+                    if sw not in on_disk:
+                        btn.disabled = True
+                        btn.tooltip = f"Script not found: {dev_repo.name}/models/{compat_entry.id}/{sw}.py"
                     row.mount(btn)
+                if not on_disk:
+                    from textual.widgets import Static as _Stat
+                    row.mount(_Stat(f"[dim]No scripts in {dev_repo.name}/models/{compat_entry.id}/[/dim]"))
             else:
                 self.query_one("#dev-image-strip", Static).update("")
         else:
