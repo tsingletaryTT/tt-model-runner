@@ -925,9 +925,10 @@ class MainPanel(Gtk.Box):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self._auto_scroll = True
         self._pulse_source: Optional[int] = None
-        self._log_entries: list = []        # (line_text, level_str) tuples
+        self._log_entries: list = []        # (line_text, level_str, ts_float) tuples
         self._hidden_levels: set = set()
         self._log_search_filter: str = ""
+        self._show_timestamps: bool = False
         self._uptime_start: Optional[float] = None
         self._uptime_timer: Optional[int] = None
         self._build()
@@ -1204,6 +1205,12 @@ class MainPanel(Gtk.Box):
         self._copy_log_btn.set_tooltip_text("Copy selected text, or all visible log lines (Ctrl+A then Ctrl+C)")
         self._copy_log_btn.connect("clicked", self._on_copy_log)
         filter_bar.append(self._copy_log_btn)
+
+        self._ts_btn = Gtk.ToggleButton(label="🕐")
+        self._ts_btn.add_css_class("flat")
+        self._ts_btn.set_tooltip_text("Toggle timestamps on log lines")
+        self._ts_btn.connect("toggled", self._on_ts_toggled)
+        filter_bar.append(self._ts_btn)
 
         # Log search field — filters displayed lines to those matching the query.
         self._log_search = Gtk.SearchEntry()
@@ -1529,13 +1536,23 @@ class MainPanel(Gtk.Box):
                 return "ERROR" if lvl == "CRITICAL" else ("WARN" if lvl == "WARNING" else lvl)
         return ""
 
-    def _insert_line_to_buffer(self, line: str, level: str):
+    def _format_ts(self, ts: float) -> str:
+        import datetime
+        return datetime.datetime.fromtimestamp(ts).strftime("%H:%M:%S")
+
+    def _insert_line_to_buffer(self, line: str, level: str, ts: float = 0.0):
+        import time as _time
         buf = self._log_buf
         end = buf.get_end_iter()
         if buf.get_char_count() > 0:
             buf.insert(end, "\n")
             end = buf.get_end_iter()
         start_off = end.get_offset()
+        if self._show_timestamps and ts:
+            ts_str = self._format_ts(ts) + "  "
+            buf.insert_with_tags_by_name(end, ts_str, "ts")
+            end = buf.get_end_iter()
+            start_off = end.get_offset()
         buf.insert(end, line)
         tag_name = f"lvl_{level}" if level else None
         if tag_name:
@@ -1543,14 +1560,16 @@ class MainPanel(Gtk.Box):
             buf.apply_tag_by_name(tag_name, s, buf.get_end_iter())
 
     def append_log(self, line: str):
+        import time as _time
         level = self._detect_level(line)
+        ts = _time.time()
         # Store (capped at _MAX_LOG_ENTRIES)
-        self._log_entries.append((line, level))
+        self._log_entries.append((line, level, ts))
         if len(self._log_entries) > _MAX_LOG_ENTRIES:
             self._log_entries = self._log_entries[-_MAX_LOG_ENTRIES:]
         # Only insert if this level isn't hidden and matches any active search filter
         if self._line_visible(line, level):
-            self._insert_line_to_buffer(line, level)
+            self._insert_line_to_buffer(line, level, ts)
         self._update_log_count()
         # Show jump-to-error button when an ERROR/CRITICAL line lands
         if level == "ERROR" and not self._jump_error_btn.get_visible():
@@ -1561,7 +1580,7 @@ class MainPanel(Gtk.Box):
         # Find the index of the last error entry
         last_err_idx = None
         for i in range(len(self._log_entries) - 1, -1, -1):
-            _, lvl = self._log_entries[i]
+            _, lvl, _ts = self._log_entries[i]
             if lvl == "ERROR":
                 last_err_idx = i
                 break
@@ -1569,7 +1588,7 @@ class MainPanel(Gtk.Box):
             return
         # Count visible lines up to that index to find buffer position
         visible_line = 0
-        for i, (_, lvl) in enumerate(self._log_entries):
+        for i, (_, lvl, _ts) in enumerate(self._log_entries):
             if lvl not in self._hidden_levels:
                 if i == last_err_idx:
                     break
@@ -1594,7 +1613,7 @@ class MainPanel(Gtk.Box):
             return
         try:
             path = gfile.get_path()
-            lines = [line for line, _ in self._log_entries]
+            lines = [line for line, _, _ts in self._log_entries]
             Path(path).write_text("\n".join(lines) + "\n")
         except Exception as exc:
             self.append_log(f"⚠ Save log failed: {exc}")
@@ -1788,20 +1807,24 @@ class MainPanel(Gtk.Box):
     def _rebuild_log_buffer(self):
         self._log_buf.set_text("")
         self._auto_scroll = True
-        for line, level in self._log_entries:
+        for line, level, ts in self._log_entries:
             if self._line_visible(line, level):
-                self._insert_line_to_buffer(line, level)
+                self._insert_line_to_buffer(line, level, ts)
         self._update_log_count()
 
     def _update_log_count(self):
         visible = sum(
-            1 for line, lvl in self._log_entries if self._line_visible(line, lvl)
+            1 for line, lvl, _ts in self._log_entries if self._line_visible(line, lvl)
         )
         total = len(self._log_entries)
         if visible == total:
             self._log_count_lbl.set_text(f"{total} lines")
         else:
             self._log_count_lbl.set_text(f"{visible}/{total} lines")
+
+    def _on_ts_toggled(self, btn) -> None:
+        self._show_timestamps = btn.get_active()
+        self._rebuild_log_buffer()
 
     def _on_filter_toggled(self, btn, level: str):
         if btn.get_active():
