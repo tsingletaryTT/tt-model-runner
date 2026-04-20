@@ -1168,6 +1168,31 @@ class AppController:
         """Return the persisted benchmark history as a list of dicts (newest first)."""
         return list(reversed(_settings.benchmark_history or []))
 
+    def is_starred(self, entry: ModelEntry) -> bool:
+        """Return True if this model/device is in the starred list."""
+        starred = _settings.starred_models or []
+        return any(
+            s.get("model_name") == entry.model_name and s.get("device") == entry.device_type
+            for s in starred
+        )
+
+    def toggle_star(self, entry: ModelEntry) -> bool:
+        """Toggle the starred state for an entry. Returns new starred state."""
+        starred = list(_settings.starred_models or [])
+        rec = {"model_name": entry.model_name, "device": entry.device_type}
+        existing = [i for i, s in enumerate(starred)
+                    if s.get("model_name") == entry.model_name and s.get("device") == entry.device_type]
+        if existing:
+            for i in reversed(existing):
+                del starred[i]
+            _settings.starred_models = starred
+            _settings.save()
+            return False
+        starred.append(rec)
+        _settings.starred_models = starred
+        _settings.save()
+        return True
+
     def send_tool_call(self, tools: list, prompt: str) -> None:
         """Send a multi-turn tool-call to the running server.
 

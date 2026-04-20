@@ -418,6 +418,27 @@ class Sidebar(Gtk.Box):
         last_model = _settings.last_model
         searching = bool(search)
 
+        # STARRED section — pinned models always visible at top
+        if not searching:
+            starred = _settings.starred_models or []
+            starred_entries = []
+            for rec in starred:
+                entry = self._catalog.get_entry(rec.get("model_name", ""), rec.get("device", ""))
+                if entry:
+                    starred_entries.append(entry)
+            if starred_entries:
+                star_it = self._tree_store.append(
+                    None, [f"★ STARRED ({len(starred_entries)})", "", "", False]
+                )
+                for entry in starred_entries:
+                    label = "★ " + _entry_label(entry, self._cached_repos)
+                    leaf_it = self._tree_store.append(
+                        star_it, [label, entry.model_name, entry.device_type, True]
+                    )
+                    if entry.model_name == last_model:
+                        self._tree_view.get_selection().select_iter(leaf_it)
+                self._tree_view.expand_row(self._tree_store.get_path(star_it), False)
+
         # RECENT section — show up to 3 most-recently-launched models at top
         if not searching:
             recents = _settings.recent_models or []
@@ -812,6 +833,13 @@ class MainPanel(Gtk.Box):
         self._open_api_btn.set_visible(False)
         self._open_api_btn.connect("clicked", self._on_open_api)
         banner.append(self._open_api_btn)
+
+        # Star/unstar toggle — visible when a model is selected
+        self._star_btn = Gtk.Button(label="☆")
+        self._star_btn.add_css_class("flat")
+        self._star_btn.set_tooltip_text("Pin/unpin this model to Starred")
+        self._star_btn.set_visible(False)
+        banner.append(self._star_btn)
 
         self.append(banner)
         self.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
@@ -1540,6 +1568,22 @@ class MainPanel(Gtk.Box):
         """Update the rotating ad unit card pool."""
         self._ad_unit.set_cards(cards)
 
+    def update_star_btn(self, visible: bool, starred: bool,
+                        on_toggle: Optional[callable] = None) -> None:
+        """Show/hide the ⭐ star button and update its label to reflect current state."""
+        self._star_btn.set_visible(visible)
+        if visible:
+            self._star_btn.set_label("★" if starred else "☆")
+            self._star_btn.set_tooltip_text(
+                "Unpin from Starred" if starred else "Pin to Starred"
+            )
+            if on_toggle:
+                try:
+                    self._star_btn.disconnect_by_func(on_toggle)
+                except Exception:
+                    pass
+                self._star_btn.connect("clicked", lambda _: on_toggle())
+
     def set_ad_select_model_callback(self, callback) -> None:
         self._ad_unit.set_on_select_model(callback)
 
@@ -1881,6 +1925,25 @@ class MainWindow(Gtk.ApplicationWindow):
         if cat is not None:
             compat = cat.lookup_by_display_name(entry.display_name)
             self._panel.set_compat_info(compat)
+        # Update star button
+        self._update_star_btn(entry)
+
+    def _update_star_btn(self, entry: Optional[ModelEntry] = None) -> None:
+        """Refresh the banner star button for the given (or current) entry."""
+        e = entry or self._ctrl.current_entry
+        if e is None:
+            self._panel.update_star_btn(False, False)
+            return
+        starred = self._ctrl.is_starred(e)
+        def _toggle():
+            self._ctrl.toggle_star(e)
+            self._update_star_btn(e)
+            # Rebuild the tree so the STARRED section updates immediately.
+            if self._sidebar._selected_device:
+                self._sidebar._rebuild_tree([self._sidebar._selected_device])
+            else:
+                self._sidebar._rebuild_tree(None)
+        self._panel.update_star_btn(True, starred, _toggle)
 
     def _on_options_changed(self, options) -> None:
         """Relay ConfigPanel option changes to the controller (e.g. for live
