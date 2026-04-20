@@ -460,3 +460,51 @@ def test_star_persists_across_toggle(tmp_path):
         ctrl.toggle_star(e1)  # unstar model-a
         assert not ctrl.is_starred(e1)
         assert ctrl.is_starred(e2)
+
+
+# ── Per-model options persistence ────────────────────────────────────────────
+
+def test_set_options_persists_non_default_fields(tmp_path):
+    """set_options should write non-default fields to model_options in settings."""
+    from launch_options import LaunchOptions
+    fake_settings = _make_test_settings(tmp_path)
+    ctrl, _ = make_controller()
+    with patch("controller._settings", fake_settings):
+        ctrl._current_entry = _make_mock_entry("llama-3-8b", "N150")
+        opts = LaunchOptions(use_case="chat", max_model_len=32768)
+        ctrl.set_options(opts)
+        saved = fake_settings.model_options
+        assert "llama-3-8b" in saved
+        assert saved["llama-3-8b"]["max_model_len"] == 32768
+
+
+def test_set_options_removes_entry_when_all_defaults(tmp_path):
+    """set_options with all-default values should delete the model's stored entry."""
+    from launch_options import LaunchOptions
+    fake_settings = _make_test_settings(tmp_path)
+    ctrl, _ = make_controller()
+    with patch("controller._settings", fake_settings):
+        ctrl._current_entry = _make_mock_entry("llama-3-8b", "N150")
+        # First save something, then reset to defaults
+        fake_settings.model_options = {"llama-3-8b": {"max_model_len": 32768}}
+        ctrl.set_options(LaunchOptions())   # all defaults
+        saved = fake_settings.model_options
+        assert "llama-3-8b" not in saved
+
+
+def test_select_model_restores_saved_options(tmp_path):
+    """select_model should restore non-default fields from model_options."""
+    from launch_options import LaunchOptions
+    fake_settings = _make_test_settings(tmp_path)
+    fake_settings.model_options = {
+        "llama-3-8b": {"use_case": "code_completion", "max_model_len": 32768}
+    }
+    ctrl, _ = make_controller()
+    with patch("controller._settings", fake_settings):
+        entry = _make_mock_entry("llama-3-8b", "N150")
+        entry.hf_model_repo = "meta-llama/Llama-3-8B"
+        ctrl.select_model(entry)
+        # Give the background cache scan thread time to start (it's daemon, doesn't block)
+        opts = ctrl.get_options()
+        assert opts.use_case == "code_completion"
+        assert opts.max_model_len == 32768
