@@ -1710,7 +1710,9 @@ class MainWindow(Gtk.ApplicationWindow):
         """React to server state transitions: update banner, lock sidebar,
         and navigate the main panel stack to the appropriate page."""
         self._panel.set_state(state, info)
-        self._sidebar.set_locked(state not in (ServerState.IDLE, ServerState.ERROR))
+        self._sidebar.set_locked(
+            state not in (ServerState.IDLE, ServerState.ERROR, ServerState.DONE)
+        )
 
         # Update window title to reflect active model and state.
         entry = self._ctrl.current_entry
@@ -1738,7 +1740,9 @@ class MainWindow(Gtk.ApplicationWindow):
             self._panel.show_logs()
         elif state in (ServerState.RUNNING,):
             self._panel.show_logs()
-        elif state in (ServerState.DONE,):
+        elif state == ServerState.DONE:
+            # Script finished cleanly — stay on logs briefly so user can read the output.
+            # Sidebar is already unlocked (set_locked above), ready for the next run.
             self._panel.show_logs()
         elif state == ServerState.READY:
             # Wire the Send button and bench run button on first READY transition (idempotent).
