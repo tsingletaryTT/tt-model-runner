@@ -2596,4 +2596,56 @@ class MainWindow(Gtk.ApplicationWindow):
                 self._panel._stack.set_visible_child_name(tab_map[keyval])
                 return True
 
+        if keyval in (Gdk.KEY_F1, Gdk.KEY_question) and not ctrl_held and not shift_held:
+            self._show_about_dialog()
+            return True
+
         return False
+
+    def _show_about_dialog(self) -> None:
+        """Show keyboard shortcuts and app info in a simple dialog."""
+        dlg = Gtk.Window(title="TT Model Runner — Keyboard Shortcuts")
+        dlg.set_transient_for(self)
+        dlg.set_modal(True)
+        dlg.set_default_size(480, 380)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        box.set_margin_start(20); box.set_margin_end(20)
+        box.set_margin_top(16);   box.set_margin_bottom(16)
+
+        title = Gtk.Label()
+        title.set_markup("<b>TT Model Runner</b>  ·  Keyboard Shortcuts")
+        title.set_halign(Gtk.Align.START)
+        box.append(title)
+        box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+
+        shortcuts = [
+            ("F5",            "Launch or Stop server"),
+            ("Ctrl+1",        "Switch to Config tab"),
+            ("Ctrl+2",        "Switch to Logs tab"),
+            ("Ctrl+3",        "Switch to Tools tab"),
+            ("Ctrl+4",        "Switch to Bench tab"),
+            ("Ctrl+K",        "Jump log to last error"),
+            ("Ctrl+Shift+S",  "Save log to file"),
+            ("Ctrl+C",        "Copy selected log text"),
+            ("F1 / ?",        "Show this dialog"),
+        ]
+        grid = Gtk.Grid(row_spacing=6, column_spacing=24)
+        for row, (key, desc) in enumerate(shortcuts):
+            key_lbl = Gtk.Label(label=key)
+            key_lbl.set_halign(Gtk.Align.END)
+            key_lbl.add_css_class("pill")
+            key_lbl.add_css_class("pill-idle")
+            grid.attach(key_lbl, 0, row, 1, 1)
+            desc_lbl = Gtk.Label(label=desc)
+            desc_lbl.set_halign(Gtk.Align.START)
+            grid.attach(desc_lbl, 1, row, 1, 1)
+        box.append(grid)
+
+        close_btn = Gtk.Button(label="Close")
+        close_btn.set_halign(Gtk.Align.END)
+        close_btn.connect("clicked", lambda _: dlg.close())
+        box.append(close_btn)
+
+        dlg.set_child(box)
+        dlg.present()
