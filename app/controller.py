@@ -257,6 +257,7 @@ class AppController:
         self.on_running_servers: Optional[Callable] = None           # (List[RunningServer],)
         self.on_hardware_status: Optional[Callable] = None           # (List[ChipStatus],)
         self.on_compat_catalog_loaded: Optional[Callable] = None     # (Optional[CompatCatalog],)
+        self.on_docker_images: Optional[Callable] = None             # (List[DockerImage],)
 
     # ── Read-only properties for views ──────────────────────────────────────
 
@@ -320,6 +321,10 @@ class AppController:
             servers = _parse_running_servers()
             if servers:
                 self._emit("on_running_servers", servers)
+            # Scan local Docker images for the sidebar panel.
+            from docker_images import scan_local_images
+            docker_imgs = scan_local_images()
+            self._emit("on_docker_images", docker_imgs)
             # Start the 30-second periodic hardware poll.
             self._hw_poll_active = True
             self._schedule_hw_poll()
@@ -710,6 +715,46 @@ class AppController:
             servers = _parse_running_servers()
             if servers:
                 self._emit("on_running_servers", servers)
+        threading.Thread(target=_run, daemon=True).start()
+
+    def scan_docker_images_async(self) -> None:
+        """Scan local Docker images in background; emits on_docker_images(list)."""
+        from docker_images import scan_local_images
+        spec_default = ""
+        if self._current_entry and hasattr(self._current_entry, "docker_image"):
+            spec_default = self._current_entry.docker_image or ""
+
+        def _run():
+            images = scan_local_images(spec_default)
+            self._emit("on_docker_images", images)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def prune_docker_images(self, on_complete=None) -> None:
+        """Run 'docker image prune -f' in background; emits on_log_line progress."""
+        def _run():
+            self._emit("on_log_line", "🗑 docker image prune -f …")
+            try:
+                result = subprocess.run(
+                    ["docker", "image", "prune", "-f"],
+                    capture_output=True, text=True, timeout=60,
+                )
+                for line in result.stdout.splitlines():
+                    if line.strip():
+                        self._emit("on_log_line", line)
+                if result.returncode == 0:
+                    self._emit("on_log_line", "✓ Prune complete")
+                else:
+                    self._emit("on_log_line", f"✗ Prune exit {result.returncode}")
+            except FileNotFoundError:
+                self._emit("on_log_line", "✗ docker not found")
+            except Exception as exc:
+                self._emit("on_log_line", f"✗ prune error: {exc}")
+            if on_complete:
+                self._dispatch(on_complete)
+            # Refresh the image list after prune.
+            self.scan_docker_images_async()
+
         threading.Thread(target=_run, daemon=True).start()
 
     def adopt_running_server(self, port: str, container_name: str = "") -> None:

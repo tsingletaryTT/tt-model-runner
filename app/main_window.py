@@ -84,7 +84,7 @@ class Sidebar(Gtk.Box):
     """Left sidebar: repo path picker, model tree, device toggles, port, launch/stop, HF status."""
 
     def __init__(self, on_launch, on_stop, on_model_select, on_device_select, on_repo_change,
-                 on_reset=None, on_pull=None):
+                 on_reset=None, on_pull=None, on_docker_refresh=None, on_docker_prune=None):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.set_size_request(290, -1)
 
@@ -95,6 +95,8 @@ class Sidebar(Gtk.Box):
         self._on_repo_change = on_repo_change
         self._on_reset = on_reset
         self._on_pull = on_pull
+        self._on_docker_refresh = on_docker_refresh
+        self._on_docker_prune = on_docker_prune
 
         self._catalog: Optional[ModelCatalog] = None
         self._selected_entry: Optional[ModelEntry] = None
@@ -278,6 +280,38 @@ class Sidebar(Gtk.Box):
         self._reset_btn.connect("clicked", self._on_reset_clicked)
         hw_box.append(self._reset_btn)
         self.append(hw_box)
+        self.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+
+        # Docker images — collapsible section
+        docker_exp = Gtk.Expander()
+        docker_exp.set_margin_start(8); docker_exp.set_margin_end(8)
+        docker_exp.set_margin_top(4);   docker_exp.set_margin_bottom(2)
+        docker_hdr = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        docker_hdr_lbl = Gtk.Label(label="DOCKER IMAGES")
+        docker_hdr_lbl.add_css_class("section-label")
+        docker_hdr_lbl.set_hexpand(True)
+        docker_hdr.append(docker_hdr_lbl)
+        self._docker_refresh_btn = Gtk.Button(label="↻")
+        self._docker_refresh_btn.add_css_class("flat")
+        self._docker_refresh_btn.set_tooltip_text("Refresh local image list")
+        self._docker_refresh_btn.connect(
+            "clicked", lambda _: self._on_docker_refresh() if self._on_docker_refresh else None)
+        docker_hdr.append(self._docker_refresh_btn)
+        self._docker_prune_btn = Gtk.Button(label="🗑")
+        self._docker_prune_btn.add_css_class("flat")
+        self._docker_prune_btn.set_tooltip_text("Prune unused Docker images (docker image prune -f)")
+        self._docker_prune_btn.connect(
+            "clicked", lambda _: self._on_docker_prune() if self._on_docker_prune else None)
+        docker_hdr.append(self._docker_prune_btn)
+        docker_exp.set_label_widget(docker_hdr)
+        self._docker_list_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
+        self._docker_list_box.set_margin_top(4)
+        self._docker_empty_lbl = Gtk.Label(label="No TT images found")
+        self._docker_empty_lbl.add_css_class("muted")
+        self._docker_empty_lbl.set_halign(Gtk.Align.START)
+        self._docker_list_box.append(self._docker_empty_lbl)
+        docker_exp.set_child(self._docker_list_box)
+        self.append(docker_exp)
         self.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
 
         # HF token status
@@ -793,6 +827,35 @@ class Sidebar(Gtk.Box):
             self._git_info_label.set_text(f"  {branch}  @{sha}" if branch else f"  @{sha}")
         else:
             self._git_info_label.set_text("")
+
+    def update_docker_images(self, images: list) -> None:
+        """Repopulate the Docker images list in the collapsible section."""
+        # Clear existing rows
+        child = self._docker_list_box.get_first_child()
+        while child:
+            nxt = child.get_next_sibling()
+            self._docker_list_box.remove(child)
+            child = nxt
+        if not images:
+            self._docker_empty_lbl = Gtk.Label(label="No TT images found")
+            self._docker_empty_lbl.add_css_class("muted")
+            self._docker_empty_lbl.set_halign(Gtk.Align.START)
+            self._docker_list_box.append(self._docker_empty_lbl)
+            return
+        for img in images:
+            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+            name_lbl = Gtk.Label(label=img.short_tag)
+            name_lbl.set_hexpand(True)
+            name_lbl.set_halign(Gtk.Align.START)
+            name_lbl.set_ellipsize(Pango.EllipsizeMode.END)
+            if img.created_str == "not pulled":
+                name_lbl.add_css_class("muted")
+            row.append(name_lbl)
+            size_lbl = Gtk.Label(label=img.size_str)
+            size_lbl.add_css_class("muted")
+            size_lbl.set_xalign(1.0)
+            row.append(size_lbl)
+            self._docker_list_box.append(row)
 
     def get_selected_entry(self) -> Optional[ModelEntry]:
         return self._selected_entry
@@ -2149,6 +2212,8 @@ class MainWindow(Gtk.ApplicationWindow):
             on_repo_change=self._on_repo_change,
             on_reset=self._on_hardware_reset,
             on_pull=self._on_pull_repo,
+            on_docker_refresh=self._ctrl.scan_docker_images_async,
+            on_docker_prune=self._ctrl.prune_docker_images,
         )
         paned.set_start_child(self._sidebar)
         paned.set_resize_start_child(False)
@@ -2174,6 +2239,7 @@ class MainWindow(Gtk.ApplicationWindow):
         controller.on_running_servers = self._on_running_servers_detected
         controller.on_hardware_status = self._on_hardware_status
         controller.on_compat_catalog_loaded = self._on_compat_catalog_loaded
+        controller.on_docker_images = lambda imgs: self._sidebar.update_docker_images(imgs)
 
         # Connect the ↻ chip-telemetry refresh button to the controller.
         self._sidebar._hw_refresh_btn.connect(

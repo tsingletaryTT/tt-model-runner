@@ -49,6 +49,9 @@ class ViewContract(ABC):
     @abstractmethod
     def on_compat_catalog_loaded(self, catalog): ...
 
+    @abstractmethod
+    def on_docker_images(self, images: list): ...
+
 
 class GtkViewStub(ViewContract):
     def on_state_changed(self, state, info): pass
@@ -63,6 +66,7 @@ class GtkViewStub(ViewContract):
     def on_running_servers(self, servers): pass
     def on_hardware_status(self, chips): pass
     def on_compat_catalog_loaded(self, catalog): pass
+    def on_docker_images(self, images): pass
 
 
 class TuiViewStub(ViewContract):
@@ -78,6 +82,7 @@ class TuiViewStub(ViewContract):
     def on_running_servers(self, servers): pass
     def on_hardware_status(self, chips): pass
     def on_compat_catalog_loaded(self, catalog): pass
+    def on_docker_images(self, images): pass
 
 
 def test_gtk_stub_satisfies_contract():
