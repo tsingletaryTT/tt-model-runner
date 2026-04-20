@@ -917,6 +917,11 @@ class MainPanel(Gtk.Box):
         self._jump_error_btn.set_visible(False)
         self._jump_error_btn.connect("clicked", self._on_jump_to_error)
         filter_bar.append(self._jump_error_btn)
+        self._save_log_btn = Gtk.Button(label="⬇ Save")
+        self._save_log_btn.add_css_class("flat")
+        self._save_log_btn.set_tooltip_text("Save log to file")
+        self._save_log_btn.connect("clicked", self._on_save_log)
+        filter_bar.append(self._save_log_btn)
         logs_box.append(filter_bar)
         logs_box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
 
@@ -1183,6 +1188,27 @@ class MainPanel(Gtk.Box):
         buf = self._log_buf
         it = buf.get_iter_at_line(visible_line)
         self._log_view.scroll_to_iter(it, 0.1, True, 0.0, 0.3)
+
+    def _on_save_log(self, _btn) -> None:
+        """Open a file-save dialog and write the current log to disk."""
+        import datetime
+        dialog = Gtk.FileDialog()
+        dialog.set_title("Save log")
+        ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        dialog.set_initial_name(f"tt-runner-log-{ts}.txt")
+        dialog.save(self.get_root(), None, self._on_save_log_done, None)
+
+    def _on_save_log_done(self, dialog, result, _data) -> None:
+        try:
+            gfile = dialog.save_finish(result)
+        except Exception:
+            return
+        try:
+            path = gfile.get_path()
+            lines = [line for line, _ in self._log_entries]
+            Path(path).write_text("\n".join(lines) + "\n")
+        except Exception as exc:
+            self.append_log(f"⚠ Save log failed: {exc}")
 
     def set_state(self, state: ServerState, info: str = ""):
         label, css_class = _STATE_LABELS.get(state, ("?", "pill-idle"))
