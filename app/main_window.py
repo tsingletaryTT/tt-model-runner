@@ -1629,6 +1629,14 @@ class MainWindow(Gtk.ApplicationWindow):
         self._panel.set_state(state, info)
         self._sidebar.set_locked(state not in (ServerState.IDLE, ServerState.ERROR))
 
+        # Update window title to reflect active model and state.
+        entry = self._ctrl.current_entry
+        label, _ = _STATE_LABELS.get(state, (state.name, ""))
+        if entry and state not in (ServerState.IDLE, ServerState.STOPPING):
+            self.set_title(f"TT Model Runner — {entry.display_name} [{label}]")
+        else:
+            self.set_title("TT Model Runner")
+
         # Navigate the main-panel stack based on the new state.
         if state == ServerState.IDLE:
             # Back to config so the user can adjust settings and re-launch.
