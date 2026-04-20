@@ -52,9 +52,27 @@ _LOG_COLORS = {
 }
 
 
+def _format_param_count(param_count: Optional[float]) -> str:
+    """Format param_count (raw float, e.g. 7e9) as a compact string like '7B', '335M'."""
+    if param_count is None:
+        return ""
+    if param_count >= 1e12:
+        return f"{param_count / 1e12:.0f}T"
+    if param_count >= 1e9:
+        v = param_count / 1e9
+        return f"{v:.0f}B" if v >= 10 else f"{v:.1f}B"
+    if param_count >= 1e6:
+        v = param_count / 1e6
+        return f"{v:.0f}M" if v >= 10 else f"{v:.1f}M"
+    return ""
+
+
 def _entry_label(entry, cached_repos: set) -> str:
-    """Build model tree leaf label with optional ✓ (cached) and ⚠ (experimental) badges."""
+    """Build model tree leaf label with optional size, ✓ (cached), and ⚠ (experimental) badges."""
     label = entry.display_name
+    size = _format_param_count(getattr(entry, "param_count", None))
+    if size:
+        label += f"  {size}"
     if entry.hf_model_repo in cached_repos:
         label += "  ✓"
     if getattr(entry, "status", "") == "EXPERIMENTAL":
