@@ -416,3 +416,47 @@ def test_get_bench_history_newest_first(tmp_path):
         assert len(history) == 3
         assert history[0]["model_name"] == "model-2"   # newest first
         assert history[-1]["model_name"] == "model-0"
+
+
+# ── Model starring ───────────────────────────────────────────────────────────
+
+def _make_mock_entry(model_name="llama-3-8b", device="N150"):
+    entry = MagicMock()
+    entry.model_name = model_name
+    entry.device_type = device
+    return entry
+
+
+def test_toggle_star_stars_unstarred_model(tmp_path):
+    fake_settings = _make_test_settings(tmp_path)
+    ctrl, _ = make_controller()
+    with patch("controller._settings", fake_settings):
+        entry = _make_mock_entry()
+        assert not ctrl.is_starred(entry)
+        result = ctrl.toggle_star(entry)
+        assert result is True
+        assert ctrl.is_starred(entry)
+
+
+def test_toggle_star_unstars_starred_model(tmp_path):
+    fake_settings = _make_test_settings(tmp_path)
+    ctrl, _ = make_controller()
+    with patch("controller._settings", fake_settings):
+        entry = _make_mock_entry()
+        ctrl.toggle_star(entry)   # star
+        result = ctrl.toggle_star(entry)  # unstar
+        assert result is False
+        assert not ctrl.is_starred(entry)
+
+
+def test_star_persists_across_toggle(tmp_path):
+    fake_settings = _make_test_settings(tmp_path)
+    ctrl, _ = make_controller()
+    with patch("controller._settings", fake_settings):
+        e1 = _make_mock_entry("model-a", "N150")
+        e2 = _make_mock_entry("model-b", "N300")
+        ctrl.toggle_star(e1)
+        ctrl.toggle_star(e2)
+        ctrl.toggle_star(e1)  # unstar model-a
+        assert not ctrl.is_starred(e1)
+        assert ctrl.is_starred(e2)
