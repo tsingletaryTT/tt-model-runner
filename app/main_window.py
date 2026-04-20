@@ -314,11 +314,36 @@ class Sidebar(Gtk.Box):
         self.append(docker_exp)
         self.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
 
-        # HF token status
-        self._hf_label = Gtk.Label()
-        self._hf_label.set_margin_start(8); self._hf_label.set_margin_top(4); self._hf_label.set_margin_bottom(6)
-        self._hf_label.set_halign(Gtk.Align.START)
-        self.append(self._hf_label)
+        # HF token section
+        hf_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        hf_box.set_margin_start(8); hf_box.set_margin_end(8)
+        hf_box.set_margin_top(4); hf_box.set_margin_bottom(6)
+        hf_hdr = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        hf_lbl = Gtk.Label(label="HF TOKEN"); hf_lbl.add_css_class("section-label")
+        hf_lbl.set_halign(Gtk.Align.START); hf_lbl.set_hexpand(True)
+        hf_hdr.append(hf_lbl)
+        self._hf_status_label = Gtk.Label()
+        self._hf_status_label.add_css_class("muted")
+        hf_hdr.append(self._hf_status_label)
+        hf_box.append(hf_hdr)
+        hf_entry_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        self._hf_entry = Gtk.Entry()
+        self._hf_entry.set_visibility(False)  # password mask
+        self._hf_entry.set_placeholder_text("hf_…  (paste token, Enter to save)")
+        self._hf_entry.set_hexpand(True)
+        self._hf_entry.set_icon_from_icon_name(Gtk.EntryIconPosition.SECONDARY, "dialog-password-symbolic")
+        self._hf_entry.set_icon_tooltip_text(Gtk.EntryIconPosition.SECONDARY, "Toggle visibility")
+        self._hf_entry.connect("icon-press", lambda e, pos: e.set_visibility(not e.get_visibility()))
+        self._hf_entry.connect("activate", lambda _: self._save_hf_token())
+        hf_entry_row.append(self._hf_entry)
+        hf_save_btn = Gtk.Button(label="✓")
+        hf_save_btn.set_tooltip_text("Save HF token")
+        hf_save_btn.connect("clicked", lambda _: self._save_hf_token())
+        hf_entry_row.append(hf_save_btn)
+        hf_box.append(hf_entry_row)
+        self._hf_label = Gtk.Label()  # keep for set_locked compat
+        self._hf_label.set_visible(False)
+        self.append(hf_box)
         self._update_hf_status()
 
     def _on_port_changed(self, entry: Gtk.Entry) -> None:
@@ -378,27 +403,50 @@ class Sidebar(Gtk.Box):
         self._on_repo_change(path)
         self._update_hf_status()
 
-    def _update_hf_status(self):
+    def _find_hf_token(self) -> str:
+        """Return HF token from env, ~/.huggingface/token, settings, or .env file."""
         token = os.environ.get("HF_TOKEN", "")
-        if not token:
-            repo = self._repo_entry.get_text()
-            if repo:
-                env_file = Path(repo).expanduser() / ".env"
-                if env_file.exists():
-                    for line in env_file.read_text().splitlines():
-                        if line.startswith("HF_TOKEN="):
-                            token = line.split("=", 1)[1].strip()
-                            break
         if token:
-            self._hf_label.set_text("HF_TOKEN: ✓ from env")
-            self._hf_label.set_css_classes(["hf-ok"])
+            return token
+        hf_token_file = Path.home() / ".huggingface" / "token"
+        if hf_token_file.exists():
+            token = hf_token_file.read_text().strip()
+            if token:
+                return token
+        if _settings.hf_token:
+            return _settings.hf_token
+        repo = self._repo_entry.get_text()
+        if repo:
+            env_file = Path(repo).expanduser() / ".env"
+            if env_file.exists():
+                for line in env_file.read_text().splitlines():
+                    if line.startswith("HF_TOKEN="):
+                        token = line.split("=", 1)[1].strip()
+                        if token:
+                            return token
+        return ""
+
+    def _save_hf_token(self) -> None:
+        token = self._hf_entry.get_text().strip()
+        _settings.set_hf_token(token)
+        os.environ["HF_TOKEN"] = token
+        self._hf_entry.set_text("")  # clear field after save
+        self._update_hf_status()
+
+    def _update_hf_status(self):
+        token = self._find_hf_token()
+        if token:
+            # Set in env so the running process also benefits immediately
+            os.environ["HF_TOKEN"] = token
+            short = f"…{token[-4:]}" if len(token) > 4 else "set"
+            self._hf_status_label.set_markup(f"<span foreground='#27AE60'>✓ {short}</span>")
             if not self._locked:
                 self._launch_btn.set_sensitive(True)
+            self._launch_btn.set_tooltip_text("")
         else:
-            self._hf_label.set_text("⚠ HF_TOKEN not set — Launch disabled")
-            self._hf_label.set_css_classes(["hf-warn"])
+            self._hf_status_label.set_markup("<span foreground='#FF6B6B'>not set</span>")
             self._launch_btn.set_sensitive(False)
-            self._launch_btn.set_tooltip_text("Set HF_TOKEN in environment or .env file in server repo")
+            self._launch_btn.set_tooltip_text("Paste HuggingFace token above to enable launch")
 
     def load_catalog(self, catalog: ModelCatalog, compatible_devices: List[str]):
         self._catalog = catalog

@@ -35,6 +35,9 @@ _DEFAULTS = {
     # Only non-default fields are stored. Merged on top of the use-case preset when
     # the user selects that model again.
     "model_options": {},
+    # HuggingFace token — stored here so it survives shell restarts.
+    # Written to ~/.huggingface/token on save so hf libraries pick it up automatically.
+    "hf_token": "",
 }
 
 
@@ -55,6 +58,17 @@ class AppSettings:
     def save(self):
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._path.write_text(json.dumps(self._data, indent=2))
+
+    def set_hf_token(self, token: str) -> None:
+        """Persist token in settings and write to ~/.huggingface/token (hf library standard)."""
+        self.hf_token = token
+        self.save()
+        hf_dir = Path.home() / ".huggingface"
+        hf_dir.mkdir(parents=True, exist_ok=True)
+        if token:
+            (hf_dir / "token").write_text(token)
+        elif (hf_dir / "token").exists():
+            (hf_dir / "token").unlink(missing_ok=True)
 
     def __getattr__(self, name):
         if name.startswith("_"):

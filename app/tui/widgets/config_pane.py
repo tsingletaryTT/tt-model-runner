@@ -77,6 +77,9 @@ class ConfigPane(Widget):
         padding: 0 1;
         color: $text-muted;
     }
+    #hf-token-row { height: 3; layout: horizontal; }
+    #hf-token-input { width: 1fr; }
+    #hf-status { color: $text-muted; height: 1; }
     """
 
     def __init__(self, **kwargs):
@@ -107,6 +110,11 @@ class ConfigPane(Widget):
             yield Checkbox("Disable TT timeout",      id="no-timeout-check")
             yield Checkbox("Skip SW validation",      id="skip-sw-check")
             yield Checkbox("Disable trace capture",   id="no-trace-check")
+        yield Label("HF TOKEN")
+        with Widget(id="hf-token-row"):
+            yield Input(placeholder="hf_… (Enter to save)", id="hf-token-input", password=True)
+            yield Button("✓", id="hf-token-save", variant="default")
+        yield Static("", id="hf-status")
         yield Label("COMMAND PREVIEW")
         yield Static("", id="command-preview")
         yield Static("", id="dev-image-strip")
@@ -288,8 +296,57 @@ class ConfigPane(Widget):
 
     # ---------------------------------------------------------------- event handlers
 
+    def on_mount(self) -> None:
+        """Populate HF status on first render."""
+        self._refresh_hf_status()
+
+    def _refresh_hf_status(self) -> None:
+        import os
+        from pathlib import Path
+        token = os.environ.get("HF_TOKEN", "")
+        if not token:
+            hf_token_file = Path.home() / ".huggingface" / "token"
+            if hf_token_file.exists():
+                token = hf_token_file.read_text().strip()
+        if not token:
+            try:
+                from app_settings import settings
+                token = settings.hf_token or ""
+            except Exception:
+                pass
+        try:
+            status = self.query_one("#hf-status", Static)
+            if token:
+                short = f"…{token[-4:]}" if len(token) > 4 else "set"
+                status.update(f"[green]✓ token set ({short})[/green]")
+            else:
+                status.update("[red]⚠ HF_TOKEN not set — launch will fail[/red]")
+        except Exception:
+            pass
+
+    def _save_hf_token(self) -> None:
+        import os
+        try:
+            token = self.query_one("#hf-token-input", Input).value.strip()
+        except Exception:
+            return
+        if not token:
+            return
+        from app_settings import settings
+        settings.set_hf_token(token)
+        os.environ["HF_TOKEN"] = token
+        try:
+            self.query_one("#hf-token-input", Input).value = ""
+        except Exception:
+            pass
+        self._refresh_hf_status()
+        self.app.notify("HF token saved", title="Token")
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
         btn_id = event.button.id or ""
+        if btn_id == "hf-token-save":
+            self._save_hf_token()
+            return
         if btn_id.startswith("uc-"):
             from launch_options import apply_preset
             uc = btn_id[3:]
@@ -303,7 +360,13 @@ class ConfigPane(Widget):
             sw = btn_id[4:].replace("_", "-")
             self._on_dev_launch(self._entry.display_name.lower().replace(" ", "-"), sw)
 
+    def on_input_submitted(self, event: "Input.Submitted") -> None:
+        if event.input.id == "hf-token-input":
+            self._save_hf_token()
+
     def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "hf-token-input":
+            return  # don't trigger options callbacks for token field
         if self._syncing or not self._options:
             return
         inp_id = event.input.id
