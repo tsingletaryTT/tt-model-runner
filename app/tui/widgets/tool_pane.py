@@ -85,6 +85,11 @@ class ToolPane(Widget):
     def show_hint(self, visible: bool) -> None:
         self.query_one("#tool-hint").display = visible
 
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        """Fire Send when the user presses Enter in the prompt field."""
+        if event.input.id == "tool-prompt":
+            self.query_one("#tool-send-btn", Button).press()
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id != "tool-send-btn":
             return

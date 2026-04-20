@@ -2668,6 +2668,8 @@ class MainWindow(Gtk.ApplicationWindow):
             self._ctrl.send_tool_call(tools, prompt)
 
         self._panel._tool_send_btn.connect("clicked", _on_send)
+        # Enter in the prompt entry fires Send without reaching for the mouse.
+        self._panel._tool_prompt_entry.connect("activate", _on_send)
 
     # ── Bench tab helpers ─────────────────────────────────────────────────────
 
