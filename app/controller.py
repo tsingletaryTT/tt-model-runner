@@ -1203,7 +1203,7 @@ class AppController:
             if self._state != ServerState.LOADING:
                 return
             substage = self._tour_substage or ""
-            cards = TOUR_CARDS.get(substage, [])
+            cards = self._tour_cards(substage)
             if len(cards) > 1:
                 self._tour_card_idx = (self._tour_card_idx + 1) % len(cards)
                 left, right = self._build_tour_content(substage)
@@ -1407,10 +1407,27 @@ class AppController:
         if not entry:
             return ("", "")
         left = self._build_tour_left(entry)
-        cards = TOUR_CARDS.get(substage or "", [])
-        right = (cards[self._tour_card_idx % len(cards)]
-                 if cards else "Loading model onto Tenstorrent hardware…")
+        right = self._tour_right_text(substage)
         return (left, right)
+
+    def _tour_cards(self, substage: Optional[str]) -> List[str]:
+        """Return the active card pool for the right panel.
+
+        Prefers model/family-specific facts from did-you-know.json; falls back to
+        the generic stage-specific TT hardware cards defined in TOUR_CARDS.
+        """
+        from ad_facts import get_model_cards_for_loading
+        entry = self._current_entry
+        if entry:
+            model_cards = get_model_cards_for_loading(entry.family)
+            if model_cards:
+                return model_cards
+        return TOUR_CARDS.get(substage or "", [])
+
+    def _tour_right_text(self, substage: Optional[str]) -> str:
+        cards = self._tour_cards(substage)
+        return (cards[self._tour_card_idx % len(cards)]
+                if cards else "Loading model onto Tenstorrent hardware…")
 
     def get_options(self) -> LaunchOptions:
         return self._options

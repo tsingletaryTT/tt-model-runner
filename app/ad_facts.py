@@ -95,6 +95,24 @@ def get_model_cards(
     return cards
 
 
+def get_model_cards_for_loading(family: str) -> List[str]:
+    """Return fact strings for the given model family, for the loading-screen right panel.
+
+    Matches cards whose 'families' list contains the family (case-insensitive).
+    Returns formatted "Headline\n\nBody" strings ready for display.
+    Falls back to an empty list when no matching cards exist.
+    """
+    family_lower = family.lower()
+    results = []
+    for card in DID_YOU_KNOW:
+        fams = card.get("families", [])
+        if any(f.lower() == family_lower for f in fams):
+            headline = card.get("headline", "")
+            body = card.get("body", "")
+            results.append(f"{headline}\n\n{body}" if body else headline)
+    return results
+
+
 def get_all_cards(
     catalog: Optional["ModelCatalog"],
     device_type: Optional[str],
