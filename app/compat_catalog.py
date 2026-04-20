@@ -24,9 +24,11 @@ _HW_MAP: Dict[str, str] = {
     "p100": "P100",
     "p150": "P150",
     "p300": "P300",
-    "galaxy": "T3K",          # Galaxy = T3K (8× WH ring)
-    "quietbox": "P150X4",     # Quietbox ≈ P150X4 workstation
-    "loudbox": "P300X2",      # Loudbox ≈ P300X2
+    "galaxy": "T3K",             # Galaxy = T3K (8× WH ring)
+    "quietbox": "P150X4",        # Quietbox (gen 1) = P150X4 (4× N150)
+    "quietbox 2": "P300X2",      # Quietbox 2 = P300X2 (2× P300 Blackhole)
+    "2 x quietbox": "P150X8",    # 2× Quietbox = P150X8 (8× N150)
+    "loudbox": "P300X2",         # Loudbox = P300X2
     "2 x galaxy": "P150X8",
 }
 
