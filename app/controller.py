@@ -365,9 +365,24 @@ class AppController:
         if options:
             self._options = options
 
-        # Run pre-flight port check + actual launch in a background thread so we
-        # never block the UI for the docker-ps call.
+        # Run pre-flight checks + actual launch in a background thread so we
+        # never block the UI for the docker-ps / stat calls.
         def _preflight_and_launch():
+            # Disk space check: warn if available space is less than model's requirement.
+            if entry.min_disk_gb:
+                try:
+                    import shutil
+                    cache_dir = Path.home() / ".cache" / "huggingface"
+                    cache_dir.mkdir(parents=True, exist_ok=True)
+                    free_gb = shutil.disk_usage(cache_dir).free / 1e9
+                    if free_gb < entry.min_disk_gb:
+                        self._emit("on_log_line",
+                                   f"⚠ Low disk space: {free_gb:.1f} GB free, "
+                                   f"{entry.min_disk_gb:.0f} GB needed for {entry.display_name} — "
+                                   f"launch may fail or be very slow")
+                except OSError:
+                    pass
+
             if self._is_port_open(port):
                 # Something is listening — check if it's one of our containers.
                 servers = _parse_running_servers()
