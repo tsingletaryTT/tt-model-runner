@@ -80,6 +80,7 @@ class ConfigPanel(Gtk.Box):
         self._arch_scan_model: str = ""       # hf_model_repo of in-flight arch scan
         self.on_dev_launch: Optional[Callable] = None  # (compat_id: str, sw_stack: str) → None
         self._arch_ctx_limit: int = 0  # model's actual max context_length from HF cache
+        self._ctx_user_edited: bool = False   # True once user has manually changed ctx
         self._build()
 
     # ------------------------------------------------------------------ build
@@ -492,6 +493,7 @@ class ConfigPanel(Gtk.Box):
         self._strip_compat.set_visible(False)
         self._dev_launch_rev.set_reveal_child(False)
         self._arch_ctx_limit = 0
+        self._ctx_user_edited = False
         self._ctx_warn_lbl.set_visible(False)
         self._scan_arch_async(entry)
 
@@ -548,7 +550,7 @@ class ConfigPanel(Gtk.Box):
                 parts.append(f"vocab {a.vocab_size:,}")
         if info.arch and info.arch.context_length:
             self._arch_ctx_limit = info.arch.context_length
-            self._check_ctx_warn()
+            self._auto_suggest_ctx()
         if info.total_bytes:
             gb = info.total_bytes / 1e9
             parts.append(f"{gb:.1f} GB cached")
@@ -603,6 +605,31 @@ class ConfigPanel(Gtk.Box):
     def _on_dev_launch_clicked(self, _btn, compat_id: str, sw: str) -> None:
         if self.on_dev_launch:
             self.on_dev_launch(compat_id, sw)
+
+    def _auto_suggest_ctx(self) -> None:
+        """When arch facts arrive, auto-snap ctx to the best option if user hasn't edited."""
+        if not self._arch_ctx_limit or self._ctx_user_edited:
+            self._check_ctx_warn()
+            return
+        ctx_entry = self._ctx_combo.get_child()
+        current = ctx_entry.get_text().strip()
+        # Only auto-snap if the current value is "default" or exceeds the model's limit
+        try:
+            current_int = int(current) if current != "default" else None
+        except ValueError:
+            current_int = None
+
+        needs_snap = (current_int is None) or (current_int > self._arch_ctx_limit)
+        if needs_snap:
+            # Pick the largest standard option that doesn't exceed model's context_length
+            best = max((v for v in _CTX_OPTIONS if v <= self._arch_ctx_limit),
+                       default=_CTX_OPTIONS[0])
+            self._inhibit_signals = True
+            ctx_entry.set_text(str(best))
+            self._inhibit_signals = False
+            self._options.max_model_len = best
+            self._update_preview()
+        self._check_ctx_warn()
 
     def _check_ctx_warn(self) -> None:
         """Show a warning if selected context length exceeds the model's max."""
@@ -714,6 +741,7 @@ class ConfigPanel(Gtk.Box):
     def _on_ctx_changed(self, entry: Gtk.Entry) -> None:
         if self._inhibit_signals:
             return
+        self._ctx_user_edited = True
         text = entry.get_text().strip()
         if text == "default":
             self._options.max_model_len = None
