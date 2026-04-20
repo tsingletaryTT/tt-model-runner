@@ -17,7 +17,7 @@ from typing import List, Optional
 import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Pango", "1.0")
-from gi.repository import Gdk, GLib, Gtk, Pango
+from gi.repository import Gdk, GLib, Gio, Gtk, Pango
 
 from app_settings import settings as _settings
 from model_catalog import ModelCatalog, ModelEntry
@@ -1399,6 +1399,11 @@ class MainPanel(Gtk.Box):
         hist_lbl.set_halign(Gtk.Align.START)
         hist_lbl.set_hexpand(True)
         hist_header.append(hist_lbl)
+        self._bench_csv_btn = Gtk.Button(label="⬇ CSV")
+        self._bench_csv_btn.add_css_class("flat")
+        self._bench_csv_btn.set_tooltip_text("Export benchmark history as CSV")
+        self._bench_csv_btn.connect("clicked", self._on_bench_export_csv)
+        hist_header.append(self._bench_csv_btn)
         self._bench_clear_btn = Gtk.Button(label="✕ Clear")
         self._bench_clear_btn.add_css_class("flat")
         self._bench_clear_btn.set_tooltip_text("Clear benchmark history")
@@ -1613,7 +1618,13 @@ class MainPanel(Gtk.Box):
             return
         try:
             path = gfile.get_path()
-            lines = [line for line, _, _ts in self._log_entries]
+            if self._show_timestamps:
+                lines = [
+                    f"{self._format_ts(ts)}  {line}"
+                    for line, _, ts in self._log_entries
+                ]
+            else:
+                lines = [line for line, _, _ts in self._log_entries]
             Path(path).write_text("\n".join(lines) + "\n")
         except Exception as exc:
             self.append_log(f"⚠ Save log failed: {exc}")
@@ -1911,6 +1922,38 @@ class MainPanel(Gtk.Box):
             )
         buf.set_text("\n".join(lines))
 
+    def _on_bench_export_csv(self, _btn) -> None:
+        import datetime
+        dialog = Gtk.FileDialog()
+        dialog.set_title("Export benchmark history as CSV")
+        ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        dialog.set_initial_name(f"tt-benchmarks-{ts}.csv")
+        dialog.save(self.get_root(), None, self._on_bench_export_csv_done, None)
+
+    def _on_bench_export_csv_done(self, dialog, result, _data) -> None:
+        import csv, io
+        try:
+            gfile = dialog.save_finish(result)
+        except Exception:
+            return
+        from app_settings import settings as _settings
+        history = list(reversed(_settings.benchmark_history or []))
+        if not history:
+            return
+        fields = [
+            "timestamp", "model_name", "device", "isl", "osl", "concurrency",
+            "mean_ttft_ms", "p95_ttft_ms", "mean_tps", "tps_decode",
+            "mean_e2el_ms", "request_throughput", "tier_pass",
+        ]
+        out = io.StringIO()
+        writer = csv.DictWriter(out, fieldnames=fields, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(history)
+        try:
+            Path(gfile.get_path()).write_text(out.getvalue())
+        except Exception as exc:
+            pass  # silent fail — user can retry
+
     def _on_bench_clear_history(self, _btn) -> None:
         from app_settings import settings as _settings
         _settings.benchmark_history = []
@@ -2158,6 +2201,20 @@ class MainWindow(Gtk.ApplicationWindow):
             entry = self._ctrl.current_entry
             model_repo = entry.hf_model_repo if entry else "default"
             self._panel.set_curl_context(port, model_repo)
+            # Send a desktop notification so users know the model is ready even if the
+            # window is hidden behind other apps.
+            self._notify_ready(entry)
+
+    def _notify_ready(self, entry) -> None:
+        """Send a desktop notification announcing the model is ready."""
+        try:
+            note = Gio.Notification.new("Model ready")
+            name = entry.display_name if entry else "Model"
+            note.set_body(f"{name} is loaded and serving requests.")
+            note.set_priority(Gio.NotificationPriority.NORMAL)
+            self.get_application().send_notification("model-ready", note)
+        except Exception:
+            pass  # notifications are best-effort
 
     def _on_device_select(self, device: str) -> None:
         """Rebuild the ad unit card pool when the user picks a different device."""
