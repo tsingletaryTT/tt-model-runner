@@ -105,6 +105,14 @@ class CompatCatalog:
         """Look up entry by id (case-insensitive)."""
         return self._by_id.get(model_id.lower())
 
+    def lookup_by_display_name(self, display_name: str) -> Optional[CompatEntry]:
+        """Look up entry by display_name (case-insensitive)."""
+        dn = display_name.lower()
+        for e in self._entries:
+            if e.display_name.lower() == dn:
+                return e
+        return None
+
     def get_for_hardware(self, device_type: str, *,
                          software: Optional[str] = None,
                          include_experimental: bool = True) -> List[CompatEntry]:

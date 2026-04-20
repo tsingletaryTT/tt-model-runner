@@ -1056,6 +1056,11 @@ class MainPanel(Gtk.Box):
             return self._config_panel.get_options()
         return None
 
+    def set_compat_info(self, compat_entry) -> None:
+        """Forward compat catalog entry to the config panel if it exists."""
+        if self._config_panel is not None:
+            self._config_panel.set_compat_info(compat_entry)
+
     def _on_scroll(self, adj):
         self._auto_scroll = adj.get_value() >= adj.get_upper() - adj.get_page_size() - 10
 
@@ -1620,6 +1625,11 @@ class MainWindow(Gtk.ApplicationWindow):
             f"  ·  {entry.inference_engine}"
         )
         self._panel.show_config(entry, self._on_options_changed)
+        # Show hardware compatibility from compat catalog if available
+        cat = self._ctrl.compat_catalog
+        if cat is not None:
+            compat = cat.lookup_by_display_name(entry.display_name)
+            self._panel.set_compat_info(compat)
 
     def _on_options_changed(self, options) -> None:
         """Relay ConfigPanel option changes to the controller (e.g. for live

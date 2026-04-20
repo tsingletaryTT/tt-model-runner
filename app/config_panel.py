@@ -139,10 +139,20 @@ class ConfigPanel(Gtk.Box):
         self._strip_arch = Gtk.Label(label="")
         self._strip_arch.add_css_class("muted")
         self._strip_arch.set_halign(Gtk.Align.START)
-        self._strip_arch.set_margin_bottom(6)
+        self._strip_arch.set_margin_bottom(2)
         self._strip_arch.set_ellipsize(Pango.EllipsizeMode.END)
         self._strip_arch.set_visible(False)
         inner.append(self._strip_arch)
+
+        # Compat row — hardware support from the TT compatibility catalog
+        # e.g. "Compat: N150 ✓  ·  N300 ✓  ·  T3K ⚠"
+        self._strip_compat = Gtk.Label(label="")
+        self._strip_compat.add_css_class("muted")
+        self._strip_compat.set_halign(Gtk.Align.START)
+        self._strip_compat.set_margin_bottom(6)
+        self._strip_compat.set_ellipsize(Pango.EllipsizeMode.END)
+        self._strip_compat.set_visible(False)
+        inner.append(self._strip_compat)
 
         inner.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
 
@@ -454,6 +464,7 @@ class ConfigPanel(Gtk.Box):
 
         # Architecture facts — kick off background scan of HF cache
         self._strip_arch.set_visible(False)
+        self._strip_compat.set_visible(False)
         self._scan_arch_async(entry)
 
         # Rebuild use-case chips
@@ -509,6 +520,26 @@ class ConfigPanel(Gtk.Box):
         if parts:
             self._strip_arch.set_text("  ·  ".join(parts))
             self._strip_arch.set_visible(True)
+
+    def set_compat_info(self, compat_entry) -> None:
+        """Show hardware compatibility from the TT compat catalog."""
+        if compat_entry is None:
+            self._strip_compat.set_visible(False)
+            return
+        parts = []
+        for c in compat_entry.compatibility:
+            if "tt-inference-server" not in c.software:
+                continue
+            if c.status == "Not Supported":
+                continue
+            hw = c.hardware.upper()
+            mark = "✓" if c.status == "Supported" else "⚠"
+            parts.append(f"{hw} {mark}")
+        if parts:
+            self._strip_compat.set_text("Compat:  " + "  ·  ".join(parts[:6]))
+            self._strip_compat.set_visible(True)
+        else:
+            self._strip_compat.set_visible(False)
 
     # ------------------------------------------------------------- use cases
 
