@@ -2286,6 +2286,8 @@ class MainWindow(Gtk.ApplicationWindow):
         else:
             # No repo found — show first-run setup guide in the welcome panel.
             GLib.idle_add(lambda: self._panel.show_welcome(setup_guide=True) or False)
+            # Still populate the ad unit with static cards so it's not stuck on "Loading…".
+            GLib.idle_add(lambda: self._refresh_ad_unit() or False)
 
         # Populate benchmark history from persisted data on startup.
         GLib.idle_add(lambda: self._panel.load_bench_history(self._ctrl.get_bench_history()) or False)
