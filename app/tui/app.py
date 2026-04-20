@@ -118,9 +118,17 @@ class TuiApp(App[None]):
         rail.update_state(state, info)
         log_pane.update_state(state, info)
 
+        # Update app title to reflect active model and state.
+        entry = self._ctrl.current_entry
+        label = state.name
+        if entry and state not in (ServerState.IDLE, ServerState.STOPPING):
+            self.title = f"TT Model Runner — {entry.display_name} [{label}]"
+        else:
+            self.title = "TT Model Runner"
+
         ready = (state == ServerState.READY)
         self._set_ready_tabs_enabled(ready)
-        if state.name in ("LAUNCHING",):
+        if state.name in ("LAUNCHING", "RUNNING"):
             self.query_one(TabbedContent).active = "logs"
         elif ready:
             self.query_one(TabbedContent).active = "logs"
