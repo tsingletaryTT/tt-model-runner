@@ -1125,6 +1125,11 @@ class MainPanel(Gtk.Box):
         if self._config_panel is not None:
             self._config_panel.set_compat_info(compat_entry)
 
+    def set_dev_launch_callback(self, cb) -> None:
+        """Set the on_dev_launch callback on the config panel."""
+        if self._config_panel is not None:
+            self._config_panel.on_dev_launch = cb
+
     def _on_scroll(self, adj):
         self._auto_scroll = adj.get_value() >= adj.get_upper() - adj.get_page_size() - 10
 
@@ -1738,6 +1743,7 @@ class MainWindow(Gtk.ApplicationWindow):
             f"  ·  {entry.inference_engine}"
         )
         self._panel.show_config(entry, self._on_options_changed)
+        self._panel.set_dev_launch_callback(self._on_dev_launch)
         # Show hardware compatibility from compat catalog if available
         cat = self._ctrl.compat_catalog
         if cat is not None:
@@ -1748,6 +1754,11 @@ class MainWindow(Gtk.ApplicationWindow):
         """Relay ConfigPanel option changes to the controller (e.g. for live
         command-preview updates or validation)."""
         self._ctrl.set_options(options)
+
+    def _on_dev_launch(self, compat_id: str, sw_stack: str) -> None:
+        """Launch a model via the tt-developer-image container."""
+        self._panel.show_logs()
+        self._ctrl.launch_dev_image(compat_id, sw_stack)
 
     def _on_repo_change(self, path: Path) -> None:
         """Forward repo path changes to the controller so it can reload the

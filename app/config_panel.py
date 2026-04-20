@@ -78,6 +78,7 @@ class ConfigPanel(Gtk.Box):
         self._preview_source: Optional[int] = None
         self._inhibit_signals: bool = False   # suppress change callbacks while updating UI
         self._arch_scan_model: str = ""       # hf_model_repo of in-flight arch scan
+        self.on_dev_launch: Optional[Callable] = None  # (compat_id: str, sw_stack: str) → None
         self._build()
 
     # ------------------------------------------------------------------ build
@@ -392,6 +393,25 @@ class ConfigPanel(Gtk.Box):
         self._preview_view.set_size_request(-1, 60)
         inner.append(self._preview_view)
 
+        # --- Developer Image launch section (revealed when compat catalog shows tt-forge/tt-metal)
+        self._dev_launch_rev = Gtk.Revealer()
+        self._dev_launch_rev.set_transition_type(Gtk.RevealerTransitionType.SLIDE_DOWN)
+        dev_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        dev_box.set_margin_top(8)
+        dev_box.set_margin_bottom(4)
+        dev_sep = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
+        dev_box.append(dev_sep)
+        dev_hdr = Gtk.Label(label="ALSO AVAILABLE VIA DEVELOPER IMAGE")
+        dev_hdr.add_css_class("muted")
+        dev_hdr.set_halign(Gtk.Align.START)
+        dev_hdr.set_margin_top(4)
+        dev_box.append(dev_hdr)
+        self._dev_btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self._dev_btn_box.set_margin_bottom(4)
+        dev_box.append(self._dev_btn_box)
+        self._dev_launch_rev.set_child(dev_box)
+        inner.append(self._dev_launch_rev)
+
         scroll.set_child(inner)
         self.append(scroll)
 
@@ -465,6 +485,7 @@ class ConfigPanel(Gtk.Box):
         # Architecture facts — kick off background scan of HF cache
         self._strip_arch.set_visible(False)
         self._strip_compat.set_visible(False)
+        self._dev_launch_rev.set_reveal_child(False)
         self._scan_arch_async(entry)
 
         # Rebuild use-case chips
@@ -526,13 +547,14 @@ class ConfigPanel(Gtk.Box):
             self._strip_arch.set_visible(True)
 
     def set_compat_info(self, compat_entry) -> None:
-        """Show hardware compatibility from the TT compat catalog.
+        """Show hardware compatibility and dev image options from the TT compat catalog.
 
         Also fills in model description from compat catalog when the local
         data/model-descriptions.json doesn't have one.
         """
         if compat_entry is None:
             self._strip_compat.set_visible(False)
+            self._dev_launch_rev.set_reveal_child(False)
             return
         # Fill in description from compat catalog if not already shown
         if not self._strip_desc.get_visible() and compat_entry.model_description:
@@ -553,6 +575,24 @@ class ConfigPanel(Gtk.Box):
             self._strip_compat.set_visible(True)
         else:
             self._strip_compat.set_visible(False)
+        # Dev image launch buttons (tt-forge / tt-metal stacks)
+        while child := self._dev_btn_box.get_first_child():
+            self._dev_btn_box.remove(child)
+        dev_stacks = []
+        for c in compat_entry.compatibility:
+            for sw in ("tt-forge", "tt-metal"):
+                if sw in c.software and sw not in dev_stacks:
+                    dev_stacks.append(sw)
+        for sw in dev_stacks:
+            btn = Gtk.Button(label=f"▶  {sw}")
+            btn.set_tooltip_text(f"Launch via tt-developer-image using {sw}")
+            btn.connect("clicked", self._on_dev_launch_clicked, compat_entry.id, sw)
+            self._dev_btn_box.append(btn)
+        self._dev_launch_rev.set_reveal_child(bool(dev_stacks))
+
+    def _on_dev_launch_clicked(self, _btn, compat_id: str, sw: str) -> None:
+        if self.on_dev_launch:
+            self.on_dev_launch(compat_id, sw)
 
     # ------------------------------------------------------------- use cases
 
