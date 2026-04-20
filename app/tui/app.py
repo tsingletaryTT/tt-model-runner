@@ -60,6 +60,7 @@ class TuiApp(App[None]):
         Binding("ctrl+t",  "hw_reset",         "HW Reset",  show=False),
         Binding("ctrl+u",  "copy_curl",        "Curl",      show=False),
         Binding("ctrl+g",  "git_pull",         "Git pull",  show=False),
+        Binding("ctrl+l",  "copy_log",         "Copy log",  show=False),
     ]
 
     def compose(self) -> ComposeResult:
@@ -340,6 +341,17 @@ class TuiApp(App[None]):
         """Refresh chip telemetry (tt-smi -s)."""
         self._ctrl.refresh_hardware_status()
         self.notify("Refreshing chip telemetry…", timeout=3)
+
+    def action_copy_log(self) -> None:
+        """Copy all visible log lines to clipboard (Ctrl+L)."""
+        log_pane = self.query_one(LogPane)
+        lines = [line for line, level in log_pane._all_lines
+                 if log_pane._line_visible(line, level)]
+        if not lines:
+            self.notify("No log lines to copy", severity="warning")
+            return
+        self.copy_to_clipboard("\n".join(lines))
+        self.notify(f"Copied {len(lines)} lines to clipboard", title="Log copied")
 
     def action_git_pull(self) -> None:
         """git pull the configured server repo (Ctrl+G)."""
