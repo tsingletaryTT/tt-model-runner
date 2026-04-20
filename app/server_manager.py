@@ -176,6 +176,19 @@ def _make_docker_shim(shim_dir: Path) -> None:
     shim.chmod(shim.stat().st_mode | _stat.S_IEXEC | _stat.S_IXGRP | _stat.S_IXOTH)
 
 
+def _scrub_env_key(env_path: Path, key: str) -> None:
+    """Remove all lines matching KEY=... from a .env file (self-healing cleanup)."""
+    if not env_path.exists():
+        return
+    try:
+        lines = env_path.read_text().splitlines(keepends=True)
+        cleaned = [l for l in lines if not l.strip().startswith(f"{key}=")]
+        if len(cleaned) != len(lines):
+            env_path.write_text("".join(cleaned))
+    except OSError:
+        pass
+
+
 class ServerManager:
     # Docker image-not-found patterns — capture the full image reference
     _IMAGE_NOT_FOUND_RE = re.compile(
@@ -284,11 +297,17 @@ class ServerManager:
         if config.hf_token:
             env["HF_TOKEN"] = config.hf_token
 
+        # Scrub any stale CACHE_ROOT line from the server repo's .env.
+        # Earlier tt-model-runner versions wrote CACHE_ROOT there; run.py's
+        # custom load_dotenv() unconditionally overrides os.environ with every
+        # .env value, so having it there causes a Permission denied crash on the
+        # host when get_default_workflow_root_log_dir() tries to mkdir a
+        # container-only path.  We remove it here so old installs self-heal.
+        _scrub_env_key(config.repo_path / ".env", "CACHE_ROOT")
+
         # Inject CACHE_ROOT into every 'docker run' call via a shim wrapper.
-        # We cannot write CACHE_ROOT to .env (run.py's custom load_dotenv()
-        # unconditionally overrides os.environ, putting the container-side path
-        # into the host process and breaking its log directory creation).
-        # The shim prepends -e CACHE_ROOT=<container_path> to docker run;
+        # run_docker_server.py sets CACHE_ROOT for media/forge but not vLLM;
+        # the shim intercepts docker run and prepends -e CACHE_ROOT=<container_path>.
         # Docker's -e flag overrides --env-file so the container always wins.
         from app_settings import settings as _app_settings
         shim_dir = Path(_app_settings.cache_root_path).expanduser() / ".docker-shim"

@@ -2026,7 +2026,7 @@ class MainPanel(Gtk.Box):
         buf_x, buf_y = self._log_view.window_to_buffer_coords(
             Gtk.TextWindowType.WIDGET, int(x), int(y)
         )
-        it, _ = self._log_view.get_iter_at_position(buf_x, buf_y)
+        _, it, _ = self._log_view.get_iter_at_position(buf_x, buf_y)
         self._log_ctx_iter_offset = it.get_offset()
         self._log_ctx_popover.popup()
 
