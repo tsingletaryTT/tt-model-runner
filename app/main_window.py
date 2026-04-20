@@ -2031,7 +2031,7 @@ class MainPanel(Gtk.Box):
         # Convert click position from log_view coords → window coords so the
         # popover anchor rectangle is correct relative to its new parent.
         if root:
-            _, win_x, win_y = self._log_view.translate_coordinates(root, x, y)
+            win_x, win_y = self._log_view.translate_coordinates(root, x, y)
         else:
             win_x, win_y = x, y
         r = Gdk.Rectangle()
