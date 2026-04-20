@@ -87,6 +87,7 @@ class TuiApp(App[None]):
         self._ctrl.on_hardware_status = self._on_hardware_status
         self._ctrl.on_running_servers = self._on_running_servers
         self._ctrl.on_compat_catalog_loaded = self._on_compat_catalog_loaded
+        self._ctrl.on_docker_images = lambda _imgs: None  # TUI has no Docker panel
 
         self._set_ready_tabs_enabled(False)
 
