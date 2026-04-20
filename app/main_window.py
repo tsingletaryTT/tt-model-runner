@@ -2280,10 +2280,9 @@ class MainWindow(Gtk.ApplicationWindow):
     """
 
     def __init__(self, controller, **kwargs):
-        # Cap saved dimensions so a stale value from a larger/maximized session
-        # never starts the window larger than any reasonable single monitor.
-        safe_w = min(_settings.window_width,  3840)
-        safe_h = min(_settings.window_height, 2160)
+        safe_w, safe_h = self._clamp_to_workarea(
+            _settings.window_width, _settings.window_height
+        )
         super().__init__(
             title="TT Model Runner",
             default_width=safe_w,
@@ -2321,6 +2320,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.set_child(outer)
         self._outer = outer
         self.connect("close-request", self._on_close)
+        self.connect("map", self._on_map)
         if _settings.window_maximized:
             self.maximize()
 
@@ -2811,6 +2811,62 @@ class MainWindow(Gtk.ApplicationWindow):
         """Forward repo path changes to the controller so it can reload the
         model catalog."""
         self._ctrl.load_repo(path)
+
+    @staticmethod
+    def _clamp_to_workarea(w: int, h: int) -> tuple[int, int]:
+        """Return (w, h) clamped to the primary monitor's work area.
+
+        The work area excludes space reserved by system panels/docks.
+        Falls back to full monitor geometry minus a 60 px margin when the
+        backend doesn't report a work area (e.g. some Wayland compositors).
+        Hard-caps at 3840×2160 to guard against stale values from larger
+        displays.
+        """
+        w = min(w, 3840)
+        h = min(h, 2160)
+        display = Gdk.Display.get_default()
+        if not display:
+            return w, h
+        monitors = display.get_monitors()
+        if monitors.get_n_items() == 0:
+            return w, h
+        monitor = monitors.get_item(0)
+        try:
+            workarea = monitor.get_workarea()
+            return min(w, workarea.width), min(h, workarea.height)
+        except AttributeError:
+            pass
+        geo = monitor.get_geometry()
+        return min(w, geo.width), min(h, geo.height - 60)
+
+    def _on_map(self, _win) -> None:
+        """After the window is first shown, re-clamp to the work area.
+
+        Bismuth (and other tiling WMs) resize windows after they open, which
+        can push the window behind the panel.  We re-query the work area via
+        the actual surface's monitor and resize down if needed.
+        """
+        if self.is_maximized():
+            return
+        surface = self.get_surface()
+        display = self.get_display()
+        if not (surface and display):
+            return
+        try:
+            monitor = display.get_monitor_at_surface(surface)
+        except Exception:
+            return
+        if not monitor:
+            return
+        try:
+            workarea = monitor.get_workarea()
+            wa_w, wa_h = workarea.width, workarea.height
+        except AttributeError:
+            geo = monitor.get_geometry()
+            wa_w, wa_h = geo.width, geo.height - 60
+        cur_w, cur_h = self.get_width(), self.get_height()
+        if cur_w > wa_w or cur_h > wa_h:
+            self.set_default_size(min(cur_w, wa_w), min(cur_h, wa_h))
 
     def _on_close(self, win) -> bool:
         """Persist window dimensions and stop the server on close."""
