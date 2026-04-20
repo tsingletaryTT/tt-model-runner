@@ -20,9 +20,25 @@ _STATE_PILLS = {
     "PULLING_IMAGE": ("● PULLING",  "yellow"),
     "LOADING":       ("● LOADING",  "cyan"),
     "READY":         ("● READY",    "green"),
+    "RUNNING":       ("● RUNNING",  "cyan"),
+    "DONE":          ("● DONE",     "green"),
     "ERROR":         ("● ERROR",    "red"),
     "STOPPING":      ("● STOPPING", "yellow"),
 }
+
+
+def _fmt_size(param_count) -> str:
+    if not param_count:
+        return ""
+    if param_count >= 1e12:
+        return f"{param_count/1e12:.0f}T"
+    if param_count >= 1e9:
+        v = param_count / 1e9
+        return f"{v:.0f}B" if v >= 10 else f"{v:.1f}B"
+    if param_count >= 1e6:
+        v = param_count / 1e6
+        return f"{v:.0f}M" if v >= 10 else f"{v:.1f}M"
+    return ""
 
 
 class ModelRail(Widget):
@@ -76,7 +92,9 @@ class ModelRail(Widget):
         lv = self.query_one("#model-list", ListView)
         lv.clear()
         for entry in self._entries:
-            item = ListItem(Label(f"{entry.display_name}\n  {entry.device_type}"))
+            size = _fmt_size(getattr(entry, "param_count", None))
+            suffix = f"  {size}" if size else ""
+            item = ListItem(Label(f"{entry.display_name}{suffix}\n  {entry.device_type}"))
             item._entry = entry
             lv.append(item)
 
@@ -87,7 +105,7 @@ class ModelRail(Widget):
             f"[{color}]{pill_text}[/{color}]"
         )
         btn = self.query_one("#launch-btn", Button)
-        if state.name in ("IDLE", "ERROR"):
+        if state.name in ("IDLE", "ERROR", "DONE"):
             btn.label = "▶ Launch"
             btn.variant = "success"
         elif state.name == "STOPPING":
