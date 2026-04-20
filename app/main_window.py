@@ -905,12 +905,28 @@ class MainPanel(Gtk.Box):
 
         # ── Welcome page ─────────────────────────────────────────────────────
         # Shown on startup before the user selects a model.
-        welcome_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        welcome_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         welcome_box.set_valign(Gtk.Align.CENTER)
         welcome_box.set_halign(Gtk.Align.CENTER)
-        welcome_lbl = Gtk.Label(label="Select a model to configure and launch")
-        welcome_lbl.add_css_class("muted")
-        welcome_box.append(welcome_lbl)
+        welcome_box.set_margin_start(40); welcome_box.set_margin_end(40)
+        self._welcome_primary = Gtk.Label(label="Select a model to configure and launch")
+        self._welcome_primary.add_css_class("muted")
+        welcome_box.append(self._welcome_primary)
+        self._welcome_setup = Gtk.Label()
+        self._welcome_setup.set_markup(
+            "<b>Getting started</b>\n\n"
+            "1. Clone the inference server repo:\n"
+            "   <tt>git clone https://github.com/tenstorrent/tt-inference-server\n"
+            "   ~/code/tt-inference-server</tt>\n\n"
+            "2. Set the path above in the ⚙ repo field, or it will be found automatically.\n\n"
+            "3. Set your HuggingFace token:\n"
+            "   <tt>export HF_TOKEN=hf_...</tt>\n\n"
+            "4. Select a model from the sidebar and click Launch."
+        )
+        self._welcome_setup.set_justify(Gtk.Justification.LEFT)
+        self._welcome_setup.set_halign(Gtk.Align.START)
+        self._welcome_setup.set_visible(False)
+        welcome_box.append(self._welcome_setup)
         self._stack.add_named(welcome_box, "welcome")
 
         # ── Config page ───────────────────────────────────────────────────────
@@ -1150,8 +1166,10 @@ class MainPanel(Gtk.Box):
 
     # ---------------------------------------------------------------- stack navigation
 
-    def show_welcome(self) -> None:
-        """Switch the main content area to the welcome splash page."""
+    def show_welcome(self, setup_guide: bool = False) -> None:
+        """Switch to the welcome splash. Pass setup_guide=True to show first-run instructions."""
+        self._welcome_primary.set_visible(not setup_guide)
+        self._welcome_setup.set_visible(setup_guide)
         self._stack.set_visible_child_name("welcome")
 
     def show_config(self, entry, on_options_changed) -> None:
@@ -1635,6 +1653,9 @@ class MainWindow(Gtk.ApplicationWindow):
         if repo_path:
             self._sidebar._repo_entry.set_text(str(repo_path))
             GLib.idle_add(self._ctrl.load_repo, repo_path)
+        else:
+            # No repo found — show first-run setup guide in the welcome panel.
+            GLib.idle_add(lambda: self._panel.show_welcome(setup_guide=True) or False)
 
         # Populate benchmark history from persisted data on startup.
         GLib.idle_add(lambda: self._panel.load_bench_history(self._ctrl.get_bench_history()) or False)
