@@ -53,6 +53,7 @@ class TuiApp(App[None]):
         Binding("4", "switch_tab('bench')",   "Bench",   show=False),
         Binding("[",       "toggle_rail",      "Rail",      show=False),
         Binding("r",       "reconnect",        "Reconnect", show=False),
+        Binding("ctrl+r",  "restart_server",   "Restart",   show=False),
         Binding("ctrl+h",  "hw_refresh",       "HW",        show=False),
         Binding("ctrl+t",  "hw_reset",         "HW Reset",  show=False),
     ]
@@ -211,7 +212,7 @@ class TuiApp(App[None]):
 
     def action_launch_stop(self) -> None:
         from server_manager import ServerState
-        if self._ctrl.state in (ServerState.IDLE, ServerState.ERROR):
+        if self._ctrl.state in (ServerState.IDLE, ServerState.ERROR, ServerState.DONE):
             self._do_launch_from_rail()
         else:
             self._ctrl.stop()
@@ -293,6 +294,15 @@ class TuiApp(App[None]):
         self._pending_reconnect = None
         self.query_one(LogPane).append_line(f"⟳ Reconnecting to {container_name} on port {port}…")
         self._ctrl.adopt_running_server(port, container_name)
+
+    def action_restart_server(self) -> None:
+        """Restart the server with the same model and options (Ctrl+R)."""
+        from server_manager import ServerState
+        if self._ctrl.state not in (ServerState.READY, ServerState.ERROR):
+            self.notify("Restart only available when server is READY or ERROR",
+                        severity="warning")
+            return
+        self._ctrl.restart()
 
     def action_hw_refresh(self) -> None:
         """Refresh chip telemetry (tt-smi -s)."""
