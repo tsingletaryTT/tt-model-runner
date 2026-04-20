@@ -2311,7 +2311,12 @@ class MainWindow(Gtk.ApplicationWindow):
             on_docker_refresh=self._ctrl.scan_docker_images_async,
             on_docker_prune=self._ctrl.prune_docker_images,
         )
-        paned.set_start_child(self._sidebar)
+        sidebar_scroll = Gtk.ScrolledWindow()
+        sidebar_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        sidebar_scroll.set_vexpand(True)
+        sidebar_scroll.set_propagate_natural_height(False)
+        sidebar_scroll.set_child(self._sidebar)
+        paned.set_start_child(sidebar_scroll)
         paned.set_resize_start_child(False)
 
         self._panel = MainPanel()
