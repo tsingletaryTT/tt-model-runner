@@ -113,6 +113,13 @@ progressbar progress { background-color: @tt_accent; border-radius: 3px; }
     border-color: @tt_accent; font-weight: bold;
 }
 .type-chip:hover { border-color: @tt_accent; }
+
+/* Running-server detection banner (replaces Gtk.InfoBar which lost get_content_area in GTK4) */
+.running-server-banner {
+    background-color: @tt_bg_dark;
+    border-bottom: 1px solid @tt_accent;
+    padding: 4px 8px;
+}
 """
 
 

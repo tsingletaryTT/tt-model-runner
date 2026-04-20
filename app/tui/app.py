@@ -59,6 +59,7 @@ class TuiApp(App[None]):
         Binding("ctrl+h",  "hw_refresh",       "HW",        show=False),
         Binding("ctrl+t",  "hw_reset",         "HW Reset",  show=False),
         Binding("ctrl+u",  "copy_curl",        "Curl",      show=False),
+        Binding("ctrl+b",  "open_browser",     "Browser",   show=False),
         Binding("ctrl+g",  "git_pull",         "Git pull",  show=False),
         Binding("ctrl+l",  "copy_log",         "Copy log",  show=False),
     ]
@@ -328,6 +329,19 @@ class TuiApp(App[None]):
         )
         self.copy_to_clipboard(cmd)
         self.notify(f"Copied curl for port {port}", title="Clipboard")
+
+    def action_open_browser(self) -> None:
+        """Open the running server's API docs in the default browser (Ctrl+B)."""
+        from server_manager import ServerState
+        if self._ctrl.state != ServerState.READY:
+            self.notify("Server must be READY to open in browser", severity="warning")
+            return
+        import webbrowser
+        rail = self.query_one(ModelRail)
+        port = rail.port_value or "8000"
+        url = f"http://localhost:{port}/docs"
+        webbrowser.open(url)
+        self.notify(f"Opening {url}", title="Browser")
 
     def action_restart_server(self) -> None:
         """Restart the server with the same model and options (Ctrl+R)."""

@@ -28,6 +28,11 @@ class BenchPane(Widget):
         height: 3;
         layout: horizontal;
     }
+    #bench-stats {
+        color: $text-muted;
+        height: 1;
+        padding: 0 1;
+    }
     #bench-live-log {
         height: 1fr;
         border: solid $primary-darken-2;
@@ -36,6 +41,11 @@ class BenchPane(Widget):
         height: 10;
     }
     """
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        # Local mirror used to compute aggregate stats without re-reading the controller.
+        self._result_rows: list = []  # list of dicts with mean_tps, mean_ttft_ms, tier_pass
 
     def compose(self) -> ComposeResult:
         with Widget(id="bench-config-row"):
@@ -47,6 +57,7 @@ class BenchPane(Widget):
         with Widget(id="bench-hist-row"):
             yield Button("⬇ Export CSV", id="bench-csv-btn", variant="default")
             yield Button("✕ Clear History", id="bench-clear-btn", variant="default")
+        yield Label("", id="bench-stats", markup=True)
         yield Label("LIVE OUTPUT")
         yield RichLog(id="bench-live-log", highlight=False, markup=False)
         yield Label("RESULTS")
@@ -61,6 +72,7 @@ class BenchPane(Widget):
         """Pre-populate results table from persisted history (newest first)."""
         table = self.query_one("#bench-results", DataTable)
         table.clear()
+        self._result_rows = []
         for r in history:
             icon = {"PASS": "✓", "BELOW_TARGET": "⚠", "FAIL": "✗"}.get(r.get("tier_pass", ""), "?")
             table.add_row(
@@ -74,6 +86,12 @@ class BenchPane(Widget):
                 f"{r.get('request_throughput', 0):.2f}",
                 r.get("timestamp", "")[:16],
             )
+            self._result_rows.append({
+                "mean_tps": r.get("mean_tps", 0) or 0,
+                "mean_ttft_ms": r.get("mean_ttft_ms", 0) or 0,
+                "tier_pass": r.get("tier_pass", ""),
+            })
+        self._update_stats()
 
     def append_progress(self, line: str) -> None:
         self.query_one("#bench-live-log", RichLog).write(line)
@@ -94,6 +112,12 @@ class BenchPane(Widget):
             f"{result.request_throughput:.2f}",
             result.timestamp,
         )
+        self._result_rows.append({
+            "mean_tps": result.mean_tps or 0,
+            "mean_ttft_ms": result.mean_ttft_ms or 0,
+            "tier_pass": result.tier_pass,
+        })
+        self._update_stats()
 
     def set_running(self, running: bool) -> None:
         """Toggle running state: disable/re-enable button and update label."""
@@ -158,10 +182,33 @@ class BenchPane(Widget):
         except OSError as exc:
             self.notify(f"Export failed: {exc}", severity="error")
 
+    def _update_stats(self) -> None:
+        """Recompute and display aggregate stats from all stored results."""
+        try:
+            stats_lbl = self.query_one("#bench-stats", Label)
+        except Exception:
+            return
+        if not self._result_rows:
+            stats_lbl.update("")
+            return
+        tps_vals  = [r["mean_tps"]     for r in self._result_rows if r["mean_tps"] > 0]
+        ttft_vals = [r["mean_ttft_ms"] for r in self._result_rows if r["mean_ttft_ms"] > 0]
+        passes    = sum(1 for r in self._result_rows if r["tier_pass"] == "PASS")
+        n = len(self._result_rows)
+        parts = [f"[dim]{n} run{'s' if n != 1 else ''}[/dim]"]
+        if tps_vals:
+            parts.append(f"best TPS [bold]{max(tps_vals):.1f}[/bold]")
+        if ttft_vals:
+            parts.append(f"best TTFT [bold]{min(ttft_vals):.0f} ms[/bold]")
+        parts.append(f"pass rate [bold]{passes}/{n}[/bold]")
+        stats_lbl.update("  ·  ".join(parts))
+
     def _do_clear_history(self) -> None:
         app_ctrl = getattr(self.app, "_ctrl", None)
         if not app_ctrl:
             return
         app_ctrl.clear_bench_history()
+        self._result_rows = []
         self.query_one("#bench-results", DataTable).clear()
+        self._update_stats()
         self.notify("Benchmark history cleared")

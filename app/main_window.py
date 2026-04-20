@@ -2205,7 +2205,7 @@ class MainWindow(Gtk.ApplicationWindow):
             **kwargs,
         )
         self._ctrl = controller
-        self._running_server_bar: Optional[Gtk.InfoBar] = None
+        self._running_server_bar: Optional[Gtk.Box] = None
 
         # Outer vertical box: optional running-server banner + paned content
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
@@ -2394,27 +2394,40 @@ class MainWindow(Gtk.ApplicationWindow):
         extra = f"  (+ {len(servers) - 1} more)" if len(servers) > 1 else ""
         port = server.port or "8000"
 
-        bar = Gtk.InfoBar()
-        bar.set_message_type(Gtk.MessageType.INFO)
-        bar.set_show_close_button(True)
-        content = bar.get_content_area()
+        bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        bar.add_css_class("running-server-banner")
+        bar.set_margin_start(4)
+        bar.set_margin_end(4)
+        bar.set_margin_top(2)
+        bar.set_margin_bottom(2)
+
         lbl = Gtk.Label()
         lbl.set_markup(
             f"<b>Running server detected</b>  ·  {server.container_name}  ·  "
             f"port {port}  ·  {server.running_for}{extra}"
         )
         lbl.set_ellipsize(Pango.EllipsizeMode.END)
-        content.append(lbl)
-        reconnect_btn = bar.add_button("Reconnect", Gtk.ResponseType.ACCEPT)
+        lbl.set_hexpand(True)
+        lbl.set_halign(Gtk.Align.START)
+        bar.append(lbl)
+
+        reconnect_btn = Gtk.Button(label="Reconnect")
         reconnect_btn.add_css_class("suggested-action")
+        reconnect_btn.connect("clicked", lambda _: (
+            self._do_reconnect(port, server.container_name),
+            self._outer.remove(bar),
+            setattr(self, "_running_server_bar", None),
+        ))
+        bar.append(reconnect_btn)
 
-        def _on_response(b, resp):
-            if resp == Gtk.ResponseType.ACCEPT:
-                self._do_reconnect(port, server.container_name)
-            self._outer.remove(b)
-            self._running_server_bar = None
+        close_btn = Gtk.Button(label="✕")
+        close_btn.add_css_class("flat")
+        close_btn.connect("clicked", lambda _: (
+            self._outer.remove(bar),
+            setattr(self, "_running_server_bar", None),
+        ))
+        bar.append(close_btn)
 
-        bar.connect("response", _on_response)
         # Insert banner at top (before the paned widget)
         self._outer.prepend(bar)
         self._running_server_bar = bar

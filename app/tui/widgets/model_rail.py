@@ -3,6 +3,8 @@
 """ModelRail — collapsible left sidebar for the Textual TUI."""
 from __future__ import annotations
 
+import socket
+import threading
 from typing import Callable, List, Optional, TYPE_CHECKING
 
 from textual.app import ComposeResult
@@ -62,6 +64,18 @@ class ModelRail(Widget):
     #hw-strip {
         color: $text-muted;
     }
+    #port-row {
+        height: 3;
+        layout: horizontal;
+    }
+    #port-input {
+        width: 1fr;
+    }
+    #port-dot {
+        width: 2;
+        content-align: center middle;
+        color: $text-muted;
+    }
     """
 
     BINDINGS = [
@@ -84,6 +98,7 @@ class ModelRail(Widget):
         self._compat_entries: list = []  # (display_name, compat_entry, sw_stack) tuples
         self._catalog = None
         self._cached_repos: set = set()  # HF repos with local cache snapshots
+        self._port_check_timer = None   # pending debounce timer handle
 
     def compose(self) -> ComposeResult:
         yield Static("[b]TT Model Runner[/b]", markup=True)
@@ -99,7 +114,9 @@ class ModelRail(Widget):
         yield ListView(id="discover-list")
         yield Static("", id="hw-strip", markup=True)
         yield Label("Port:", classes="rail-section-label")
-        yield Input(value="8000", id="port-input", placeholder="8000")
+        with Widget(id="port-row"):
+            yield Input(value="8000", id="port-input", placeholder="8000")
+            yield Static("●", id="port-dot")
         yield Button("▶ Launch", id="launch-btn", variant="success")
 
     def load_catalog(self, catalog, compatible_devices: List[str]) -> None:
@@ -290,6 +307,7 @@ class ModelRail(Widget):
             self.query_one("#port-input", Input).value = self.port_value
         except Exception:
             pass
+        self._schedule_port_check(self.port_value)
 
     def _apply_search(self, search: str) -> None:
         lv = self.query_one("#model-list", ListView)
@@ -329,6 +347,49 @@ class ModelRail(Widget):
                     _settings.save()
                 except Exception:
                     pass
+                self._schedule_port_check(val)
+
+    def _schedule_port_check(self, port_str: str) -> None:
+        """Debounce port availability check: run 400 ms after last keystroke."""
+        if self._port_check_timer is not None:
+            try:
+                self._port_check_timer.stop()
+            except Exception:
+                pass
+        self._port_check_timer = self.set_timer(
+            0.4, lambda: self._run_port_check(port_str)
+        )
+
+    def _run_port_check(self, port_str: str) -> None:
+        """Background socket check; update dot on main thread via call_from_thread."""
+        self._port_check_timer = None
+
+        def _check():
+            try:
+                port = int(port_str)
+            except ValueError:
+                return
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.settimeout(0.3)
+                result = s.connect_ex(("127.0.0.1", port))
+                s.close()
+                free = result != 0
+            except Exception:
+                free = True
+            self.app.call_from_thread(self._update_port_dot, free)
+
+        threading.Thread(target=_check, daemon=True).start()
+
+    def _update_port_dot(self, free: bool) -> None:
+        try:
+            dot = self.query_one("#port-dot", Static)
+            if free:
+                dot.update("[green]●[/green]")
+            else:
+                dot.update("[red]●[/red]")
+        except Exception:
+            pass
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "launch-btn":
