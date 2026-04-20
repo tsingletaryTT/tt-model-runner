@@ -741,6 +741,8 @@ class MainPanel(Gtk.Box):
         self._pulse_source: Optional[int] = None
         self._log_entries: list = []        # (line_text, level_str) tuples
         self._hidden_levels: set = set()
+        self._uptime_start: Optional[float] = None
+        self._uptime_timer: Optional[int] = None
         self._build()
 
     def _build(self):
@@ -757,6 +759,12 @@ class MainPanel(Gtk.Box):
         self._banner_info.set_halign(Gtk.Align.START)
         self._banner_info.set_ellipsize(Pango.EllipsizeMode.END)
         banner.append(self._banner_info)
+
+        # Uptime counter — visible when READY
+        self._uptime_label = Gtk.Label(label="")
+        self._uptime_label.add_css_class("muted")
+        self._uptime_label.set_visible(False)
+        banner.append(self._uptime_label)
 
         # "Restart" button — visible when READY or ERROR (and previous entry exists)
         self._restart_btn = Gtk.Button(label="↺")
@@ -1211,6 +1219,34 @@ class MainPanel(Gtk.Box):
         if state == ServerState.READY:
             self._progress_bar.set_fraction(1.0)
             GLib.timeout_add(2000, lambda: self._progress_rev.set_reveal_child(False) or False)
+            import time as _time
+            self._uptime_start = _time.monotonic()
+            self._uptime_label.set_visible(True)
+            self._uptime_label.set_text("↑ 0s")
+            if self._uptime_timer is None:
+                self._uptime_timer = GLib.timeout_add(5000, self._tick_uptime)
+        else:
+            self._uptime_label.set_visible(False)
+            if self._uptime_timer is not None:
+                GLib.source_remove(self._uptime_timer)
+                self._uptime_timer = None
+            self._uptime_start = None
+
+    def _tick_uptime(self) -> bool:
+        """Update the uptime label every 5 s while READY."""
+        import time as _time
+        if self._uptime_start is None:
+            self._uptime_timer = None
+            return False
+        elapsed = int(_time.monotonic() - self._uptime_start)
+        if elapsed < 60:
+            self._uptime_label.set_text(f"↑ {elapsed}s")
+        elif elapsed < 3600:
+            self._uptime_label.set_text(f"↑ {elapsed // 60}m")
+        else:
+            h, m = divmod(elapsed // 60, 60)
+            self._uptime_label.set_text(f"↑ {h}h {m}m")
+        return True  # keep firing
 
     def _pulse_tick(self) -> bool:
         self._progress_bar.pulse()
