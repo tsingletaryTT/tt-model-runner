@@ -892,6 +892,7 @@ class Sidebar(Gtk.Box):
 
 _LOG_LEVELS_ORDERED = ["DEBUG", "INFO", "WARN", "ERROR"]
 _MAX_LOG_ENTRIES = 5000
+_LOG_TRIM_TO = 4800  # target size after overflow; gap prevents rebuild on every new line
 
 
 class AdUnit(Gtk.Box):
@@ -1691,10 +1692,13 @@ class MainPanel(Gtk.Box):
         import time as _time
         level = self._detect_level(line)
         ts = _time.time()
-        # Store (capped at _MAX_LOG_ENTRIES)
+        # Store (capped at _MAX_LOG_ENTRIES); keep buffer in sync on overflow.
         self._log_entries.append((line, level, ts))
         if len(self._log_entries) > _MAX_LOG_ENTRIES:
-            self._log_entries = self._log_entries[-_MAX_LOG_ENTRIES:]
+            # Trim down to _LOG_TRIM_TO so the next 200 lines skip the rebuild.
+            del self._log_entries[:len(self._log_entries) - _LOG_TRIM_TO]
+            self._rebuild_log_buffer()
+            return  # _rebuild_log_buffer already processed the new entry
         # Only insert if this level isn't hidden and matches any active search filter
         if self._line_visible(line, level):
             self._insert_line_to_buffer(line, level, ts)

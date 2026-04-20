@@ -64,6 +64,13 @@ so the controller has no GTK dependency.
       └──────────── STOPPING ◄──────────────────┘           │
       ▲                                                      │
       └──────────── ERROR ◄─────────────────────────────────┘
+      ▲
+      └──────────── DONE   ← dev-image script exited 0
+      ▲
+      └────────────── RUNNING ← dev-image script executing
+
+Views treat RUNNING like LOADING (show logs, lock sidebar).
+Views treat DONE like IDLE (unlock sidebar, keep logs).
 
 ## Adding a new feature to both UIs
 
@@ -96,6 +103,13 @@ so the controller has no GTK dependency.
       ghcr_resolver.py   — Docker tag resolution
       docker_images.py   — Local Docker image listing
       app_settings.py    — ~/.config/tt-runner-gui/settings.json
+      compat_catalog.py  — Fetch/cache Tenstorrent compatibility.json (222 models, 24 h TTL)
+      ad_facts.py        — Did-you-know card pool + model recommendation logic for AdUnit
+      dev_image_launcher.py — Docker-based launcher for tt-forge/tt-metal models via tt-developer-image
+    data/
+      did-you-know.json  — 36 rotating educational cards shown in AdUnit
+      model-classifications.json — Task/category tags for models
+      model-descriptions.json    — Descriptions for model catalog entries
     tests/
       test_controller_contract.py  — ViewContract ABC, GtkViewStub, TuiViewStub
       test_controller.py           — AppController unit tests (NullDispatch)
