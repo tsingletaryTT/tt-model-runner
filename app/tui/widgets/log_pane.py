@@ -4,12 +4,12 @@
 from __future__ import annotations
 
 import re
-from typing import List, Set, Tuple
+from typing import List, Optional, Set, Tuple
 
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.widget import Widget
-from textual.widgets import Label, ProgressBar, RichLog, Static
+from textual.widgets import Input, Label, ProgressBar, RichLog, Static
 
 _LEVEL_RE = re.compile(r'\b(ERROR|CRITICAL|WARN|WARNING|INFO|DEBUG)\b')
 
@@ -30,7 +30,7 @@ def _detect_level(line: str) -> str:
 
 
 class LogPane(Widget):
-    """Logs tab: live server output with loading status widgets."""
+    """Logs tab: live server output with log level filtering and text search."""
 
     DEFAULT_CSS = """
     LogPane {
@@ -64,6 +64,14 @@ class LogPane(Widget):
         width: 1fr;
         padding: 0 1;
     }
+    #log-search-row {
+        height: 1;
+        layout: horizontal;
+        display: none;
+    }
+    #log-search-input {
+        width: 1fr;
+    }
     #log-filter-bar {
         height: 1;
         layout: horizontal;
@@ -76,16 +84,19 @@ class LogPane(Widget):
     """
 
     BINDINGS = [
-        Binding("d", "toggle_debug", "Debug", show=False),
-        Binding("i", "toggle_info",  "Info",  show=False),
-        Binding("w", "toggle_warn",  "Warn",  show=False),
-        Binding("e", "toggle_error", "Error", show=False),
+        Binding("d",       "toggle_debug",  "Debug",  show=False),
+        Binding("i",       "toggle_info",   "Info",   show=False),
+        Binding("w",       "toggle_warn",   "Warn",   show=False),
+        Binding("e",       "toggle_error",  "Error",  show=False),
+        Binding("ctrl+f",  "open_search",   "Search", show=False),
+        Binding("escape",  "close_search",  "Close",  show=False),
     ]
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self._all_lines: List[Tuple[str, str]] = []   # (text, level) pairs
         self._hidden_levels: Set[str] = set()         # levels to suppress
+        self._search_text: str = ""                   # active search filter
 
     def compose(self) -> ComposeResult:
         yield Static("", id="log-banner")
@@ -95,6 +106,8 @@ class LogPane(Widget):
         with Widget(id="tour-panel"):
             yield Static("", id="tour-left")
             yield Static("", id="tour-right")
+        with Widget(id="log-search-row"):
+            yield Input(placeholder="Search logs… (Esc to close)", id="log-search-input")
         yield Static(self._filter_markup(), id="log-filter-bar", markup=True)
         yield RichLog(id="log-output", highlight=False, markup=False, wrap=True)
 
@@ -123,8 +136,30 @@ class LogPane(Widget):
     def append_line(self, line: str) -> None:
         level = _detect_level(line)
         self._all_lines.append((line, level))
-        if level not in self._hidden_levels:
+        if self._line_visible(line, level):
             self.query_one("#log-output", RichLog).write(line)
+
+    # ── Search ───────────────────────────────────────────────────────────────
+
+    def action_open_search(self) -> None:
+        row = self.query_one("#log-search-row")
+        row.display = True
+        self.query_one("#log-search-input", Input).focus()
+
+    def action_close_search(self) -> None:
+        row = self.query_one("#log-search-row")
+        if row.display:
+            self._search_text = ""
+            self.query_one("#log-search-input", Input).value = ""
+            row.display = False
+            self._rebuild_log()
+            self._update_filter_bar()
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "log-search-input":
+            self._search_text = event.value.lower()
+            self._rebuild_log()
+            self._update_filter_bar()
 
     # ── Filter actions ───────────────────────────────────────────────────────
 
@@ -141,11 +176,18 @@ class LogPane(Widget):
         self._rebuild_log()
         self._update_filter_bar()
 
+    def _line_visible(self, line: str, level: str) -> bool:
+        if level in self._hidden_levels:
+            return False
+        if self._search_text and self._search_text not in line.lower():
+            return False
+        return True
+
     def _rebuild_log(self) -> None:
         log = self.query_one("#log-output", RichLog)
         log.clear()
         for line, level in self._all_lines:
-            if level not in self._hidden_levels:
+            if self._line_visible(line, level):
                 log.write(line)
 
     def _update_filter_bar(self) -> None:
@@ -161,4 +203,7 @@ class LogPane(Widget):
                 parts.append(f"[dim]{short}[/dim]")
             else:
                 parts.append(f"[bold]{short}[/bold]")
-        return "[dim]Filter:[/dim] " + " ".join(parts) + "  [dim][D/I/W/E toggle][/dim]"
+        level_part = "[dim]Filter:[/dim] " + " ".join(parts)
+        if self._search_text:
+            return level_part + f"  [yellow]search: {self._search_text}[/yellow]  [dim][Esc clear][/dim]"
+        return level_part + "  [dim][D/I/W/E] [Ctrl+F search][/dim]"
