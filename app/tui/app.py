@@ -188,6 +188,9 @@ class TuiApp(App[None]):
             self.query_one(BenchPane).load_history(history)
 
     def _on_bench_progress(self, line: str) -> None:
+        if line == "§BENCH_DONE§":
+            self.query_one(BenchPane).set_running(False)
+            return
         self.query_one(BenchPane).append_progress(line)
 
     def _on_bench_result(self, result) -> None:
@@ -222,8 +225,9 @@ class TuiApp(App[None]):
         self.query_one(ModelRail).toggle_class("collapsed")
 
     def _set_ready_tabs_enabled(self, enabled: bool) -> None:
+        # Tools requires a live server; bench history is always viewable.
         tabs = self.query_one(TabbedContent)
-        for tab_id in ("tools", "bench"):
+        for tab_id in ("tools",):
             tab = tabs.get_tab(tab_id)
             if tab is not None:
                 tab.disabled = not enabled

@@ -88,14 +88,31 @@ class BenchPane(Widget):
             result.timestamp,
         )
 
+    def set_running(self, running: bool) -> None:
+        """Toggle running state: disable/re-enable button and update label."""
+        from server_manager import ServerState
+        btn = self.query_one("#bench-run-btn", Button)
+        if running:
+            btn.label = "⏳ Running…"
+            btn.disabled = True
+        else:
+            btn.label = "▶ Run Benchmark"
+            app_ctrl = getattr(self.app, "_ctrl", None)
+            btn.disabled = (app_ctrl is None or
+                            app_ctrl.state != ServerState.READY)
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id != "bench-run-btn":
+            return
+        from server_manager import ServerState
+        app_ctrl = getattr(self.app, "_ctrl", None)
+        if not app_ctrl or app_ctrl.state != ServerState.READY:
+            self.notify("Server must be READY to run benchmarks", severity="warning")
             return
         mode   = self.query_one("#bench-mode", Select).value or "smoke-test"
         sweeps = self.query_one("#bench-sweeps", Checkbox).value
         pct    = self.query_one("#bench-pct", Checkbox).value
         self.query_one("#bench-live-log", RichLog).clear()
-        app_ctrl = getattr(self.app, "_ctrl", None)
-        if app_ctrl:
-            app_ctrl.run_benchmark(mode=mode, concurrency_sweeps=sweeps,
-                                   percentile_report=pct)
+        self.set_running(True)
+        app_ctrl.run_benchmark(mode=mode, concurrency_sweeps=sweeps,
+                               percentile_report=pct)
