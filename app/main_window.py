@@ -1260,10 +1260,24 @@ class MainPanel(Gtk.Box):
         self._model_card_rev = Gtk.Revealer()
         self._model_card_rev.set_transition_type(Gtk.RevealerTransitionType.SLIDE_DOWN)
         self._model_card_rev.set_overflow(Gtk.Overflow.HIDDEN)
+
+        # Outer horizontal: [avatar 48px] [content vertical]
+        card_outer = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        card_outer.add_css_class("model-card")
+
+        # Avatar — placeholder icon, replaced async when model is selected
+        self._card_avatar = Gtk.Image.new_from_icon_name("applications-science-symbolic")
+        self._card_avatar.set_pixel_size(48)
+        self._card_avatar.set_valign(Gtk.Align.CENTER)
+        self._card_avatar.set_halign(Gtk.Align.CENTER)
+        self._card_avatar.set_size_request(48, 48)
+        # Clip avatar to circle via CSS class
+        self._card_avatar.add_css_class("card-avatar")
+        card_outer.append(self._card_avatar)
+
+        # Content box (right of avatar)
         card_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
-        card_box.set_margin_start(10); card_box.set_margin_end(10)
-        card_box.set_margin_top(6);    card_box.set_margin_bottom(6)
-        card_box.add_css_class("model-card")
+        card_box.set_hexpand(True)
 
         # Row 1: bold model name + param count + status badge
         card_row1 = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
@@ -1280,7 +1294,16 @@ class MainPanel(Gtk.Box):
         card_row1.append(self._card_badges_lbl)
         card_box.append(card_row1)
 
-        # Row 2: description (single ellipsized line)
+        # Row 2: HF repo path (muted, ellipsized)
+        self._card_repo_lbl = Gtk.Label(label="")
+        self._card_repo_lbl.add_css_class("muted")
+        self._card_repo_lbl.set_halign(Gtk.Align.START)
+        self._card_repo_lbl.set_ellipsize(Pango.EllipsizeMode.END)
+        self._card_repo_lbl.set_max_width_chars(1)
+        self._card_repo_lbl.set_visible(False)
+        card_box.append(self._card_repo_lbl)
+
+        # Row 3: model description (single ellipsized line)
         self._card_desc_lbl = Gtk.Label(label="")
         self._card_desc_lbl.add_css_class("muted")
         self._card_desc_lbl.set_halign(Gtk.Align.START)
@@ -1289,22 +1312,22 @@ class MainPanel(Gtk.Box):
         self._card_desc_lbl.set_visible(False)
         card_box.append(self._card_desc_lbl)
 
-        # Row 3: use-case dropdown + Configure button
-        card_row3 = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        # Row 4: use-case dropdown + Configure button
+        card_row4 = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         uc_lbl = Gtk.Label(label="Use case:")
         uc_lbl.add_css_class("muted")
-        card_row3.append(uc_lbl)
+        card_row4.append(uc_lbl)
         self._card_uc_dropdown = Gtk.DropDown()
         self._card_uc_dropdown.set_hexpand(True)
         self._card_uc_dropdown.connect("notify::selected", self._on_card_uc_changed)
-        card_row3.append(self._card_uc_dropdown)
+        card_row4.append(self._card_uc_dropdown)
         self._card_config_btn = Gtk.Button(icon_name="preferences-system-symbolic")
         self._card_config_btn.add_css_class("flat")
         self._card_config_btn.set_tooltip_text("Advanced configuration")
-        card_row3.append(self._card_config_btn)
-        card_box.append(card_row3)
+        card_row4.append(self._card_config_btn)
+        card_box.append(card_row4)
 
-        # Row 4: use-case description (updated when dropdown changes)
+        # Row 5: use-case description (updated when dropdown changes)
         self._card_uc_desc_lbl = Gtk.Label(label="")
         self._card_uc_desc_lbl.add_css_class("muted")
         self._card_uc_desc_lbl.set_halign(Gtk.Align.START)
@@ -1313,9 +1336,9 @@ class MainPanel(Gtk.Box):
         self._card_uc_desc_lbl.set_visible(False)
         card_box.append(self._card_uc_desc_lbl)
 
-        self._model_card_rev.set_child(card_box)
+        card_outer.append(card_box)
+        self._model_card_rev.set_child(card_outer)
         self.append(self._model_card_rev)
-        self.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
 
         # Internal state for the model card
         self._card_entry = None
@@ -1825,6 +1848,13 @@ class MainPanel(Gtk.Box):
         if getattr(entry, "status", "") == "EXPERIMENTAL":
             badges.append("⚠")
         self._card_badges_lbl.set_text("  ".join(badges))
+        # HF repo path
+        hf_repo = getattr(entry, "hf_model_repo", "") or ""
+        if hf_repo:
+            self._card_repo_lbl.set_text(hf_repo)
+            self._card_repo_lbl.set_visible(True)
+        else:
+            self._card_repo_lbl.set_visible(False)
         # Description
         desc = getattr(entry, "model_description", "") or ""
         if desc:
@@ -1844,6 +1874,45 @@ class MainPanel(Gtk.Box):
         self._card_uc_dropdown.set_selected(0)
         self._card_uc_dropdown.handler_unblock_by_func(self._on_card_uc_changed)
         self._model_card_rev.set_reveal_child(True)
+        # Avatar — reset to placeholder, then fetch async
+        self._card_avatar.set_from_icon_name("applications-science-symbolic")
+        org = hf_repo.split("/")[0] if "/" in hf_repo else hf_repo
+        if org:
+            self._fetch_card_avatar(org)
+
+    def _fetch_card_avatar(self, org: str) -> None:
+        """Kick off async avatar fetch; update _card_avatar on the GTK loop when done."""
+        from hf_avatar import fetch_avatar_async
+
+        # Capture the current org so a rapid model switch doesn't apply a
+        # stale avatar from a previous fetch.
+        expected_org = org
+
+        def _on_data(data):
+            def _apply():
+                # Guard: only apply if the card still shows the same org
+                entry = self._card_entry
+                if not entry:
+                    return
+                hf_repo = getattr(entry, "hf_model_repo", "") or ""
+                current_org = hf_repo.split("/")[0] if "/" in hf_repo else hf_repo
+                if current_org != expected_org:
+                    return
+                if not data:
+                    return
+                try:
+                    from gi.repository import GdkPixbuf, Gio
+                    gbytes = GLib.Bytes.new(data)
+                    stream = Gio.MemoryInputStream.new_from_bytes(gbytes)
+                    pixbuf = GdkPixbuf.Pixbuf.new_from_stream_at_scale(
+                        stream, 48, 48, True, None
+                    )
+                    self._card_avatar.set_from_pixbuf(pixbuf)
+                except Exception:
+                    pass
+            GLib.idle_add(_apply)
+
+        fetch_avatar_async(org, _on_data)
 
     def sync_card_use_case(self, use_case: str) -> None:
         """Update the model card's use-case dropdown to reflect restored options."""

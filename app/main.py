@@ -49,11 +49,30 @@ expander > title > label { color: @tt_text; }
 .section-label { color: @tt_accent; font-weight: bold; font-size: 12px; letter-spacing: 0.8px; }
 .muted { color: @tt_text_muted; font-size: 11px; }
 
-/* Card-level backgrounds for visual hierarchy */
-.model-card { background-color: @tt_bg_dark; border-bottom: 1px solid @tt_border; }
-.model-card-name { font-size: 16px; font-weight: bold; }
+/* Model card - light surface that pops against the dark UI */
+.model-card {
+    background-color: #EEF4F6;
+    border-radius: 6px;
+    border: 1px solid @tt_border;
+    padding: 8px 10px;
+    margin: 4px 8px;
+}
+/* Scope text to dark-on-light inside the card */
+.model-card label { color: #0F2A35; }
+.model-card .model-card-name { color: #0F2A35; font-size: 16px; font-weight: bold; }
+.model-card .muted { color: #3D5A63; font-size: 11px; }
+.model-card button.flat { color: #1A5C54; background: none; border: none; }
+.model-card button.flat:hover { background-color: rgba(0,0,0,0.08); border: none; }
+
+/* Card-level backgrounds for other sections */
 .hw-card { background-color: @tt_bg_panel; border-top: 1px solid @tt_border; }
 .action-card { background-color: @tt_bg_panel; border-top: 1px solid @tt_border; }
+
+/* model-card-name used standalone (outside card) keeps dark text too */
+.model-card-name { font-size: 16px; font-weight: bold; }
+
+/* Avatar image in model card - circular crop */
+.card-avatar { border-radius: 24px; }
 
 /* Semantic status classes -- use add_css_class / set_css_classes instead of inline Pango markup */
 .status-ok    { color: @tt_success; }
