@@ -160,9 +160,9 @@ def build_extra_args(options: LaunchOptions, entry: "ModelEntry") -> List[str]:
             vllm["max_num_seqs"] = options.max_num_seqs
         if options.tool_use_enabled:
             parser = options.tool_call_parser or detect_tool_parser(entry)
-            vllm["tool_call_parser"] = parser
+            vllm["tool-call-parser"] = parser
             if options.enable_auto_tool_choice:
-                vllm["enable_auto_tool_choice"] = True
+                vllm["enable-auto-tool-choice"] = True
         if options.extra_vllm_args:
             try:
                 parsed = json.loads(options.extra_vllm_args)
