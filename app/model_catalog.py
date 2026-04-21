@@ -79,7 +79,7 @@ class ModelCatalog:
                         model_type=impl.get("model_type", "LLM"),
                         family=extract_family(hf_repo),
                         device_type=device_type,
-                        inference_engine=engine_name,
+                        inference_engine=engine_name.lower(),
                         docker_image=impl.get("docker_image", ""),
                         status=impl.get("status", "EXPERIMENTAL"),
                         param_count=impl.get("param_count"),
