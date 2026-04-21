@@ -54,10 +54,14 @@ class LogParser:
         """Return a new ServerState if a transition is triggered, else None."""
         l = line.strip()
 
-        # Error (check before other patterns to catch "ERROR" keyword)
-        if re.search(r'\bERROR\b|⛔|failed.*exit\s*code|exit\s*code\s*[1-9]', l, re.I):
-            # Skip lines that mention error handling in code context
-            if not re.search(r'error_handler|on_error|ErrorHandler', l):
+        # Error (check before other patterns to catch "ERROR" keyword).
+        # Exclude WARNING-level log lines: vLLM warnings often describe errors in
+        # their text (e.g. "...will cause a CUDA array out-of-bounds error.") which
+        # would otherwise be a false positive.
+        if re.search(r'⛔|failed.*exit\s*code|exit\s*code\s*[1-9]', l, re.I):
+            return ServerState.ERROR
+        if re.search(r'\bERROR\b', l, re.I):
+            if not re.search(r'error_handler|on_error|ErrorHandler|\bWARNING\b', l, re.I):
                 return ServerState.ERROR
 
         # PULLING_IMAGE
