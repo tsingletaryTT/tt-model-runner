@@ -46,8 +46,14 @@ window, .view { background-color: @tt_bg_darkest; color: @tt_text; }
 window { font-family: "Noto Sans", "Segoe UI", sans-serif; font-size: 13px; }
 label, checkbutton > label, radiobutton > label,
 expander > title > label { color: @tt_text; }
-.section-label { color: @tt_accent; font-weight: bold; font-size: 11px; letter-spacing: 0.5px; }
+.section-label { color: @tt_accent; font-weight: bold; font-size: 12px; letter-spacing: 0.8px; }
 .muted { color: @tt_text_muted; font-size: 11px; }
+
+/* Card-level backgrounds for visual hierarchy */
+.model-card { background-color: @tt_bg_dark; border-bottom: 1px solid @tt_border; }
+.model-card-name { font-size: 16px; font-weight: bold; }
+.hw-card { background-color: @tt_bg_panel; border-top: 1px solid @tt_border; }
+.action-card { background-color: @tt_bg_panel; border-top: 1px solid @tt_border; }
 
 /* Semantic status classes -- use add_css_class / set_css_classes instead of inline Pango markup */
 .status-ok    { color: @tt_success; }

@@ -57,6 +57,23 @@ MODEL_TYPE_USE_CASES: dict = {
     "CNN":       ["standard", "dev"],
 }
 
+# One-line descriptions shown as tooltips / inline hints
+USE_CASE_DESCRIPTIONS: dict = {
+    "chat":             "Balanced — default context (spec max), concurrent requests",
+    "code_completion":  "Short context (32K), more concurrent slots for IDE-style completions",
+    "agent_frameworks": "Max context (128K), tool calling enabled — for LangChain, AutoGPT, etc.",
+    "deep_research":    "Max context (128K), fewer concurrent slots — for long-document analysis",
+    "creative_writing": "Long context (64K), few slots — optimized for long-form generation",
+    "dev":              "Dev mode, no trace capture — faster startup, lower performance",
+    "sound_analysis":   "Default settings for audio analysis tasks",
+    "midi_generation":  "Default settings for MIDI generation tasks",
+    "music_generation": "Default settings for music generation tasks",
+    "creative":         "Default settings for image/video generation tasks",
+    "semantic_search":  "Optimized for embedding extraction and nearest-neighbor queries",
+    "rag_pipeline":     "Retrieval-augmented generation — balanced context for chunked docs",
+    "standard":         "Default settings for classification and inference tasks",
+}
+
 # Human-readable labels for use-case chip labels
 USE_CASE_LABELS: dict = {
     "chat":             "Chat",

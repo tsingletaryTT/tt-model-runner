@@ -203,6 +203,17 @@ class Sidebar(Gtk.Box):
         self._hf_label = Gtk.Label()
         self._hf_label.set_visible(False)
 
+        # Prerequisites status bar — shown only when at least one prereq is failing.
+        # Compact row of colored pills: ✓ docker  ✗ HF_TOKEN  etc.
+        self._prereq_rev = Gtk.Revealer()
+        self._prereq_rev.set_transition_type(Gtk.RevealerTransitionType.SLIDE_DOWN)
+        self._prereq_rev.set_overflow(Gtk.Overflow.HIDDEN)
+        self._prereq_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        self._prereq_box.set_margin_start(8); self._prereq_box.set_margin_end(8)
+        self._prereq_box.set_margin_top(3);   self._prereq_box.set_margin_bottom(3)
+        self._prereq_rev.set_child(self._prereq_box)
+        self.append(self._prereq_rev)
+
         # Model section header with search + settings gear
         ml_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         ml_box.set_margin_start(8); ml_box.set_margin_end(8)
@@ -323,6 +334,7 @@ class Sidebar(Gtk.Box):
         hw_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         hw_box.set_margin_start(8); hw_box.set_margin_end(8)
         hw_box.set_margin_top(4);   hw_box.set_margin_bottom(4)
+        hw_box.add_css_class("hw-card")
         hw_header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
         hw_lbl = Gtk.Label(label="HARDWARE")
         hw_lbl.add_css_class("section-label")
@@ -421,6 +433,37 @@ class Sidebar(Gtk.Box):
     def update_docker_images(self, images: list) -> None:
         """No-op — Docker image list was removed from the sidebar."""
         pass
+
+    def update_prereq_status(self, results: list) -> None:
+        """Show a compact row of status pills for environment prerequisites.
+
+        Hidden entirely when all items are passing — avoids clutter for
+        experienced users who have everything set up correctly.
+        results: list of (name, ok: bool, message: str) from check_environment()
+        """
+        # Clear previous pills
+        child = self._prereq_box.get_first_child()
+        while child:
+            nxt = child.get_next_sibling()
+            self._prereq_box.remove(child)
+            child = nxt
+
+        any_failing = any(not ok for _, ok, _ in results)
+        if not any_failing:
+            self._prereq_rev.set_reveal_child(False)
+            return
+
+        for name, ok, message in results:
+            pill = Gtk.Label(label=f"{'✓' if ok else '✗'} {name}")
+            pill.add_css_class("pill")
+            if ok:
+                pill.add_css_class("pill-ready")
+            else:
+                pill.add_css_class("pill-error")
+            pill.set_tooltip_text(message)
+            self._prereq_box.append(pill)
+
+        self._prereq_rev.set_reveal_child(True)
 
     def _on_port_changed(self, entry: Gtk.Entry) -> None:
         self._save_port()
@@ -1220,10 +1263,12 @@ class MainPanel(Gtk.Box):
         card_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
         card_box.set_margin_start(10); card_box.set_margin_end(10)
         card_box.set_margin_top(6);    card_box.set_margin_bottom(6)
+        card_box.add_css_class("model-card")
 
         # Row 1: bold model name + param count + status badge
         card_row1 = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         self._card_name_lbl = Gtk.Label(label="")
+        self._card_name_lbl.add_css_class("model-card-name")
         self._card_name_lbl.set_halign(Gtk.Align.START)
         self._card_name_lbl.set_hexpand(True)
         self._card_name_lbl.set_ellipsize(Pango.EllipsizeMode.END)
@@ -1258,6 +1303,15 @@ class MainPanel(Gtk.Box):
         self._card_config_btn.set_tooltip_text("Advanced configuration")
         card_row3.append(self._card_config_btn)
         card_box.append(card_row3)
+
+        # Row 4: use-case description (updated when dropdown changes)
+        self._card_uc_desc_lbl = Gtk.Label(label="")
+        self._card_uc_desc_lbl.add_css_class("muted")
+        self._card_uc_desc_lbl.set_halign(Gtk.Align.START)
+        self._card_uc_desc_lbl.set_ellipsize(Pango.EllipsizeMode.END)
+        self._card_uc_desc_lbl.set_max_width_chars(1)
+        self._card_uc_desc_lbl.set_visible(False)
+        card_box.append(self._card_uc_desc_lbl)
 
         self._model_card_rev.set_child(card_box)
         self.append(self._model_card_rev)
@@ -1527,6 +1581,10 @@ class MainPanel(Gtk.Box):
         for code, color in _ANSI_FG_COLORS.items():
             self._log_buf.create_tag(f"ansi_{code}", foreground=color)
         self._log_buf.create_tag("ansi_bold", weight=Pango.Weight.BOLD)
+        # Row-background tags for annotated log lines (hint/warn/err)
+        self._log_buf.create_tag("hint_bg", paragraph_background="#0d2e2b")
+        self._log_buf.create_tag("warn_bg", paragraph_background="#2e2507")
+        self._log_buf.create_tag("err_bg",  paragraph_background="#2e0b0b")
 
         self._log_view = Gtk.TextView(buffer=self._log_buf)
         self._log_view.set_editable(False)
@@ -1734,6 +1792,7 @@ class MainPanel(Gtk.Box):
         self._action_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         self._action_box.set_margin_start(10); self._action_box.set_margin_end(10)
         self._action_box.set_margin_top(6);    self._action_box.set_margin_bottom(6)
+        self._action_box.add_css_class("action-card")
         self._action_rev.set_child(self._action_box)
         self.append(self._action_rev)
 
@@ -1807,6 +1866,11 @@ class MainPanel(Gtk.Box):
             from launch_options import apply_preset
             opts = apply_preset(uc, self._card_entry)
             self._card_uc_callback(opts)
+        # Update use-case description label
+        from launch_options import USE_CASE_DESCRIPTIONS
+        desc = USE_CASE_DESCRIPTIONS.get(uc, "")
+        self._card_uc_desc_lbl.set_text(desc)
+        self._card_uc_desc_lbl.set_visible(bool(desc))
         # Sync the config panel's use-case chips if it's been created
         if self._config_panel is not None:
             self._config_panel._apply_use_case(uc)
@@ -2028,6 +2092,20 @@ class MainPanel(Gtk.Box):
             if tag_name:
                 s = buf.get_iter_at_offset(start_off)
                 buf.apply_tag_by_name(tag_name, s, buf.get_end_iter())
+
+        # Apply a full-paragraph background tint for annotated lines
+        stripped = line.lstrip()
+        if stripped.startswith("💡") or stripped.startswith("ℹ"):
+            bg_tag = "hint_bg"
+        elif stripped.startswith("⚠"):
+            bg_tag = "warn_bg"
+        elif stripped.startswith("⛔") or stripped.startswith("✗"):
+            bg_tag = "err_bg"
+        else:
+            bg_tag = None
+        if bg_tag:
+            s = buf.get_iter_at_offset(start_off)
+            buf.apply_tag_by_name(bg_tag, s, buf.get_end_iter())
 
     def clear_log(self) -> None:
         """Clear the log view and internal buffer."""
@@ -2648,6 +2726,7 @@ class MainWindow(Gtk.ApplicationWindow):
         controller.on_docker_images = lambda imgs: self._sidebar.update_docker_images(imgs)
         controller.on_model_identified = self._on_model_identified
         controller.on_download_progress = self._on_download_progress
+        controller.on_environment_checked = self._on_environment_checked
 
         # Connect the ↻ chip-telemetry refresh button to the controller.
         self._sidebar._hw_refresh_btn.connect(
@@ -2783,6 +2862,10 @@ class MainWindow(Gtk.ApplicationWindow):
     def _on_hardware_status(self, chips: list) -> None:
         """Update the sidebar chip-telemetry grid when tt-smi data arrives."""
         self._sidebar.update_hardware_status(chips)
+
+    def _on_environment_checked(self, results: list) -> None:
+        """Show prereq status pills in the sidebar; hide when everything is green."""
+        self._sidebar.update_prereq_status(results)
 
     def _on_running_servers_detected(self, servers: list) -> None:
         """Show a banner when already-running TT inference containers are found."""

@@ -302,6 +302,8 @@ class AppController:
         self.on_docker_images: Optional[Callable] = None             # (List[DockerImage],)
         self.on_model_identified: Optional[Callable] = None          # (ModelEntry,) — fired after reconnect identifies the running model
         self.on_download_progress: Optional[Callable] = None         # (hf_repo, fraction, status_line)
+        self.on_environment_checked: Optional[Callable] = None       # (list[tuple[str, bool, str]],)
+        self._weights_warning_emitted: bool = False
 
     # ── Read-only properties for views ──────────────────────────────────────
 
@@ -704,25 +706,30 @@ class AppController:
 
         threading.Thread(target=_run, daemon=True).start()
 
-    def check_environment(self) -> None:
-        """Emit log lines summarising which required tools are present/missing.
+    def check_environment(self) -> list:
+        """Check required tools and return structured results.
 
         Runs synchronously — call from a background thread.
         Checks: docker, tt-smi, git, HF_TOKEN.
+
+        Returns list of (name, ok: bool, message: str) tuples.
+        Also emits on_log_line for each result and on_environment_checked with the full list.
         """
         checks = [
             ("docker", ["docker", "info"], "Docker daemon running"),
             ("tt-smi", ["tt-smi", "--version"], "TT device management tool"),
             ("git",    ["git", "--version"],    "git version control"),
         ]
-        any_missing = False
+        results: list = []
         for name, cmd, desc in checks:
             try:
                 subprocess.run(cmd, capture_output=True, timeout=8, check=True)
                 self._emit("on_log_line", f"  ✓ {name}: {desc}")
+                results.append((name, True, desc))
             except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
-                self._emit("on_log_line", f"  ✗ {name}: NOT FOUND — {desc} required")
-                any_missing = True
+                msg = f"NOT FOUND — {desc} required"
+                self._emit("on_log_line", f"  ✗ {name}: {msg}")
+                results.append((name, False, msg))
         hf_token = os.environ.get("HF_TOKEN", "")
         if not hf_token:
             env_file = Path(_settings.server_repo_path) / ".env"
@@ -733,10 +740,16 @@ class AppController:
                         break
         if hf_token:
             self._emit("on_log_line", "  ✓ HF_TOKEN: found")
+            results.append(("HF_TOKEN", True, "found"))
         else:
-            self._emit("on_log_line", "  ⚠ HF_TOKEN: not set — required to pull gated models")
+            msg = "not set — required to pull gated models"
+            self._emit("on_log_line", f"  ⚠ HF_TOKEN: {msg}")
+            results.append(("HF_TOKEN", False, msg))
+        any_missing = any(not ok for _, ok, _ in results)
         if not any_missing:
             self._emit("on_log_line", "Environment OK")
+        self._emit("on_environment_checked", results)
+        return results
 
     def get_repo_git_info(self, path: Optional[Path] = None) -> tuple:
         """Return (branch, short_hash) for the server repo, or ('', '') on failure."""
@@ -1020,6 +1033,16 @@ class AppController:
         if new_state:
             self._transition(new_state)
 
+        # Emit a weights-missing warning once when the parser detects has_weights: False
+        if self._server_mgr.parser.weights_missing and not self._weights_warning_emitted:
+            self._weights_warning_emitted = True
+            repo = self._current_entry.hf_model_repo if self._current_entry else "this model"
+            self._emit("on_log_line",
+                       f"⚠ Model weights not found in cache for {repo}\n"
+                       f"💡 The container will try to download from HuggingFace — "
+                       f"this may take 30–60 min on first launch. "
+                       f"Pre-download via ⬇ in the config panel to avoid this wait.")
+
         if self._state == ServerState.LOADING:
             substage = self._server_mgr.parser.last_substage
             if substage:
@@ -1149,6 +1172,7 @@ class AppController:
             # Persist launch metadata for cross-engine reset warnings and reboot detection.
             self._last_error_hint = ""   # fresh slate for the new run
             self._emitted_error_hints.clear()
+            self._weights_warning_emitted = False
             if self._current_entry:
                 _settings.last_launched_engine = self._current_entry.inference_engine
                 _settings.last_launched_model_display = self._current_entry.display_name
@@ -1280,6 +1304,9 @@ class AppController:
     # Each tuple: (compiled pattern, suggestion string).
     # Matched against raw log lines; first match wins per ERROR transition.
     _ERROR_HINTS: list = [
+        (re.compile(r'validating system software dependencies failed', re.I),
+         "Firmware/KMD version mismatch — enable 'Skip Version Check' in Dev options "
+         "or add skip_system_sw_validation: true in Config > Options"),
         (re.compile(r'Cannot connect to the Docker daemon', re.I),
          "Docker is not running. Start it: sudo systemctl start docker"),
         (re.compile(r'permission denied.*docker', re.I),

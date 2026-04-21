@@ -57,8 +57,8 @@ def test_agent_preset_enables_tool_use():
     args = build_extra_args(opts, entry)
     idx = args.index("--vllm-override-args")
     payload = json.loads(args[idx + 1])
-    assert payload["enable_auto_tool_choice"] is True
-    assert payload["tool_call_parser"] == "llama3_json"   # Llama family
+    assert payload["enable-auto-tool-choice"] is True
+    assert payload["tool-call-parser"] == "llama3_json"   # Llama family
 
 
 def test_dev_preset_sets_flags():

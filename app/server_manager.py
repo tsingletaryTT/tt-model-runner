@@ -48,6 +48,7 @@ class LogParser:
         self.trace_capture_count: int = 0
         self.warmup_n: Optional[int] = None
         self.warmup_total: Optional[int] = None
+        self.weights_missing: bool = False
 
     def feed(self, line: str) -> Optional[ServerState]:
         """Return a new ServerState if a transition is triggered, else None."""
@@ -108,6 +109,10 @@ class LogParser:
             self.warmup_n = int(m.group(2))
             self.warmup_total = int(m.group(3))
             self.last_substage = "warmup"
+
+        # Model weights / tokenizer not in local cache — container will download
+        if re.search(r'has_weights:\s*False|has_tokenizer:\s*False', l):
+            self.weights_missing = True
 
         return None
 
@@ -283,6 +288,10 @@ class ServerManager:
         re.I,
     )
 
+    # Firmware / KMD version mismatch — workaround is --skip-system-sw-validation
+    _SYSTEM_SW_VALIDATION_RE = re.compile(
+        r'validating system software dependencies failed', re.I)
+
     # Map import names → pip package names where they differ
     _MODULE_TO_PACKAGE: dict = {
         "PIL": "Pillow",
@@ -317,6 +326,8 @@ class ServerManager:
         # auto-action state — missing deps
         self._installed_modules: set = set()   # modules already pip-installed this session
         self._installing_module: bool = False
+        # auto-action state — firmware/KMD version mismatch
+        self._skip_sw_retry_attempted: bool = False
 
     def launch(
         self,
@@ -339,6 +350,7 @@ class ServerManager:
             self._image_resolve_attempted = False
             self._installed_modules = set()
             self._pull_retry_count = 0
+            self._skip_sw_retry_attempted = False
 
         cmd = [
             "python3", "run.py",
@@ -487,6 +499,20 @@ class ServerManager:
                     daemon=True,
                 ).start()
 
+        # --- Firmware/KMD version mismatch — retry with --skip-system-sw-validation ---
+        if not self._skip_sw_retry_attempted:
+            if self._SYSTEM_SW_VALIDATION_RE.search(line):
+                self._skip_sw_retry_attempted = True
+                log.warning("system software validation failed — retrying with --skip-system-sw-validation")
+                on_log_line(
+                    "⚠ System software version check failed — retrying with --skip-system-sw-validation…"
+                )
+                threading.Thread(
+                    target=self._retry_with_skip_validation,
+                    args=(on_log_line,),
+                    daemon=True,
+                ).start()
+
         # --- Missing Python module ---
         if not self._installing_module:
             m = self._MISSING_MODULE_RE.search(line)
@@ -587,6 +613,30 @@ class ServerManager:
 
         if self._config and self._on_state_cb:
             self.launch(self._config, on_log_line, self._on_state_cb, _auto_retry=True)
+
+    def _retry_with_skip_validation(self, on_log_line: Callable):
+        """Background: wait for current process to exit, then relaunch with skip_system_sw_validation=True."""
+        if self._proc:
+            for _ in range(40):
+                if self._proc.poll() is not None:
+                    break
+                time.sleep(0.25)
+
+        self._stop_event.set()
+        time.sleep(0.3)
+
+        if not self._config or not self._on_state_cb:
+            return
+
+        import dataclasses
+        new_options = self._config.options
+        if new_options is not None:
+            new_options = dataclasses.replace(new_options, skip_system_sw_validation=True)
+        else:
+            from launch_options import LaunchOptions
+            new_options = LaunchOptions(skip_system_sw_validation=True)
+        new_config = dataclasses.replace(self._config, options=new_options)
+        self.launch(new_config, on_log_line, self._on_state_cb, _auto_retry=True)
 
     def _try_install_module(self, module: str, package: str, on_log_line: Callable):
         """Background: pip-install a missing module then restart the launch."""
