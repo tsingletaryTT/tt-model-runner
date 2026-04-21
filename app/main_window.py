@@ -1257,86 +1257,92 @@ class MainPanel(Gtk.Box):
         self.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
 
         # ── Model info card (revealed when a model is selected) ──────────────
+        # Layout:
+        #   [avatar 40px] [name (bold, 15px)]           [badges muted]
+        #   ─────── teal divider ────────────────────────────────────
+        #   Provider  meta-llama    Type    LLM
+        #   Engine    vLLM          Device  T3K
+        #   Params    70B           Disk    120 GB
+        #   ─────── teal divider ────────────────────────────────────
+        #   Use case  [Chat ▾]                               [⚙]
+        #             Balanced — default context, concurrent requests
         self._model_card_rev = Gtk.Revealer()
         self._model_card_rev.set_transition_type(Gtk.RevealerTransitionType.SLIDE_DOWN)
         self._model_card_rev.set_overflow(Gtk.Overflow.HIDDEN)
 
-        # Outer horizontal: [avatar 48px] [content vertical]
-        card_outer = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        card_outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         card_outer.add_css_class("model-card")
 
-        # Avatar — placeholder icon, replaced async when model is selected
+        # ── Header row: avatar + name + badges ──
+        card_header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         self._card_avatar = Gtk.Image.new_from_icon_name("applications-science-symbolic")
-        self._card_avatar.set_pixel_size(48)
+        self._card_avatar.set_pixel_size(40)
         self._card_avatar.set_valign(Gtk.Align.CENTER)
-        self._card_avatar.set_halign(Gtk.Align.CENTER)
-        self._card_avatar.set_size_request(48, 48)
-        # Clip avatar to circle via CSS class
         self._card_avatar.add_css_class("card-avatar")
-        card_outer.append(self._card_avatar)
-
-        # Content box (right of avatar)
-        card_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
-        card_box.set_hexpand(True)
-
-        # Row 1: bold model name + param count + status badge
-        card_row1 = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        card_header.append(self._card_avatar)
+        name_col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
+        name_col.set_hexpand(True)
         self._card_name_lbl = Gtk.Label(label="")
         self._card_name_lbl.add_css_class("model-card-name")
         self._card_name_lbl.set_halign(Gtk.Align.START)
         self._card_name_lbl.set_hexpand(True)
         self._card_name_lbl.set_ellipsize(Pango.EllipsizeMode.END)
         self._card_name_lbl.set_max_width_chars(1)
-        card_row1.append(self._card_name_lbl)
-        self._card_badges_lbl = Gtk.Label(label="")
-        self._card_badges_lbl.add_css_class("muted")
-        self._card_badges_lbl.set_halign(Gtk.Align.END)
-        card_row1.append(self._card_badges_lbl)
-        card_box.append(card_row1)
-
-        # Row 2: HF repo path (muted, ellipsized)
+        name_col.append(self._card_name_lbl)
         self._card_repo_lbl = Gtk.Label(label="")
         self._card_repo_lbl.add_css_class("muted")
         self._card_repo_lbl.set_halign(Gtk.Align.START)
         self._card_repo_lbl.set_ellipsize(Pango.EllipsizeMode.END)
         self._card_repo_lbl.set_max_width_chars(1)
-        self._card_repo_lbl.set_visible(False)
-        card_box.append(self._card_repo_lbl)
+        name_col.append(self._card_repo_lbl)
+        card_header.append(name_col)
+        self._card_badges_lbl = Gtk.Label(label="")
+        self._card_badges_lbl.add_css_class("muted")
+        self._card_badges_lbl.set_halign(Gtk.Align.END)
+        self._card_badges_lbl.set_valign(Gtk.Align.START)
+        card_header.append(self._card_badges_lbl)
+        card_outer.append(card_header)
 
-        # Row 3: model description (single ellipsized line)
-        self._card_desc_lbl = Gtk.Label(label="")
-        self._card_desc_lbl.add_css_class("muted")
-        self._card_desc_lbl.set_halign(Gtk.Align.START)
-        self._card_desc_lbl.set_ellipsize(Pango.EllipsizeMode.END)
-        self._card_desc_lbl.set_max_width_chars(1)
-        self._card_desc_lbl.set_visible(False)
-        card_box.append(self._card_desc_lbl)
+        # ── Teal divider ──
+        div1 = Gtk.Box(); div1.set_size_request(-1, 1); div1.add_css_class("card-divider")
+        card_outer.append(div1)
 
-        # Row 4: use-case dropdown + Configure button
-        card_row4 = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        uc_lbl = Gtk.Label(label="Use case:")
-        uc_lbl.add_css_class("muted")
-        card_row4.append(uc_lbl)
+        # ── Key/value facts grid (2 columns of key:value pairs) ──
+        self._card_kv_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        card_outer.append(self._card_kv_box)
+
+        # ── Teal divider ──
+        div2 = Gtk.Box(); div2.set_size_request(-1, 1); div2.add_css_class("card-divider")
+        card_outer.append(div2)
+
+        # ── Use-case row + description ──
+        card_uc_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        uc_key = Gtk.Label(label="Use case")
+        uc_key.add_css_class("card-key")
+        uc_key.set_halign(Gtk.Align.START)
+        card_uc_row.append(uc_key)
         self._card_uc_dropdown = Gtk.DropDown()
         self._card_uc_dropdown.set_hexpand(True)
         self._card_uc_dropdown.connect("notify::selected", self._on_card_uc_changed)
-        card_row4.append(self._card_uc_dropdown)
+        card_uc_row.append(self._card_uc_dropdown)
         self._card_config_btn = Gtk.Button(icon_name="preferences-system-symbolic")
         self._card_config_btn.add_css_class("flat")
         self._card_config_btn.set_tooltip_text("Advanced configuration")
-        card_row4.append(self._card_config_btn)
-        card_box.append(card_row4)
+        card_uc_row.append(self._card_config_btn)
+        card_outer.append(card_uc_row)
 
-        # Row 5: use-case description (updated when dropdown changes)
         self._card_uc_desc_lbl = Gtk.Label(label="")
         self._card_uc_desc_lbl.add_css_class("muted")
         self._card_uc_desc_lbl.set_halign(Gtk.Align.START)
         self._card_uc_desc_lbl.set_ellipsize(Pango.EllipsizeMode.END)
         self._card_uc_desc_lbl.set_max_width_chars(1)
         self._card_uc_desc_lbl.set_visible(False)
-        card_box.append(self._card_uc_desc_lbl)
+        card_outer.append(self._card_uc_desc_lbl)
 
-        card_outer.append(card_box)
+        # Keep _card_desc_lbl for compat (model description, rarely set)
+        self._card_desc_lbl = Gtk.Label(label="")
+        self._card_desc_lbl.set_visible(False)
+
         self._model_card_rev.set_child(card_outer)
         self.append(self._model_card_rev)
 
@@ -1828,6 +1834,23 @@ class MainPanel(Gtk.Box):
 
     # ---------------------------------------------------------------- model card
 
+    @staticmethod
+    def _make_kv_row(key: str, val: str) -> Gtk.Box:
+        """One key/value row for the nutrition-facts grid."""
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        k = Gtk.Label(label=key)
+        k.add_css_class("card-key")
+        k.set_halign(Gtk.Align.START)
+        k.set_width_chars(9)
+        row.append(k)
+        v = Gtk.Label(label=val)
+        v.add_css_class("card-val")
+        v.set_halign(Gtk.Align.START)
+        v.set_hexpand(True)
+        v.set_ellipsize(Pango.EllipsizeMode.END)
+        row.append(v)
+        return row
+
     def set_model_info(self, entry, on_uc_changed=None) -> None:
         """Show/update the model info card above the log area."""
         self._card_entry = entry
@@ -1835,33 +1858,49 @@ class MainPanel(Gtk.Box):
         if entry is None:
             self._model_card_rev.set_reveal_child(False)
             return
-        # Name + badges
+        # Header: name
         name = entry.display_name
-        self._card_name_lbl.set_markup(f"<b>{name}</b>")
+        self._card_name_lbl.set_text(name)
+        # Header: HF repo path
+        hf_repo = getattr(entry, "hf_model_repo", "") or ""
+        self._card_repo_lbl.set_text(hf_repo)
+        self._card_repo_lbl.set_visible(bool(hf_repo))
+        # Header: badges (param count + EXPERIMENTAL flag)
         badges = []
         size = _format_param_count(getattr(entry, "param_count", None))
         if size:
             badges.append(size)
-        mtype = getattr(entry, "model_type", "") or ""
-        if mtype:
-            badges.append(mtype)
         if getattr(entry, "status", "") == "EXPERIMENTAL":
-            badges.append("⚠")
+            badges.append("EXPERIMENTAL")
         self._card_badges_lbl.set_text("  ".join(badges))
-        # HF repo path
-        hf_repo = getattr(entry, "hf_model_repo", "") or ""
-        if hf_repo:
-            self._card_repo_lbl.set_text(hf_repo)
-            self._card_repo_lbl.set_visible(True)
-        else:
-            self._card_repo_lbl.set_visible(False)
-        # Description
-        desc = getattr(entry, "model_description", "") or ""
-        if desc:
-            self._card_desc_lbl.set_text(desc)
-            self._card_desc_lbl.set_visible(True)
-        else:
-            self._card_desc_lbl.set_visible(False)
+
+        # Key/value facts grid — rebuild from scratch each call
+        child = self._card_kv_box.get_first_child()
+        while child:
+            nxt = child.get_next_sibling()
+            self._card_kv_box.remove(child)
+            child = nxt
+
+        mtype = getattr(entry, "model_type", "") or ""
+        engine = getattr(entry, "inference_engine", "") or ""
+        device = getattr(entry, "device_type", "") or ""
+        param_s = _format_param_count(getattr(entry, "param_count", None)) or "-"
+        disk_gb = getattr(entry, "min_disk_gb", None)
+        disk_s = f"{disk_gb} GB" if disk_gb else "-"
+        provider = hf_repo.split("/")[0] if "/" in hf_repo else (hf_repo or "-")
+
+        # Two-column layout: left col (Provider, Engine, Params), right col (Type, Device, Disk)
+        pairs = [
+            ("Provider", provider, "Type", mtype or "-"),
+            ("Engine",   engine or "-", "Device", device or "-"),
+            ("Params",   param_s,  "Disk",   disk_s),
+        ]
+        for lk, lv, rk, rv in pairs:
+            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+            row.append(self._make_kv_row(lk, lv))
+            row.append(self._make_kv_row(rk, rv))
+            self._card_kv_box.append(row)
+
         # Use-case dropdown
         from launch_options import MODEL_TYPE_USE_CASES, USE_CASE_LABELS
         use_cases = MODEL_TYPE_USE_CASES.get(mtype, ["dev"])
