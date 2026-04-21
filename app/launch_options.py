@@ -173,6 +173,12 @@ def build_extra_args(options: LaunchOptions, entry: "ModelEntry") -> List[str]:
         vllm: dict = {}
         if options.max_model_len is not None:
             vllm["max_model_len"] = options.max_model_len
+            # max_num_batched_tokens must be >= max_model_len; the model spec
+            # sets both to max_context (e.g. 131072).  If we reduce max_model_len
+            # without also reducing max_num_batched_tokens, vLLM uses the larger
+            # batched-token limit to raise max_model_len back up, defeating the
+            # override.  Keep them in sync.
+            vllm["max_num_batched_tokens"] = options.max_model_len
         if options.max_num_seqs is not None:
             vllm["max_num_seqs"] = options.max_num_seqs
         if options.tool_use_enabled:
