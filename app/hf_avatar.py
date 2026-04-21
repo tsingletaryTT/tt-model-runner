@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Async HuggingFace organisation / user avatar fetcher with disk cache.
+"""Async HuggingFace organisation avatar fetcher with disk cache.
 
 Usage:
     fetch_avatar_async("meta-llama", on_done=lambda data: ...)
 
-on_done is called on the fetch thread with raw PNG/JPEG bytes, or None on
-failure.  Callers must dispatch to the GTK main loop before touching widgets:
+on_done is called on the fetch thread with raw PNG bytes, or None on failure.
+Callers must dispatch to the GTK main loop before touching widgets:
     GLib.idle_add(lambda: image.set_from_pixbuf(make_pixbuf(data)))
+
+Fetches from the HuggingFace CDN thumbnail endpoint:
+    https://cdn-thumbnails.huggingface.co/social-thumbnails/{org}.png
+This URL works for both organisations and users and requires no auth.
 """
-import json
 import logging
 import threading
 import urllib.request
@@ -21,13 +24,13 @@ log = logging.getLogger(__name__)
 _CACHE_DIR = Path.home() / ".config" / "tt-runner-gui" / "avatars"
 _TIMEOUT = 8
 _UA = "tt-model-runner/1.0 (https://github.com/tenstorrent/tt-model-runner)"
+_CDN = "https://cdn-thumbnails.huggingface.co/social-thumbnails/{org}.png"
 
 
 def _cache_path(org: str) -> Path:
     _CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    # Sanitise org name so it's safe as a filename
     safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in org)
-    return _CACHE_DIR / f"{safe}.img"
+    return _CACHE_DIR / f"{safe}.png"
 
 
 def _get(url: str) -> Optional[bytes]:
@@ -40,29 +43,13 @@ def _get(url: str) -> Optional[bytes]:
         return None
 
 
-def _fetch_avatar_url(org: str) -> Optional[str]:
-    """Try HF organisation endpoint, then user endpoint; return avatarUrl or None."""
-    for kind in ("organizations", "users"):
-        raw = _get(f"https://huggingface.co/api/{kind}/{org}")
-        if not raw:
-            continue
-        try:
-            data = json.loads(raw)
-            url = data.get("avatarUrl") or data.get("avatar_url")
-            if url:
-                return url
-        except (json.JSONDecodeError, AttributeError):
-            continue
-    return None
-
-
 def fetch_avatar_async(
     org: str,
     on_done: Callable[[Optional[bytes]], None],
 ) -> None:
-    """Fetch avatar image bytes for *org* in a daemon thread.
+    """Fetch avatar PNG bytes for *org* in a daemon thread.
 
-    Hits disk cache first; only makes network requests on cache miss.
+    Hits disk cache first; only makes a network request on cache miss.
     Calls on_done(bytes) on success, on_done(None) on failure.
     on_done is called on the background thread — dispatch to GTK loop before
     touching any widgets.
@@ -76,13 +63,7 @@ def fetch_avatar_async(
             except OSError:
                 pass
 
-        avatar_url = _fetch_avatar_url(org)
-        if not avatar_url:
-            log.debug("hf_avatar: no avatar URL for %s", org)
-            on_done(None)
-            return
-
-        data = _get(avatar_url)
+        data = _get(_CDN.format(org=org))
         if data:
             try:
                 cached.write_bytes(data)
@@ -90,6 +71,7 @@ def fetch_avatar_async(
                 pass
             on_done(data)
         else:
+            log.debug("hf_avatar: no avatar for %s", org)
             on_done(None)
 
     threading.Thread(target=_run, daemon=True, name=f"hf-avatar-{org}").start()
