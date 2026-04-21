@@ -49,10 +49,10 @@ expander > title > label { color: @tt_text; }
 .section-label { color: @tt_accent; font-weight: bold; font-size: 12px; letter-spacing: 0.8px; }
 .muted { color: @tt_text_muted; font-size: 11px; }
 
-/* Model card - dark panel with teal left accent, "nutrition facts" style */
+/* Model card - dark panel with teal left accent, "nutrition facts" style.
+   No border shorthand (avoids 2px height-at-infinite-width GTK layout warning). */
 .model-card {
     background-color: @tt_bg_panel;
-    border: 1px solid @tt_border;
     border-left: 3px solid @tt_accent;
     border-radius: 0 4px 4px 0;
     padding: 8px 12px;
@@ -67,9 +67,19 @@ expander > title > label { color: @tt_text; }
 /* Avatar image in model card - circular crop */
 .card-avatar { border-radius: 24px; }
 
-/* Card-level backgrounds for other sections */
-.hw-card { background-color: @tt_bg_panel; border-top: 1px solid @tt_border; }
-.action-card { background-color: @tt_bg_panel; border-top: 1px solid @tt_border; }
+/* Card-level backgrounds for other sections (no border-top to avoid layout warnings) */
+.hw-card { background-color: @tt_bg_panel; }
+.action-card { background-color: @tt_bg_panel; }
+
+/* READY celebration banner */
+.ready-banner {
+    background-color: alpha(@tt_success, 0.10);
+    border-left: 3px solid @tt_success;
+    border-radius: 0 4px 4px 0;
+    padding: 6px 12px;
+}
+.ready-banner-title { color: @tt_success; font-size: 15px; font-weight: bold; }
+.ready-banner-sub   { color: @tt_success; font-size: 11px; }
 
 /* Semantic status classes -- use add_css_class / set_css_classes instead of inline Pango markup */
 .status-ok    { color: @tt_success; }

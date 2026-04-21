@@ -1611,9 +1611,10 @@ class MainPanel(Gtk.Box):
             self._log_buf.create_tag(f"ansi_{code}", foreground=color)
         self._log_buf.create_tag("ansi_bold", weight=Pango.Weight.BOLD)
         # Row-background tags for annotated log lines (hint/warn/err)
-        self._log_buf.create_tag("hint_bg", paragraph_background="#0d2e2b")
-        self._log_buf.create_tag("warn_bg", paragraph_background="#2e2507")
-        self._log_buf.create_tag("err_bg",  paragraph_background="#2e0b0b")
+        self._log_buf.create_tag("hint_bg",    paragraph_background="#0d2e2b")
+        self._log_buf.create_tag("warn_bg",    paragraph_background="#2e2507")
+        self._log_buf.create_tag("err_bg",     paragraph_background="#2e0b0b")
+        self._log_buf.create_tag("success_bg", paragraph_background="#0b2e17")
 
         self._log_view = Gtk.TextView(buffer=self._log_buf)
         self._log_view.set_editable(False)
@@ -1996,19 +1997,42 @@ class MainPanel(Gtk.Box):
         show = False
         if state == ServerState.READY:
             show = True
+            # Green celebration banner
+            import random
+            taglines = [
+                "Adventure awaits!",
+                "Agency awaits!",
+                "The model is yours.",
+                "Go build something.",
+                "Ready to think.",
+                "Inference unlocked.",
+            ]
+            banner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+            banner.add_css_class("ready-banner")
+            title_lbl = Gtk.Label(label="Server ready")
+            title_lbl.add_css_class("ready-banner-title")
+            title_lbl.set_halign(Gtk.Align.START)
+            banner.append(title_lbl)
+            sub_lbl = Gtk.Label(label=random.choice(taglines))
+            sub_lbl.add_css_class("ready-banner-sub")
+            sub_lbl.set_halign(Gtk.Align.START)
+            banner.append(sub_lbl)
+            self._action_box.append(banner)
+
             btn_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            btn_row.set_margin_top(4)
             if bench_cb:
                 b = Gtk.Button(label="▶ Benchmark")
                 b.add_css_class("suggested-action")
                 b.connect("clicked", lambda _: bench_cb())
                 btn_row.append(b)
             if tools_cb:
-                t = Gtk.Button(label="🔧 Tool calls")
+                t = Gtk.Button(label="Tool calls")
                 t.add_css_class("flat")
                 t.connect("clicked", lambda _: tools_cb())
                 btn_row.append(t)
             if copy_curl_cb:
-                c = Gtk.Button(label="📋 curl")
+                c = Gtk.Button(label="curl")
                 c.add_css_class("flat")
                 c.connect("clicked", lambda _: copy_curl_cb())
                 btn_row.append(c)
@@ -2203,7 +2227,9 @@ class MainPanel(Gtk.Box):
 
         # Apply a full-paragraph background tint for annotated lines
         stripped = line.lstrip()
-        if stripped.startswith("💡") or stripped.startswith("ℹ"):
+        if stripped.startswith("✓"):
+            bg_tag = "success_bg"
+        elif stripped.startswith("💡") or stripped.startswith("ℹ"):
             bg_tag = "hint_bg"
         elif stripped.startswith("⚠"):
             bg_tag = "warn_bg"
@@ -2929,6 +2955,11 @@ class MainWindow(Gtk.ApplicationWindow):
             entry = self._ctrl.current_entry
             model_repo = entry.hf_model_repo if entry else "default"
             self._panel.set_curl_context(port, model_repo)
+            # Celebratory log lines — success_bg (dark green) row.
+            name = entry.display_name if entry else "Model"
+            self._panel.append_log("✓")
+            self._panel.append_log(f"✓  {name} is ready and serving on port {port}")
+            self._panel.append_log("✓")
             # Send a desktop notification so users know the model is ready even if the
             # window is hidden behind other apps.
             self._notify_ready(entry)
