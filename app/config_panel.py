@@ -314,6 +314,10 @@ class ConfigPanel(Gtk.Box):
         refresh_btn.set_tooltip_text("Refresh Docker image list")
         refresh_btn.connect("clicked", self._on_docker_refresh)
         docker_row.append(refresh_btn)
+        self._last_image_btn = Gtk.Button(label="Last used")
+        self._last_image_btn.set_tooltip_text("Jump to the last manually selected Docker image")
+        self._last_image_btn.connect("clicked", self._on_docker_last_used)
+        docker_row.append(self._last_image_btn)
         self._docker_status = Gtk.Label(label="")
         self._docker_status.add_css_class("muted")
         docker_row.append(self._docker_status)
@@ -886,11 +890,30 @@ class ConfigPanel(Gtk.Box):
         else:
             # active_id is the repo_tag for non-spec entries
             self._options.docker_image_override = active_id or ""
+        if self._options.docker_image_override:
+            from app_settings import settings
+            settings.last_docker_image = self._options.docker_image_override
+            settings.save()
         self._schedule_preview_update()
 
     def _on_docker_refresh(self, _btn) -> None:
         if self._entry:
             self._refresh_docker_images(self._entry.docker_image)
+
+    def _on_docker_last_used(self, _btn) -> None:
+        from app_settings import settings
+        last = settings.last_docker_image
+        if not last:
+            return
+        known = {img.repo_tag for img in self._docker_images}
+        if last not in known:
+            return
+        self._inhibit_signals = True
+        self._docker_combo.set_active_id(last)
+        self._inhibit_signals = False
+        self._options.docker_image_override = last
+        self._schedule_preview_update()
+        self._on_options_changed(self._options)
 
     # --------------------------------------------------------- docker images
 

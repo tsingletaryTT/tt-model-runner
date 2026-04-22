@@ -49,6 +49,9 @@ _DEFAULTS = {
     # Host weights dir passed as --host-weights-dir when non-empty.
     # Useful if weights live outside the HF cache (e.g. manually downloaded).
     "host_weights_dir": "",
+    # Last docker image the user explicitly selected (repo_tag string).
+    # Used by the "Last used" button in the docker picker.
+    "last_docker_image": "",
 }
 
 

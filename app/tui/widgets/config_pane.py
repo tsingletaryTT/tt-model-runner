@@ -96,6 +96,10 @@ class ConfigPane(Widget):
         width: 5;
         min-width: 5;
     }
+    #docker-last-btn {
+        width: 13;
+        min-width: 13;
+    }
     #hf-token-row { height: 3; layout: horizontal; }
     #hf-token-input { width: 1fr; }
     #hf-status { color: $text-muted; height: 1; }
@@ -140,7 +144,8 @@ class ConfigPane(Widget):
         yield Label("DOCKER IMAGE", classes="section-label")
         with Widget(id="docker-row"):
             yield Select([], id="docker-select", prompt="spec default")
-            yield Button("↺", id="docker-refresh", variant="default")
+            yield Button("↺",         id="docker-refresh",  variant="default")
+            yield Button("Last used", id="docker-last-btn", variant="default")
         yield Label("HF TOKEN", classes="section-label")
         with Widget(id="hf-token-row"):
             yield Input(placeholder="hf_… (Enter to save)", id="hf-token-input", password=True)
@@ -436,6 +441,10 @@ class ConfigPane(Widget):
             return
         val = event.value
         self._options.docker_image_override = "" if val is Select.BLANK else (val or "")
+        if self._options.docker_image_override:
+            from app_settings import settings
+            settings.last_docker_image = self._options.docker_image_override
+            settings.save()
         self._update_preview()
         if self._on_options_changed:
             self._on_options_changed(self._options)
@@ -447,6 +456,21 @@ class ConfigPane(Widget):
             ctrl = getattr(self.app, "_ctrl", None)
             if ctrl:
                 ctrl.scan_docker_images_async()
+            return
+        if btn_id == "docker-last-btn":
+            from app_settings import settings
+            last = settings.last_docker_image
+            if not last:
+                self.app.notify("No previously used image recorded", severity="warning")
+                return
+            known = {img.repo_tag for img in self._docker_images}
+            if last not in known:
+                self.app.notify(f"Last-used image not in current list: {last}", severity="warning")
+                return
+            try:
+                self.query_one("#docker-select", Select).value = last
+            except Exception:
+                pass
             return
         if btn_id == "hf-token-save":
             self._save_hf_token()
