@@ -3,9 +3,10 @@
 """LogPane — Logs tab for the Textual TUI."""
 from __future__ import annotations
 
+import random
 import re
 import time
-from typing import List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -38,16 +39,38 @@ class LogPane(Widget):
         height: 100%;
         layout: vertical;
     }
+    #dyk-panel {
+        height: auto;
+        display: none;
+        border: solid $primary-darken-2;
+        padding: 0 1;
+        margin: 0 1 0 1;
+        color: $text-muted;
+    }
+    #dyk-nav {
+        height: 1;
+        layout: horizontal;
+        color: $text-muted;
+    }
+    #dyk-tag {
+        width: 12;
+    }
+    #dyk-counter {
+        width: 1fr;
+        text-align: right;
+    }
     #log-stepper {
         color: $text-muted;
         padding: 0 1;
     }
     #log-progress {
         margin: 0 1;
+        display: none;
     }
     #log-progress-label {
         color: $text-muted;
         padding: 0 1;
+        display: none;
     }
     #tour-panel {
         height: 6;
@@ -101,9 +124,18 @@ class LogPane(Widget):
         self._ready_start: Optional[float] = None     # monotonic timestamp when READY
         self._uptime_timer = None
         self._banner_base: str = ""
+        self._ad_cards: List[Dict] = []               # rotating DYK / model-rec cards
+        self._ad_idx: int = 0
+        self._ad_timer = None
 
     def compose(self) -> ComposeResult:
         yield Static("", id="log-banner")
+        with Widget(id="dyk-panel"):
+            with Widget(id="dyk-nav"):
+                yield Static("", id="dyk-tag", markup=True)
+                yield Static("", id="dyk-counter", markup=True)
+            yield Static("", id="dyk-headline", markup=True)
+            yield Static("", id="dyk-body", markup=True)
         yield Static("", id="log-stepper")
         yield ProgressBar(total=100, show_eta=False, id="log-progress")
         yield Static("", id="log-progress-label")
@@ -124,6 +156,14 @@ class LogPane(Widget):
         self.query_one("#log-progress-label").display = loading
         self.query_one("#tour-panel").display = loading
 
+        idle = name in ("IDLE", "DONE", "ERROR")
+        dyk = self.query_one("#dyk-panel")
+        dyk.display = idle and bool(self._ad_cards)
+        if idle and self._ad_cards:
+            self._start_ad_timer()
+        else:
+            self._stop_ad_timer()
+
         if name == "READY":
             if self._ready_start is None:
                 self._ready_start = time.monotonic()
@@ -131,6 +171,64 @@ class LogPane(Widget):
         else:
             self._ready_start = None
             self._stop_uptime_ticker()
+
+    # ── Did-you-know / model-rec cards ──────────────────────────────────────
+
+    def set_ad_cards(self, cards: list) -> None:
+        """Replace the rotating card pool. Called from app.py after catalog loads."""
+        self._ad_cards = list(cards) if cards else []
+        self._ad_idx = 0
+        self._show_ad_card()
+        # Reveal panel if we're currently IDLE.
+        try:
+            panel = self.query_one("#dyk-panel")
+            banner = self.query_one("#log-banner", Static).renderable
+            idle = any(s in str(banner) for s in ("IDLE", "DONE", "ERROR"))
+            panel.display = idle and bool(self._ad_cards)
+            if panel.display:
+                self._start_ad_timer()
+        except Exception:
+            pass
+
+    def _show_ad_card(self) -> None:
+        if not self._ad_cards:
+            return
+        card = self._ad_cards[self._ad_idx % len(self._ad_cards)]
+        tag = card.get("tag", "Tip")
+        headline = card.get("headline", "")
+        body = card.get("body", "")
+        n = len(self._ad_cards)
+        pos = (self._ad_idx % n) + 1
+        try:
+            _TAG_COLORS = {"Model": "cyan", "Ecosystem": "yellow", "Did you know?": "green"}
+            color = _TAG_COLORS.get(tag, "blue")
+            self.query_one("#dyk-tag",     Static).update(f"[{color}]{tag}[/{color}]")
+            self.query_one("#dyk-counter", Static).update(f"[dim]{pos}/{n}[/dim]")
+            self.query_one("#dyk-headline", Static).update(f"[bold]{headline}[/bold]")
+            self.query_one("#dyk-body",     Static).update(f"[dim]{body}[/dim]")
+        except Exception:
+            pass
+
+    def _start_ad_timer(self) -> None:
+        if self._ad_timer is not None:
+            return
+        self._ad_timer = self.set_interval(8, self._rotate_ad_card)
+
+    def _stop_ad_timer(self) -> None:
+        if self._ad_timer is not None:
+            try:
+                self._ad_timer.stop()
+            except Exception:
+                pass
+            self._ad_timer = None
+
+    def _rotate_ad_card(self) -> None:
+        if not self._ad_cards:
+            return
+        self._ad_idx = (self._ad_idx + 1) % len(self._ad_cards)
+        self._show_ad_card()
+
+    # ── Uptime ticker ────────────────────────────────────────────────────────
 
     def _start_uptime_ticker(self) -> None:
         if self._uptime_timer is not None:

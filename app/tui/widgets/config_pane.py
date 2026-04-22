@@ -7,7 +7,7 @@ from typing import Callable, Optional, TYPE_CHECKING
 
 from textual.app import ComposeResult
 from textual.widget import Widget
-from textual.widgets import Button, Checkbox, Input, Label, Static
+from textual.widgets import Button, Checkbox, Input, Label, Select, Static
 
 if TYPE_CHECKING:
     from model_catalog import ModelEntry
@@ -42,6 +42,7 @@ class ConfigPane(Widget):
         height: 100%;
         layout: vertical;
         padding: 0 1;
+        overflow-y: auto;
     }
     #model-strip {
         height: 2;
@@ -72,10 +73,28 @@ class ConfigPane(Widget):
         height: auto;
     }
     #command-preview {
-        height: 1fr;
+        height: auto;
         border: solid $primary-darken-2;
         padding: 0 1;
         color: $text-muted;
+    }
+    #dev-image-row {
+        height: auto;
+        layout: horizontal;
+    }
+    #dev-image-strip {
+        height: auto;
+    }
+    #docker-row {
+        height: 3;
+        layout: horizontal;
+    }
+    #docker-select {
+        width: 1fr;
+    }
+    #docker-refresh {
+        width: 5;
+        min-width: 5;
     }
     #hf-token-row { height: 3; layout: horizontal; }
     #hf-token-input { width: 1fr; }
@@ -99,6 +118,7 @@ class ConfigPane(Widget):
         self._dev_stacks: list = []   # ["tt-forge", "tt-metal", ...] for current model
         self._arch_scan_model: str = ""  # hf_model_repo of in-flight arch scan
         self._arch_ctx_limit: int = 0   # model's actual max context_length from HF cache
+        self._docker_images: list = []  # last list received from controller
 
     def compose(self) -> ComposeResult:
         yield Static("Select a model to configure", id="model-strip")
@@ -117,6 +137,10 @@ class ConfigPane(Widget):
             yield Checkbox("Disable TT timeout",      id="no-timeout-check")
             yield Checkbox("Skip SW validation",      id="skip-sw-check")
             yield Checkbox("Disable trace capture",   id="no-trace-check")
+        yield Label("DOCKER IMAGE", classes="section-label")
+        with Widget(id="docker-row"):
+            yield Select([], id="docker-select", prompt="spec default")
+            yield Button("↺", id="docker-refresh", variant="default")
         yield Label("HF TOKEN", classes="section-label")
         with Widget(id="hf-token-row"):
             yield Input(placeholder="hf_… (Enter to save)", id="hf-token-input", password=True)
@@ -150,6 +174,13 @@ class ConfigPane(Widget):
             dl.disabled = False
         except Exception:
             pass
+        # Reset Docker image selection to spec default for the new model.
+        if self._options:
+            self._options.docker_image_override = ""
+        try:
+            self.query_one("#docker-select", Select).value = Select.BLANK
+        except Exception:
+            pass
         self._scan_arch_async(entry)
 
         row = self.query_one("#use-case-row")
@@ -157,7 +188,8 @@ class ConfigPane(Widget):
         use_cases = MODEL_TYPE_USE_CASES.get(entry.model_type, ["dev"])
         for uc in use_cases:
             label = _USE_CASE_LABELS.get(uc, uc)
-            btn = Button(label, id=f"uc-{uc}", variant="default")
+            # Use name= (not id=) so re-mounting on model switch never raises DuplicateIds.
+            btn = Button(label, name=f"uc-{uc}", variant="default")
             row.mount(btn)
 
         default_uc = use_cases[0]
@@ -205,7 +237,8 @@ class ConfigPane(Widget):
             if catalog_stacks:
                 self.query_one("#dev-image-strip", Static).update("ALSO VIA DEVELOPER IMAGE")
                 for sw in catalog_stacks:
-                    btn = Button(sw, id=f"dev-{sw.replace('-', '_')}", variant="primary")
+                    # Use name= (not id=) — same DuplicateIds guard as use-case buttons.
+                    btn = Button(sw, name=f"dev-{sw.replace('-', '_')}", variant="primary")
                     if sw not in on_disk:
                         btn.disabled = True
                         btn.tooltip = f"Script not found: {dev_repo.name}/models/{compat_entry.id}/{sw}.py"
@@ -220,6 +253,22 @@ class ConfigPane(Widget):
             self.query_one("#dev-image-strip", Static).update("")
             self.query_one("#dev-image-row").remove_children()
             self._dev_stacks = []
+
+    def load_docker_images(self, images: list) -> None:
+        """Populate the Docker image selector from the controller's image scan."""
+        self._docker_images = images
+        try:
+            sel = self.query_one("#docker-select", Select)
+            options = []
+            for img in images:
+                if img.created_str == "not pulled":
+                    label = f"{img.short_tag}  [not pulled]"
+                else:
+                    label = f"{img.short_tag}  ·  {img.size_str}"
+                options.append((label, img.repo_tag))
+            sel.set_options(options)
+        except Exception:
+            pass
 
     def set_dev_launch_callback(self, callback) -> None:
         self._on_dev_launch = callback
@@ -380,8 +429,25 @@ class ConfigPane(Widget):
         self._refresh_hf_status()
         self.app.notify("HF token saved", title="Token")
 
+    def on_select_changed(self, event: Select.Changed) -> None:
+        if event.select.id != "docker-select":
+            return
+        if self._syncing or not self._options:
+            return
+        val = event.value
+        self._options.docker_image_override = "" if val is Select.BLANK else (val or "")
+        self._update_preview()
+        if self._on_options_changed:
+            self._on_options_changed(self._options)
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        btn_id = event.button.id or ""
+        btn_id   = event.button.id   or ""
+        btn_name = event.button.name or ""
+        if btn_id == "docker-refresh":
+            ctrl = getattr(self.app, "_ctrl", None)
+            if ctrl:
+                ctrl.scan_docker_images_async()
+            return
         if btn_id == "hf-token-save":
             self._save_hf_token()
             return
@@ -394,17 +460,19 @@ class ConfigPane(Widget):
                     pass
                 self._on_download(self._entry.hf_model_repo)
             return
-        if btn_id.startswith("uc-"):
+        # Use-case and dev-image buttons carry their key in .name (not .id) to avoid
+        # DuplicateIds when the same use-case set is re-mounted for a new model.
+        if btn_name.startswith("uc-"):
             from launch_options import apply_preset
-            uc = btn_id[3:]
+            uc = btn_name[3:]
             if self._entry:
                 self._options = apply_preset(uc, self._entry)
                 self._sync_widgets_to_options()
                 self._update_preview()
                 if self._on_options_changed and self._options:
                     self._on_options_changed(self._options)
-        elif btn_id.startswith("dev-") and self._on_dev_launch and self._entry:
-            sw = btn_id[4:].replace("_", "-")
+        elif btn_name.startswith("dev-") and self._on_dev_launch and self._entry:
+            sw = btn_name[4:].replace("_", "-")
             self._on_dev_launch(self._entry.display_name.lower().replace(" ", "-"), sw)
 
     def on_input_submitted(self, event: "Input.Submitted") -> None:
@@ -495,6 +563,8 @@ class ConfigPane(Widget):
             f"--tt-device {e.device_type.lower()}",
             "--no-auth",
         ]
+        if self._options.docker_image_override:
+            parts.append(f"--override-docker-image {self._options.docker_image_override}")
 
         class _E:
             inference_engine = e.inference_engine

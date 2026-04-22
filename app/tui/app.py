@@ -26,6 +26,8 @@ from tui.widgets.images_pane import ImagesPane
 class TuiApp(App[None]):
     """Feature-equivalent TUI sharing AppController with the GTK GUI."""
 
+    # Set in on_mount; None beforehand so action guards can check safely.
+    _ctrl = None
     # Stores (port, container_name) when a running server is detected on startup.
     _pending_reconnect: "Optional[tuple]" = None
     # Two-press confirmation for tt-smi -r: stores monotonic timestamp of first press.
@@ -42,6 +44,10 @@ class TuiApp(App[None]):
     }
     TabbedContent {
         width: 1fr;
+        height: 1fr;
+    }
+    TabPane {
+        height: 1fr;
     }
     """
 
@@ -63,6 +69,7 @@ class TuiApp(App[None]):
         Binding("ctrl+g",  "git_pull",         "Git pull",  show=False),
         Binding("ctrl+l",  "copy_log",         "Copy log",  show=False),
         Binding("ctrl+p",  "load_prev_log",    "Prev log",  show=False),
+        Binding("h",       "toggle_hw_filter", "HW filter", show=False),
     ]
 
     def compose(self) -> ComposeResult:
@@ -108,6 +115,7 @@ class TuiApp(App[None]):
         self._ctrl.on_docker_images = self._on_docker_images
         self._ctrl.on_model_identified = self._on_model_identified
         self._ctrl.on_download_progress = self._on_download_progress
+        self._ctrl.on_environment_checked = self._on_environment_checked
 
         self._set_ready_tabs_enabled(False)
 
@@ -183,11 +191,27 @@ class TuiApp(App[None]):
         if self._ctrl.compat_catalog:
             device = getattr(self, "_detected_device", None)
             rail.load_compat_catalog(self._ctrl.compat_catalog, device)
+        self._rebuild_ad_cards()
 
     def _on_compat_catalog_loaded(self, catalog) -> None:
         """Wire compat catalog into the model rail DISCOVER section."""
         device = getattr(self, "_detected_device", None)
         self.query_one(ModelRail).load_compat_catalog(catalog, device)
+        self._rebuild_ad_cards()
+
+    def _rebuild_ad_cards(self) -> None:
+        """Rebuild the rotating card pool from the current catalog + compat catalog."""
+        try:
+            from ad_facts import get_all_cards
+            device = getattr(self, "_detected_device", None)
+            cards = get_all_cards(
+                self._ctrl.catalog if self._ctrl else None,
+                device,
+                self._ctrl.compat_catalog if self._ctrl else None,
+            )
+            self.query_one(LogPane).set_ad_cards(cards)
+        except Exception:
+            pass
 
     def _on_compat_select(self, compat_entry) -> None:
         """Show compat catalog entry details in the ConfigPane."""
@@ -216,11 +240,16 @@ class TuiApp(App[None]):
 
     def _on_docker_images(self, images: list) -> None:
         self.query_one(ImagesPane).load_images(images)
+        try:
+            self.query_one(ConfigPane).load_docker_images(images)
+        except Exception:
+            pass
 
     def _on_model_identified(self, entry) -> None:
         """Auto-select identified model in ModelRail after reconnect."""
         rail = self.query_one(ModelRail)
         rail.selected_entry = entry
+        rail._update_model_active(entry)
         self._on_model_select(entry)
         self.notify(f"Identified: {entry.display_name}", title="Model detected")
 
@@ -236,6 +265,19 @@ class TuiApp(App[None]):
             compat_entry = (compat.lookup(entry.display_name.lower().replace(" ", "-"))
                             or compat.lookup_by_display_name(entry.display_name))
             config_pane.set_compat_info(compat_entry, [])
+        # Refresh Docker image list for this model's spec default image.
+        self._ctrl.scan_docker_images_async()
+
+    def _on_environment_checked(self, results: list) -> None:
+        """Notify the user if any prereq is missing; detailed lines already in Logs."""
+        failing = [name for name, ok, _desc in results if not ok]
+        if failing:
+            self.notify(
+                f"Prerequisites missing: {', '.join(failing)} — see Logs",
+                severity="warning",
+                title="Environment check",
+                timeout=8,
+            )
 
     def _on_download_progress(self, hf_repo: str, fraction: float, status_line: str) -> None:
         from textual.widgets import Static, Button
@@ -259,6 +301,8 @@ class TuiApp(App[None]):
             pass
 
     def action_launch_stop(self) -> None:
+        if not self._ctrl:
+            return
         from server_manager import ServerState
         if self._ctrl.state in (ServerState.IDLE, ServerState.ERROR, ServerState.DONE):
             self._do_launch_from_rail()
@@ -332,6 +376,8 @@ class TuiApp(App[None]):
 
     def action_reconnect(self) -> None:
         """Reconnect to the most recently detected running server."""
+        if not self._ctrl:
+            return
         from server_manager import ServerState
         if not self._pending_reconnect:
             self.notify("No running server detected", severity="warning")
@@ -346,6 +392,8 @@ class TuiApp(App[None]):
 
     def action_copy_curl(self) -> None:
         """Copy a test curl command for the running server to clipboard (Ctrl+U)."""
+        if not self._ctrl:
+            return
         from server_manager import ServerState
         if self._ctrl.state != ServerState.READY:
             self.notify("Server must be READY to copy curl", severity="warning")
@@ -364,6 +412,8 @@ class TuiApp(App[None]):
 
     def action_open_browser(self) -> None:
         """Open the running server's API docs in the default browser (Ctrl+B)."""
+        if not self._ctrl:
+            return
         from server_manager import ServerState
         if self._ctrl.state != ServerState.READY:
             self.notify("Server must be READY to open in browser", severity="warning")
@@ -377,6 +427,8 @@ class TuiApp(App[None]):
 
     def action_restart_server(self) -> None:
         """Restart the server with the same model and options (Ctrl+R)."""
+        if not self._ctrl:
+            return
         from server_manager import ServerState
         if self._ctrl.state not in (ServerState.READY, ServerState.ERROR):
             self.notify("Restart only available when server is READY or ERROR",
@@ -386,11 +438,15 @@ class TuiApp(App[None]):
 
     def action_hw_refresh(self) -> None:
         """Refresh chip telemetry (tt-smi -s)."""
+        if not self._ctrl:
+            return
         self._ctrl.refresh_hardware_status()
         self.notify("Refreshing chip telemetry…", timeout=3)
 
     def action_copy_log(self) -> None:
         """Copy all visible log lines to clipboard (Ctrl+L)."""
+        if not self._ctrl:
+            return
         log_pane = self.query_one(LogPane)
         lines = [line for line, level in log_pane._all_lines
                  if log_pane._line_visible(line, level)]
@@ -402,6 +458,8 @@ class TuiApp(App[None]):
 
     def action_git_pull(self) -> None:
         """git pull the configured server repo (Ctrl+G)."""
+        if not self._ctrl:
+            return
         self.query_one(TabbedContent).active = "logs"
 
         def _on_done(success: bool, summary: str) -> None:
@@ -416,6 +474,8 @@ class TuiApp(App[None]):
 
     def action_load_prev_log(self) -> None:
         """Ctrl+P — pick a previous session log and load it into the log pane."""
+        if not self._ctrl:
+            return
         logs = self._ctrl.list_session_logs(max_count=8)
         if not logs:
             self.notify("No previous session logs found", title="Session Log")
@@ -435,8 +495,14 @@ class TuiApp(App[None]):
         self.query_one(TabbedContent).active = "logs"
         self.notify(f"Loaded {newest.name}", title="Previous Session Log")
 
+    def action_toggle_hw_filter(self) -> None:
+        """Toggle hardware-compatible-only model filter ([H])."""
+        self.query_one(ModelRail).action_toggle_hw_filter()
+
     def action_hw_reset(self) -> None:
         """Run tt-smi -r — requires two presses within 5 s to confirm."""
+        if not self._ctrl:
+            return
         import time
         now = time.monotonic()
         if now - self._hw_reset_confirm_ts < 5.0:

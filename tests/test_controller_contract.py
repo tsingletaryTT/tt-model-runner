@@ -128,3 +128,63 @@ def test_controller_on_attrs_match_contract():
         f"Controller has callbacks not in contract: {all_ctrl_cbs - contract_methods}\n"
         f"Contract has methods not in controller: {contract_methods - all_ctrl_cbs}"
     )
+
+
+def _parse_registered_callbacks(source_path: str) -> set:
+    """Parse `<ctrl_var>.on_X = ...` assignments in a Python source file.
+
+    Recognises common naming conventions: self._ctrl, controller, ctrl.
+    """
+    import ast
+    from pathlib import Path
+    _CTRL_NAMES = {"_ctrl", "controller", "ctrl"}
+    src = Path(source_path).read_text()
+    tree = ast.parse(src)
+    registered: set = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for t in node.targets:
+                if not (isinstance(t, ast.Attribute) and t.attr.startswith("on_")):
+                    continue
+                val = t.value
+                # self._ctrl.on_X  →  Attribute(Attribute(Name('self'), '_ctrl'), 'on_X')
+                if isinstance(val, ast.Attribute) and val.attr in _CTRL_NAMES:
+                    registered.add(t.attr)
+                # controller.on_X  →  Attribute(Name('controller'), 'on_X')
+                elif isinstance(val, ast.Name) and val.id in _CTRL_NAMES:
+                    registered.add(t.attr)
+    return registered
+
+
+def test_tui_app_registers_all_callbacks():
+    """TuiApp.on_mount must assign every ViewContract callback to self._ctrl."""
+    import os
+    tui_path = os.path.join(
+        os.path.dirname(__file__), "..", "app", "tui", "app.py"
+    )
+    registered = _parse_registered_callbacks(tui_path)
+    contract_cbs = {
+        m for m in dir(ViewContract)
+        if m.startswith("on_") and callable(getattr(ViewContract, m))
+    }
+    missing = contract_cbs - registered
+    assert not missing, (
+        f"TuiApp does not register these callbacks on self._ctrl: {sorted(missing)}"
+    )
+
+
+def test_gtk_app_registers_all_callbacks():
+    """MainWindow must assign every ViewContract callback to controller."""
+    import os
+    mw_path = os.path.join(
+        os.path.dirname(__file__), "..", "app", "main_window.py"
+    )
+    registered = _parse_registered_callbacks(mw_path)
+    contract_cbs = {
+        m for m in dir(ViewContract)
+        if m.startswith("on_") and callable(getattr(ViewContract, m))
+    }
+    missing = contract_cbs - registered
+    assert not missing, (
+        f"MainWindow does not register these callbacks: {sorted(missing)}"
+    )

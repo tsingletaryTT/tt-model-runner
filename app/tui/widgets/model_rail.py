@@ -52,6 +52,7 @@ class ModelRail(Widget):
         width: 22;
         height: 100%;
         padding: 0 1;
+        overflow-y: auto;
     }
     ModelRail.collapsed {
         width: 4;
@@ -60,6 +61,36 @@ class ModelRail(Widget):
     ModelRail > .rail-section-label {
         color: $text-muted;
         text-style: bold;
+    }
+    #model-filter-row {
+        height: 1;
+        layout: horizontal;
+    }
+    #model-filter-row > .rail-section-label {
+        width: auto;
+    }
+    #hw-filter-indicator {
+        width: 1fr;
+        text-align: right;
+        color: $text-muted;
+    }
+    #model-list {
+        height: 1fr;
+        min-height: 3;
+    }
+    #starred-list {
+        max-height: 6;
+    }
+    #recent-list {
+        max-height: 4;
+    }
+    #discover-list {
+        max-height: 6;
+    }
+    #model-active {
+        height: auto;
+        color: $text;
+        padding: 0 0 1 0;
     }
     #hw-strip {
         color: $text-muted;
@@ -79,7 +110,8 @@ class ModelRail(Widget):
     """
 
     BINDINGS = [
-        Binding("s", "toggle_star", "Star", show=False),
+        Binding("s", "toggle_star", "Star",      show=False),
+        Binding("h", "toggle_hw_filter", "HW filter", show=False),
     ]
 
     on_launch: Optional[Callable] = None
@@ -95,6 +127,9 @@ class ModelRail(Widget):
         super().__init__(**kwargs)
         # Instance-level lists — avoids the mutable class-level default pitfall.
         self._entries: list = []
+        self._raw_entries: list = []         # full unfiltered catalog entries
+        self._compat_devices: list = []      # device types detected on this host
+        self._hw_filter: bool = True         # when True, show only compatible entries
         self._compat_entries: list = []  # (display_name, compat_entry, sw_stack) tuples
         self._catalog = None
         self._cached_repos: set = set()  # HF repos with local cache snapshots
@@ -103,11 +138,14 @@ class ModelRail(Widget):
     def compose(self) -> ComposeResult:
         yield Static("[b]TT Model Runner[/b]", markup=True)
         yield Static("", id="state-pill")
+        yield Static("", id="model-active", markup=True)
         yield Static("", id="starred-label", markup=True)
         yield ListView(id="starred-list")
         yield Static("", id="recent-label", markup=True)
         yield ListView(id="recent-list")
-        yield Label("Model:", classes="rail-section-label")
+        with Widget(id="model-filter-row"):
+            yield Label("Model:", classes="rail-section-label")
+            yield Static("", id="hw-filter-indicator", markup=True)
         yield Input(placeholder="Search models…", id="model-search")
         yield ListView(id="model-list")
         yield Static("", id="discover-label")
@@ -121,15 +159,47 @@ class ModelRail(Widget):
 
     def load_catalog(self, catalog, compatible_devices: List[str]) -> None:
         """Populate the model list from the catalog, then scan HF cache in background."""
-        if compatible_devices:
-            self._entries = [e for e in catalog.all_entries()
-                             if e.device_type in compatible_devices]
-        else:
-            self._entries = list(catalog.all_entries())
+        self._raw_entries = list(catalog.all_entries())
+        self._compat_devices = compatible_devices or []
         self._catalog = catalog
+        self._apply_hw_filter()
         self._repopulate_model_list()
         self._refresh_starred_recent()
         self._scan_hf_cache_async()
+        self._update_hw_filter_indicator()
+
+    def _apply_hw_filter(self) -> None:
+        """Set self._entries from _raw_entries, respecting _hw_filter and _compat_devices."""
+        if self._hw_filter and self._compat_devices:
+            self._entries = [e for e in self._raw_entries
+                             if e.device_type in self._compat_devices]
+        else:
+            self._entries = self._raw_entries[:]
+
+    def action_toggle_hw_filter(self) -> None:
+        """Toggle hardware-compatible-only filter ([H])."""
+        if not self._compat_devices:
+            self.app.notify("No hardware detected — filter unavailable", severity="warning")
+            return
+        self._hw_filter = not self._hw_filter
+        self._apply_hw_filter()
+        self._repopulate_model_list()
+        self._update_hw_filter_indicator()
+        label = "compatible models only" if self._hw_filter else "all models"
+        self.app.notify(f"Model list: {label}", timeout=2)
+
+    def _update_hw_filter_indicator(self) -> None:
+        try:
+            ind = self.query_one("#hw-filter-indicator", Static)
+            if not self._compat_devices:
+                ind.update("[dim]all[/dim]")
+            elif self._hw_filter:
+                hw = "/".join(self._compat_devices[:2])
+                ind.update(f"[green]{hw} ✓[/green]")
+            else:
+                ind.update("[dim]all[/dim]")
+        except Exception:
+            pass
 
     def _repopulate_model_list(self) -> None:
         """Fill #model-list from self._entries, respecting active search and cache badges."""
@@ -278,11 +348,28 @@ class ModelRail(Widget):
         compat_entry = getattr(item, "_compat_entry", None)
         if entry is not None:
             self.selected_entry = entry
+            self._update_model_active(entry)
             if self.on_model_select:
                 self.on_model_select(entry)
         elif compat_entry is not None:
             if self.on_compat_select:
                 self.on_compat_select(compat_entry)
+
+    def _update_model_active(self, entry) -> None:
+        """Show the selected model name and device in the rail header."""
+        try:
+            lbl = self.query_one("#model-active", Static)
+            if entry:
+                size = _fmt_size(getattr(entry, "param_count", None))
+                size_part = f"  [dim]{size}[/dim]" if size else ""
+                lbl.update(
+                    f"[bold cyan]{entry.display_name[:18]}[/bold cyan]{size_part}\n"
+                    f"  [dim]{entry.device_type}[/dim]"
+                )
+            else:
+                lbl.update("")
+        except Exception:
+            pass
 
     def update_hardware(self, chips: list) -> None:
         """Update the hw-strip with a compact chip telemetry summary."""
