@@ -3,16 +3,21 @@
 """BenchPane — Bench tab for the Textual TUI."""
 from __future__ import annotations
 
+from dataclasses import asdict
+from typing import Any, Dict, List
+
 from textual.app import ComposeResult
 from textual.widget import Widget
-from textual.widgets import Button, Checkbox, DataTable, Label, RichLog, Select
+from textual.widgets import Button, Checkbox, DataTable, Label, RichLog, Select, Static
 
 _MODES = [("smoke-test", "smoke-test"), ("ci-nightly", "ci-nightly"),
           ("ci-long", "ci-long")]
 
+_PASS_ICON = {"PASS": "✓", "BELOW_TARGET": "⚠", "FAIL": "✗"}
+
 
 class BenchPane(Widget):
-    """Bench tab: run config, live output, results table."""
+    """Bench tab: run config, live output, results table with click-to-detail."""
 
     DEFAULT_CSS = """
     BenchPane {
@@ -38,14 +43,22 @@ class BenchPane(Widget):
         border: solid $primary-darken-2;
     }
     #bench-results {
-        height: 10;
+        height: 8;
+    }
+    #bench-detail {
+        height: auto;
+        display: none;
+        border: solid $primary-darken-2;
+        padding: 0 1;
+        color: $text-muted;
+        margin-top: 0;
     }
     """
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        # Local mirror used to compute aggregate stats without re-reading the controller.
-        self._result_rows: list = []  # list of dicts with mean_tps, mean_ttft_ms, tier_pass
+        # Full history records (newest first) — used for both table rendering and detail view.
+        self._full_rows: List[Dict[str, Any]] = []
 
     def compose(self) -> ComposeResult:
         with Widget(id="bench-config-row"):
@@ -55,69 +68,44 @@ class BenchPane(Widget):
             yield Checkbox("Percentile report",  id="bench-pct")
             yield Button("Run Benchmark", id="bench-run-btn", variant="success")
         with Widget(id="bench-hist-row"):
-            yield Button("Export CSV", id="bench-csv-btn", variant="default")
-            yield Button("Clear History", id="bench-clear-btn", variant="warning")
+            yield Button("Export CSV",     id="bench-csv-btn",   variant="default")
+            yield Button("Clear History",  id="bench-clear-btn", variant="warning")
         yield Label("", id="bench-stats", markup=True)
         yield Label("LIVE OUTPUT")
         yield RichLog(id="bench-live-log", highlight=False, markup=False)
-        yield Label("RESULTS")
+        yield Label("RESULTS  [dim](click row for details)[/dim]", markup=True)
         yield DataTable(id="bench-results")
+        yield Static("", id="bench-detail", markup=True)
 
     def on_mount(self) -> None:
         table = self.query_one("#bench-results", DataTable)
         table.add_columns("Pass", "ISL", "OSL", "Con", "TTFT ms",
                           "TPS", "E2EL ms", "Req/s", "Timestamp")
 
+    # ── Public API ───────────────────────────────────────────────────────────
+
     def load_history(self, history: list) -> None:
         """Pre-populate results table from persisted history (newest first)."""
-        table = self.query_one("#bench-results", DataTable)
-        table.clear()
-        self._result_rows = []
-        for r in history:
-            icon = {"PASS": "✓", "BELOW_TARGET": "⚠", "FAIL": "✗"}.get(r.get("tier_pass", ""), "?")
-            table.add_row(
-                f"{icon} {r.get('tier_pass', '?')}",
-                str(r.get("isl", "")),
-                str(r.get("osl", "")),
-                str(r.get("concurrency", "")),
-                f"{r.get('mean_ttft_ms', 0):.0f}",
-                f"{r.get('mean_tps', 0):.1f}",
-                f"{r.get('mean_e2el_ms', 0):.0f}",
-                f"{r.get('request_throughput', 0):.2f}",
-                r.get("timestamp", "")[:16],
-            )
-            self._result_rows.append({
-                "mean_tps": r.get("mean_tps", 0) or 0,
-                "mean_ttft_ms": r.get("mean_ttft_ms", 0) or 0,
-                "tier_pass": r.get("tier_pass", ""),
-            })
+        self._full_rows = list(history)   # already newest-first from controller
+        self._render_table()
         self._update_stats()
 
     def append_progress(self, line: str) -> None:
         self.query_one("#bench-live-log", RichLog).write(line)
 
     def append_result(self, result) -> None:
-        icon = {"PASS": "✓", "BELOW_TARGET": "⚠", "FAIL": "✗"}.get(
-            result.tier_pass, "?"
-        )
-        table = self.query_one("#bench-results", DataTable)
-        table.add_row(
-            f"{icon} {result.tier_pass}",
-            str(result.isl),
-            str(result.osl),
-            str(result.concurrency),
-            f"{result.mean_ttft_ms:.0f}",
-            f"{result.mean_tps:.1f}",
-            f"{result.mean_e2el_ms:.0f}",
-            f"{result.request_throughput:.2f}",
-            result.timestamp,
-        )
-        self._result_rows.append({
-            "mean_tps": result.mean_tps or 0,
-            "mean_ttft_ms": result.mean_ttft_ms or 0,
-            "tier_pass": result.tier_pass,
-        })
+        """Add a fresh BenchResult to the top of the table (newest first)."""
+        # Convert dataclass to plain dict so storage is uniform with history dicts.
+        try:
+            row = asdict(result)
+        except TypeError:
+            row = vars(result) if hasattr(result, "__dict__") else {}
+        self._full_rows.insert(0, row)
+        self._render_table()
         self._update_stats()
+        # Show the fresh result's detail immediately.
+        if self._full_rows:
+            self._show_detail(self._full_rows[0])
 
     def set_running(self, running: bool) -> None:
         """Toggle running state: disable/re-enable button and update label."""
@@ -131,6 +119,67 @@ class BenchPane(Widget):
             app_ctrl = getattr(self.app, "_ctrl", None)
             btn.disabled = (app_ctrl is None or
                             app_ctrl.state != ServerState.READY)
+
+    # ── Table rendering ──────────────────────────────────────────────────────
+
+    def _render_table(self) -> None:
+        """Rebuild the DataTable from _full_rows (newest first) and focus row 0."""
+        table = self.query_one("#bench-results", DataTable)
+        table.clear()
+        for r in self._full_rows:
+            icon = _PASS_ICON.get(r.get("tier_pass", ""), "?")
+            table.add_row(
+                f"{icon} {r.get('tier_pass', '?')}",
+                str(r.get("isl", "")),
+                str(r.get("osl", "")),
+                str(r.get("concurrency", "")),
+                f"{r.get('mean_ttft_ms', 0) or 0:.0f}",
+                f"{r.get('mean_tps', 0) or 0:.1f}",
+                f"{r.get('mean_e2el_ms', 0) or 0:.0f}",
+                f"{r.get('request_throughput', 0) or 0:.2f}",
+                (r.get("timestamp", "") or "")[:16],
+            )
+        # Move cursor to the newest row (row 0) so it's immediately visible.
+        if self._full_rows:
+            table.move_cursor(row=0)
+
+    # ── Detail panel ─────────────────────────────────────────────────────────
+
+    def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        """Show full metrics for the row the cursor lands on."""
+        idx = event.cursor_row
+        if idx is not None and 0 <= idx < len(self._full_rows):
+            self._show_detail(self._full_rows[idx])
+
+    def _show_detail(self, row: dict) -> None:
+        model   = row.get("model_name", "?")
+        device  = row.get("device", "")
+        isl     = row.get("isl", "?")
+        osl     = row.get("osl", "?")
+        con     = row.get("concurrency", "?")
+        ttft    = row.get("mean_ttft_ms", 0) or 0
+        p95     = row.get("p95_ttft_ms") or 0
+        tps     = row.get("mean_tps", 0) or 0
+        decode  = row.get("tps_decode", 0) or 0
+        e2el    = row.get("mean_e2el_ms", 0) or 0
+        req_s   = row.get("request_throughput", 0) or 0
+        verdict = row.get("tier_pass", "?")
+        ts      = (row.get("timestamp", "") or "")[:19]
+
+        icon  = _PASS_ICON.get(verdict, "?")
+        color = {"PASS": "green", "BELOW_TARGET": "yellow", "FAIL": "red"}.get(verdict, "dim")
+        lines = [
+            f"[bold]{model}[/bold]  [dim]{device}[/dim]   [{color}]{icon} {verdict}[/{color}]  [dim]{ts}[/dim]",
+            f"  ISL [bold]{isl}[/bold]  OSL [bold]{osl}[/bold]  Concurrency [bold]{con}[/bold]",
+            f"  TTFT [bold]{ttft:.1f} ms[/bold]  p95 [dim]{p95:.1f} ms[/dim]"
+            f"   TPS [bold]{tps:.2f}[/bold]  decode [dim]{decode:.2f}[/dim]",
+            f"  E2EL [bold]{e2el:.1f} ms[/bold]   Req/s [bold]{req_s:.3f}[/bold]",
+        ]
+        detail = self.query_one("#bench-detail", Static)
+        detail.update("\n".join(lines))
+        detail.display = True
+
+    # ── Event handlers ───────────────────────────────────────────────────────
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         btn_id = event.button.id
@@ -182,19 +231,32 @@ class BenchPane(Widget):
         except OSError as exc:
             self.notify(f"Export failed: {exc}", severity="error")
 
+    def _do_clear_history(self) -> None:
+        app_ctrl = getattr(self.app, "_ctrl", None)
+        if not app_ctrl:
+            return
+        app_ctrl.clear_bench_history()
+        self._full_rows = []
+        self.query_one("#bench-results", DataTable).clear()
+        self.query_one("#bench-detail", Static).display = False
+        self._update_stats()
+        self.notify("Benchmark history cleared")
+
+    # ── Stats ─────────────────────────────────────────────────────────────────
+
     def _update_stats(self) -> None:
-        """Recompute and display aggregate stats from all stored results."""
+        """Recompute and display aggregate stats across all stored results."""
         try:
             stats_lbl = self.query_one("#bench-stats", Label)
         except Exception:
             return
-        if not self._result_rows:
+        if not self._full_rows:
             stats_lbl.update("")
             return
-        tps_vals  = [r["mean_tps"]     for r in self._result_rows if r["mean_tps"] > 0]
-        ttft_vals = [r["mean_ttft_ms"] for r in self._result_rows if r["mean_ttft_ms"] > 0]
-        passes    = sum(1 for r in self._result_rows if r["tier_pass"] == "PASS")
-        n = len(self._result_rows)
+        tps_vals  = [r.get("mean_tps", 0) or 0     for r in self._full_rows if (r.get("mean_tps") or 0) > 0]
+        ttft_vals = [r.get("mean_ttft_ms", 0) or 0 for r in self._full_rows if (r.get("mean_ttft_ms") or 0) > 0]
+        passes    = sum(1 for r in self._full_rows if r.get("tier_pass") == "PASS")
+        n = len(self._full_rows)
         parts = [f"[dim]{n} run{'s' if n != 1 else ''}[/dim]"]
         if tps_vals:
             parts.append(f"best TPS [bold]{max(tps_vals):.1f}[/bold]")
@@ -202,13 +264,3 @@ class BenchPane(Widget):
             parts.append(f"best TTFT [bold]{min(ttft_vals):.0f} ms[/bold]")
         parts.append(f"pass rate [bold]{passes}/{n}[/bold]")
         stats_lbl.update("  ·  ".join(parts))
-
-    def _do_clear_history(self) -> None:
-        app_ctrl = getattr(self.app, "_ctrl", None)
-        if not app_ctrl:
-            return
-        app_ctrl.clear_bench_history()
-        self._result_rows = []
-        self.query_one("#bench-results", DataTable).clear()
-        self._update_stats()
-        self.notify("Benchmark history cleared")
