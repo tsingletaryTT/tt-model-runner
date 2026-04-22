@@ -404,7 +404,7 @@ class ConfigPanel(Gtk.Box):
 
         # --- Developer Image launch section (revealed when compat catalog shows tt-forge/tt-metal)
         self._dev_launch_rev = Gtk.Revealer()
-        self._dev_launch_rev.set_transition_type(Gtk.RevealerTransitionType.SLIDE_DOWN)
+        self._dev_launch_rev.set_transition_type(Gtk.RevealerTransitionType.CROSSFADE)
         dev_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         dev_box.set_margin_top(8)
         dev_box.set_margin_bottom(4)

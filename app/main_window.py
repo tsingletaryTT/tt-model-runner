@@ -206,7 +206,7 @@ class Sidebar(Gtk.Box):
         # Prerequisites status bar — shown only when at least one prereq is failing.
         # Compact row of colored pills: ✓ docker  ✗ HF_TOKEN  etc.
         self._prereq_rev = Gtk.Revealer()
-        self._prereq_rev.set_transition_type(Gtk.RevealerTransitionType.SLIDE_DOWN)
+        self._prereq_rev.set_transition_type(Gtk.RevealerTransitionType.CROSSFADE)
         self._prereq_rev.set_overflow(Gtk.Overflow.HIDDEN)
         self._prereq_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
         self._prereq_box.set_margin_start(8); self._prereq_box.set_margin_end(8)
@@ -1267,7 +1267,7 @@ class MainPanel(Gtk.Box):
         #   Use case  [Chat ▾]                               [⚙]
         #             Balanced — default context, concurrent requests
         self._model_card_rev = Gtk.Revealer()
-        self._model_card_rev.set_transition_type(Gtk.RevealerTransitionType.SLIDE_DOWN)
+        self._model_card_rev.set_transition_type(Gtk.RevealerTransitionType.CROSSFADE)
         self._model_card_rev.set_overflow(Gtk.Overflow.HIDDEN)
 
         card_outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
@@ -1353,7 +1353,7 @@ class MainPanel(Gtk.Box):
 
         # Stepper (revealed during LOADING)
         self._stepper_rev = Gtk.Revealer()
-        self._stepper_rev.set_transition_type(Gtk.RevealerTransitionType.SLIDE_DOWN)
+        self._stepper_rev.set_transition_type(Gtk.RevealerTransitionType.CROSSFADE)
         self._stepper_rev.set_overflow(Gtk.Overflow.HIDDEN)
         stepper_box = Gtk.Box(); stepper_box.set_margin_start(10); stepper_box.set_margin_top(5); stepper_box.set_margin_bottom(3)
         self._stepper_label = Gtk.Label(label="")
@@ -1367,7 +1367,7 @@ class MainPanel(Gtk.Box):
 
         # Progress bar + label (revealed during active states)
         self._progress_rev = Gtk.Revealer()
-        self._progress_rev.set_transition_type(Gtk.RevealerTransitionType.SLIDE_DOWN)
+        self._progress_rev.set_transition_type(Gtk.RevealerTransitionType.CROSSFADE)
         self._progress_rev.set_overflow(Gtk.Overflow.HIDDEN)
         prog_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         prog_box.set_margin_start(10); prog_box.set_margin_end(10)
@@ -1386,7 +1386,7 @@ class MainPanel(Gtk.Box):
 
         # Tour panel (revealed during LOADING)
         self._tour_rev = Gtk.Revealer()
-        self._tour_rev.set_transition_type(Gtk.RevealerTransitionType.SLIDE_DOWN)
+        self._tour_rev.set_transition_type(Gtk.RevealerTransitionType.CROSSFADE)
         self._tour_rev.set_overflow(Gtk.Overflow.HIDDEN)
         tour_outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         tour_outer.add_css_class("tour-panel")
@@ -1817,7 +1817,7 @@ class MainPanel(Gtk.Box):
         self._action_sep.set_visible(False)
         self.append(self._action_sep)
         self._action_rev = Gtk.Revealer()
-        self._action_rev.set_transition_type(Gtk.RevealerTransitionType.SLIDE_UP)
+        self._action_rev.set_transition_type(Gtk.RevealerTransitionType.CROSSFADE)
         self._action_rev.set_overflow(Gtk.Overflow.HIDDEN)
         self._action_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         self._action_box.set_margin_start(10); self._action_box.set_margin_end(10)
