@@ -382,7 +382,7 @@ class DeployPanel(Gtk.Box):
 
         # Port entry — defaults to 8000, 8001, 8002, … based on slot index
         port_entry = Gtk.Entry()
-        port_entry.set_text(f"800{len(self._slot_widgets)}")
+        port_entry.set_text(str(8000 + len(self._slot_widgets)))
         port_entry.set_max_width_chars(6)
         port_entry.set_width_chars(6)
 

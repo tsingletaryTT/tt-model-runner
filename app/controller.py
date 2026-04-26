@@ -414,19 +414,6 @@ class AppController:
 
         threading.Thread(target=_scan, daemon=True).start()
 
-    def _read_hf_token(self, repo_path: Path) -> Optional[str]:
-        """Read HF_TOKEN from environment or .env file in repo_path."""
-        token = os.environ.get("HF_TOKEN", "")
-        if token:
-            return token
-        env_file = repo_path / ".env"
-        if env_file.exists():
-            for line in env_file.read_text(errors="replace").splitlines():
-                if line.startswith("HF_TOKEN="):
-                    token = line.split("=", 1)[1].strip().strip('"').strip("'")
-                    if token:
-                        return token
-        return None
 
     @staticmethod
     def _is_port_open(port: str) -> bool:
