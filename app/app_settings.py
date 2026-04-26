@@ -52,6 +52,8 @@ _DEFAULTS = {
     # Last docker image the user explicitly selected (repo_tag string).
     # Used by the "Last used" button in the docker picker.
     "last_docker_image": "",
+    # Last deploy profile name — restored on next launch.
+    "last_deploy_profile": "",
 }
 
 

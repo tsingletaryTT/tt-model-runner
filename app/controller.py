@@ -506,66 +506,21 @@ class AppController:
         self._emit("on_log_line",
                    f"▶ Launching {entry.display_name} on {entry.device_type} · port {port}")
 
-        hf_token = self._read_hf_token(repo_path)
-        if not hf_token:
+        from launch_config_builder import build_launch_config
+        config = build_launch_config(
+            model_name=entry.display_name,
+            device_type=entry.device_type,
+            port=port,
+            device_id=self._options.device_id,
+            inference_engine=entry.inference_engine,
+            settings=_settings,
+            options=self._options,
+            log_cb=lambda line: self._emit("on_log_line", line),
+        )
+        if not config.hf_token:
             self._emit("on_log_line",
                        "⚠ HF_TOKEN not found in environment or .env — launch may fail")
-
-        # ── Smart cache defaults ─────────────────────────────────────────────
-        # run.py enforces that only ONE of --host-hf-cache, --host-weights-dir,
-        # --host-volume may be passed.  Apply in priority order and stop at the
-        # first match so we never set two at once.
-        #
-        # Priority: host_weights_dir > host_hf_cache > host_volume
-        # (most-specific wins; host_volume is the generic fallback)
-
-        _cache_set = (
-            bool(self._options.host_weights_dir)
-            or bool(self._options.host_hf_cache)
-            or bool(self._options.host_volume)
-        )
-
-        if not _cache_set:
-            # 1. Explicit weights dir from settings (most specific).
-            wd = _settings.host_weights_dir
-            if wd:
-                wd_path = Path(wd).expanduser()
-                if wd_path.exists():
-                    self._options.host_weights_dir = str(wd_path)
-                    self._emit("on_log_line", f"ℹ Weights dir → {wd_path}")
-                    _cache_set = True
-
-        if not _cache_set:
-            # 2. HF cache — reuses already-downloaded weights, skips re-download.
-            hf_cache = _settings.hf_cache_path
-            if hf_cache:
-                hf_dir = Path(hf_cache).expanduser()
-                if hf_dir.exists():
-                    self._options.host_hf_cache = str(hf_dir)
-                    self._emit("on_log_line", f"ℹ HF cache  → {hf_dir}")
-                    _cache_set = True
-
-        if not _cache_set:
-            # 3. Generic CACHE_ROOT volume (created on first use).
-            cache_dir = Path(_settings.cache_root_path).expanduser()
-            try:
-                cache_dir.mkdir(parents=True, exist_ok=True)
-                self._options.host_volume = str(cache_dir)
-                self._emit("on_log_line", f"ℹ Cache dir → {cache_dir}")
-            except OSError as exc:
-                self._emit("on_log_line",
-                           f"⚠ Could not create cache dir {cache_dir}: {exc} — launch may fail")
-
-        config = LaunchConfig(
-            repo_path=repo_path,
-            model_name=entry.display_name,
-            device=entry.device_type,
-            port=port,
-            hf_token=hf_token,
-            no_auth=True,
-            options=self._options,
-            inference_engine=entry.inference_engine,
-        )
+        self._options = config.options
 
         # Record in recent_models (newest first, capped at 5 unique entries)
         rec = {"model_name": entry.model_name, "device": entry.device_type,
