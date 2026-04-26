@@ -12,13 +12,12 @@ from typing import Callable, List, Optional
 
 from deploy_profile import (
     DEVICE_CHIP_COUNT, DeployProfile, OrchestratorCallbacks,
-    ProfileSlot, SlotRunState,
+    ProfileSlot,
 )
 from deploy_profile_store import (
-    delete_deploy_profile, list_deploy_profiles,
+    list_deploy_profiles,
     load_deploy_profile, save_deploy_profile,
 )
-from launch_options import LaunchOptions
 from model_catalog import ModelCatalog
 from profile_orchestrator import ProfileOrchestrator
 from server_manager import ServerState
@@ -34,6 +33,7 @@ _STATE_CSS = {
     ServerState.READY:         ("READY",         "pill-ready"),
     ServerState.ERROR:         ("ERROR",         "pill-error"),
     ServerState.STOPPING:      ("STOPPING",      "pill-stopping"),
+    ServerState.RUNNING:       ("RUNNING",       "pill-loading"),
     ServerState.IDLE:          ("IDLE",          "pill-idle"),
     ServerState.DONE:          ("DONE",          "pill-ready"),
 }
@@ -398,13 +398,13 @@ class DeployPanel(Gtk.Box):
         label_entry.set_width_chars(8)
 
         sw = _SlotWidgets(None, model_dd, device_lbl, port_entry, chip_entry, label_entry, keys)
-        slot_idx = len(self._slot_widgets)
         self._slot_widgets.append(sw)
 
-        # The × button captures its own index at creation time via a default argument
         remove_btn = Gtk.Button(label="×")
         remove_btn.add_css_class("flat")
-        remove_btn.connect("clicked", lambda _, i=slot_idx: self._remove_slot_row(i))
+        # Capture sw by object reference so removal works correctly even after
+        # earlier slots are deleted (avoids the stale-index bug).
+        remove_btn.connect("clicked", lambda _, s=sw: self._remove_slot_row_by_ref(s))
 
         row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         row.set_margin_top(2)
@@ -436,14 +436,13 @@ class DeployPanel(Gtk.Box):
                 chip_entry.set_text(str(slot.chip_index))
             label_entry.set_text(slot.label)
 
-    def _remove_slot_row(self, idx: int):
-        """Remove the slot editor row at *idx* (index captured at row-creation time)."""
-        if idx >= len(self._slot_widgets):
+    def _remove_slot_row_by_ref(self, sw: _SlotWidgets):
+        """Remove the slot row identified by object reference."""
+        if sw not in self._slot_widgets:
             return
-        sw = self._slot_widgets[idx]
         if sw.row and sw.row.get_parent():
             self._slots_box.remove(sw.row)
-        self._slot_widgets.pop(idx)
+        self._slot_widgets.remove(sw)
 
     def _collect_slots(self) -> List[ProfileSlot]:
         """Return ProfileSlots for all valid slot rows (skips rows with no model selected)."""
@@ -465,6 +464,8 @@ class DeployPanel(Gtk.Box):
 
     def _on_launch_from_edit(self):
         """Save the current profile then launch it immediately."""
+        if not self._name_entry.get_text().strip():
+            return
         self._on_save()
         if self._current_profile:
             self._launch_profile(self._current_profile)
@@ -560,7 +561,6 @@ class _SlotCard(Gtk.Box):
         header.append(stop_btn)
         self.append(header)
 
-        # Compact log view (120 px tall) — auto-scrolls to the bottom on new lines
         self._log_scroll = Gtk.ScrolledWindow()
         self._log_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         self._log_scroll.set_size_request(-1, 120)
@@ -570,6 +570,10 @@ class _SlotCard(Gtk.Box):
         self._log_view.add_css_class("log-view")
         self._log_buffer = self._log_view.get_buffer()
         self._log_scroll.set_child(self._log_view)
+        # Auto-scroll: wire to "changed" so we scroll after layout is updated.
+        self._log_scroll.get_vadjustment().connect(
+            "changed", lambda adj: adj.set_value(adj.get_upper() - adj.get_page_size())
+        )
         self.append(self._log_scroll)
 
     def set_state(self, state: ServerState):
@@ -582,12 +586,8 @@ class _SlotCard(Gtk.Box):
         self._state_badge.add_css_class(css)
 
     def append_log(self, line: str):
-        """Insert *line* at the end of the log buffer and scroll to show it."""
+        """Insert *line* at the end of the log buffer."""
         if self._log_buffer is None:
             return
         end_iter = self._log_buffer.get_end_iter()
         self._log_buffer.insert(end_iter, line + "\n")
-        # Scroll the viewport to the bottom so the latest line is visible
-        if self._log_scroll:
-            vadj = self._log_scroll.get_vadjustment()
-            vadj.set_value(vadj.get_upper())
