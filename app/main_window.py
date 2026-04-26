@@ -2805,6 +2805,7 @@ class MainWindow(Gtk.ApplicationWindow):
         )
         self._ctrl = controller
         self._running_server_bar: Optional[Gtk.Box] = None
+        self._deploy_panel = None  # set before _build_menubar to guard _on_deploy_toggle
 
         # Outer vertical box: menu bar + optional reconnect banner + content stack
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
