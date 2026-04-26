@@ -2793,7 +2793,7 @@ class MainWindow(Gtk.ApplicationWindow):
     and progress tracking live in AppController.
     """
 
-    def __init__(self, controller, **kwargs):
+    def __init__(self, controller, orchestrator=None, **kwargs):
         safe_w, safe_h = self._clamp_to_workarea(
             _settings.window_width, _settings.window_height
         )
@@ -2806,7 +2806,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self._ctrl = controller
         self._running_server_bar: Optional[Gtk.Box] = None
 
-        # Outer vertical box: menu bar + optional reconnect banner + paned content
+        # Outer vertical box: menu bar + optional reconnect banner + content stack
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         outer.append(self._build_menubar())
 
@@ -2835,7 +2835,23 @@ class MainWindow(Gtk.ApplicationWindow):
 
         self._panel = MainPanel()
         paned.set_end_child(self._panel)
-        outer.append(paned)
+
+        # Outer stack so the Deploy panel can replace the whole paned layout.
+        self._main_stack = Gtk.Stack()
+        self._main_stack.set_vexpand(True)
+        self._main_stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
+        self._main_stack.add_named(paned, "main")
+        if orchestrator is not None:
+            from deploy_panel import DeployPanel
+            self._deploy_panel = DeployPanel(
+                orchestrator=orchestrator,
+                get_catalog=lambda: self._ctrl.catalog,
+            )
+            self._main_stack.add_named(self._deploy_panel, "deploy")
+        else:
+            self._deploy_panel = None
+
+        outer.append(self._main_stack)
         self.set_child(outer)
         self._outer = outer
         self.connect("close-request", self._on_close)
@@ -3634,7 +3650,26 @@ class MainWindow(Gtk.ApplicationWindow):
         help_btn.add_css_class("flat")
         bar.append(help_btn)
 
+        # ── Deploy toggle (right-aligned) ────────────────────────────────────
+        spacer = Gtk.Box()
+        spacer.set_hexpand(True)
+        bar.append(spacer)
+
+        self._deploy_toggle = Gtk.ToggleButton(label="Deploy")
+        self._deploy_toggle.add_css_class("flat")
+        self._deploy_toggle.connect("toggled", self._on_deploy_toggle)
+        bar.append(self._deploy_toggle)
+
         return bar
+
+    def _on_deploy_toggle(self, btn: Gtk.ToggleButton) -> None:
+        if self._deploy_panel is None:
+            btn.set_active(False)
+            return
+        if btn.get_active():
+            self._main_stack.set_visible_child_name("deploy")
+        else:
+            self._main_stack.set_visible_child_name("main")
 
     # ── Global keyboard shortcuts ─────────────────────────────────────────────
 

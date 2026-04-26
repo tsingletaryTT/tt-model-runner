@@ -219,8 +219,23 @@ class App(Gtk.Application):
         from controller import AppController
         controller = AppController(dispatch_fn=GLib.idle_add)
 
+        from app_settings import settings as _settings
+        from deploy_profile import OrchestratorCallbacks
+        from profile_orchestrator import ProfileOrchestrator
+        _placeholder_cbs = OrchestratorCallbacks(
+            on_slot_state=lambda *a: None,
+            on_slot_log=lambda *a: None,
+            on_slot_progress=lambda *a: None,
+            on_profile_done=lambda: None,
+        )
+        orchestrator = ProfileOrchestrator(
+            settings=_settings,
+            dispatch_fn=GLib.idle_add,
+            callbacks=_placeholder_cbs,
+        )
+
         from main_window import MainWindow
-        win = MainWindow(controller=controller, application=self)
+        win = MainWindow(controller=controller, orchestrator=orchestrator, application=self)
 
         provider = Gtk.CssProvider()
         provider.load_from_data(_CSS)
