@@ -4,11 +4,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Callable, List, Optional
+from typing import TYPE_CHECKING, Callable, List, Optional
 
 from launch_options import LaunchOptions
-from server_manager import ServerManager, ServerState
-from health_worker import HealthWorker
+
+if TYPE_CHECKING:
+    from health_worker import HealthWorker
+    from server_manager import ServerManager, ServerState
 
 
 class ChipAssignmentError(Exception):
