@@ -72,15 +72,12 @@ def _profile_from_dict(data: dict) -> DeployProfile:
 # ---------------------------------------------------------------------------
 
 def save_deploy_profile(profile: DeployProfile) -> None:
-    """Write *profile* to disk as JSON, overwriting any existing file.
-
-    If ``profile.created`` is empty it is set to the current local time
-    (ISO-8601, second resolution) before writing.
-    """
+    """Write *profile* to disk as JSON, overwriting any existing file."""
     _DEPLOY_PROFILES_DIR.mkdir(parents=True, exist_ok=True)
-    if not profile.created:
-        profile.created = datetime.now().isoformat(timespec="seconds")
-    _profile_path(profile.name).write_text(json.dumps(asdict(profile), indent=2))
+    data = asdict(profile)
+    if not data["created"]:
+        data["created"] = datetime.now().isoformat(timespec="seconds")
+    _profile_path(profile.name).write_text(json.dumps(data, indent=2))
 
 
 def load_deploy_profile(name: str) -> Optional[DeployProfile]:
