@@ -248,7 +248,8 @@ class ProfileOrchestrator:
                 )
                 self._slot_states[idx] = rs
                 self._dispatch(self._cbs.on_slot_state, idx, ServerState.ERROR, msg)
-                break  # cannot continue — dependency chain broken
+                self.stop_all()  # shut down any slots that were already started
+                break
 
             device_id = self._device_id_str(slot.device_type, chip_idx)
             # Event set when this slot reaches READY or ERROR.
@@ -297,6 +298,8 @@ class ProfileOrchestrator:
             hw = HealthWorker(
                 port=slot.port,
                 on_ready=_on_ready,
+                # on_lost is intentionally a no-op: ProfileOrchestrator only manages
+                # sequential startup; post-READY health monitoring is out of scope.
                 on_lost=lambda: None,
                 dispatch_fn=self._dispatch,
                 engine=_engine,
@@ -334,6 +337,8 @@ class ProfileOrchestrator:
             ready_event.wait(timeout=1800)
 
             if self._stop_requested or rs.state == ServerState.ERROR:
+                # Stop any slots that already reached READY before failing.
+                self.stop_all()
                 break
 
         # Notify the UI that the full profile launch sequence has completed
