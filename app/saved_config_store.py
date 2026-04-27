@@ -44,7 +44,8 @@ _SAVED_CONFIGS_DIR = Path.home() / ".config" / "tt-runner-gui" / "saved_configs"
 _SENTINEL = "__last_success__"
 
 # Valid characters for user-chosen config names (letters, digits, _, -, ., space).
-_NAME_RE = re.compile(r"^[\w\-. ]+$")
+# Must start with a word character to prevent dot-only (".", "..") or all-space names.
+_NAME_RE = re.compile(r"^\w[\w\-. ]*$")
 
 
 # ---------------------------------------------------------------------------
@@ -171,14 +172,19 @@ def load_named(name: str) -> SavedConfig:
     ------
     FileNotFoundError
         If no config with the given name exists on disk.
+    ValueError
+        If the file exists but is corrupt or unreadable.
     """
     path = _config_path(name)
     if not path.exists():
         raise FileNotFoundError(f"No saved config named {name!r}")
-    return _dict_to_config(json.loads(path.read_text()))
+    try:
+        return _dict_to_config(json.loads(path.read_text()))
+    except (json.JSONDecodeError, OSError, TypeError, KeyError) as exc:
+        raise ValueError(f"Corrupt config file for {name!r}") from exc
 
 
-def list_named() -> list:
+def list_named() -> list[str]:
     """Return a sorted list of user-named config names.
 
     Excludes ``__last_success__`` so callers always get only the names that

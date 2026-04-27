@@ -64,7 +64,7 @@ def test_save_named_and_list():
     assert names == ["another-config", "my-config"]
 
 
-def test_list_named_excludes_last_success(tmp_path):
+def test_list_named_excludes_last_success():
     scs.save_last_success(_make_cfg("__last_success__"))
     scs.save_named(_make_cfg("named"))
     assert scs.list_named() == ["named"]
@@ -106,9 +106,14 @@ def test_created_timestamp_set_on_first_save():
     assert loaded.created != ""
 
 
+def test_load_named_raises_for_absent():
+    with pytest.raises(FileNotFoundError):
+        scs.load_named("nonexistent")
+
+
 def test_atomic_write(tmp_path):
     """File is written via tmp+rename so a partial write is never observed."""
     cfg = _make_cfg("atomic")
     scs.save_named(cfg)
-    # Verify no leftover .tmp file
+    assert (tmp_path / "atomic.json").exists()
     assert not list(tmp_path.glob("*.tmp"))
