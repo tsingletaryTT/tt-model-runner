@@ -154,7 +154,7 @@ def test_all_slots_ready_writes_last_success(tmp_path, monkeypatch):
 
     orch._run_sequential = fake_sequential
     orch.launch_profile(profile, MagicMock())
-    import time; time.sleep(0.1)  # let thread finish
+    orch._launch_thread.join(timeout=5)
 
     loaded = scs.load_last_success()
     assert loaded is not None
