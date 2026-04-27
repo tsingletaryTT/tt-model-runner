@@ -21,8 +21,8 @@ Typical usage:
         inference_engine="vllm",
         options_json=json.dumps(dataclasses.asdict(launch_options)),
         deploy_profile_name="",
-        created=now_iso(),
-        last_used=now_iso(),
+        created="",   # store layer fills this on first save
+        last_used="", # store layer fills this on every save
     )
     store.save(cfg)
 """
