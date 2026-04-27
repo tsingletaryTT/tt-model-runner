@@ -3169,6 +3169,9 @@ class MainWindow(Gtk.ApplicationWindow):
         self.add_controller(_kc)
 
         # Restore last successful launch config silently on startup.
+        # Note: catalog hasn't loaded yet, so model_name and options_json are skipped
+        # for single-server configs; port and device_type are applied immediately.
+        # Full restore (including model selection) is available via the Load button.
         try:
             from saved_config_store import load_last_success
             _last = load_last_success()
