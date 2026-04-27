@@ -289,6 +289,20 @@ class DeployPanel(Gtk.Box):
 
     # ── Sidebar helpers ──────────────────────────────────────────────────────
 
+    def select_profile(self, name: str) -> None:
+        """Select the named profile in the sidebar list.
+
+        Refreshes the list from disk first, then selects the matching row.
+        No-op if the profile no longer exists on disk.
+        """
+        self._refresh_profile_list()
+        row = self._profile_list.get_first_child()
+        while row is not None:
+            if getattr(row, "_profile_name", None) == name:
+                self._profile_list.select_row(row)
+                return
+            row = row.get_next_sibling()
+
     def _refresh_profile_list(self):
         """Repopulate the left-hand sidebar from disk."""
         # Remove all existing rows first
