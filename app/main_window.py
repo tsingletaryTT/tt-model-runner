@@ -2923,7 +2923,52 @@ class MainWindow(Gtk.ApplicationWindow):
         _kc.connect("key-pressed", self._on_window_key_pressed)
         self.add_controller(_kc)
 
+        # Restore last successful launch config silently on startup.
+        try:
+            from saved_config_store import load_last_success
+            _last = load_last_success()
+            if _last:
+                self._restore_config(_last)
+        except Exception:
+            pass
+
     # ── Callbacks pushed by AppController ────────────────────────────────────
+
+    def _restore_config(self, cfg) -> None:
+        """Pre-fill the UI from a SavedConfig (silent — no banners or toasts)."""
+        if cfg.deploy_profile_name:
+            # Profile launch: switch to deploy panel and select the profile.
+            if self._deploy_panel is not None:
+                self._deploy_toggle.set_active(True)
+                self._main_stack.set_visible_child_name("deploy")
+                self._deploy_panel.select_profile(cfg.deploy_profile_name)
+        else:
+            # Single-server launch: restore sidebar fields.
+            if cfg.model_name and self._ctrl.catalog:
+                for entry in self._ctrl.catalog.all_entries():
+                    if entry.display_name == cfg.model_name:
+                        self._sidebar.select_model_by_id(entry.model_name)
+                        break
+            if cfg.device_type:
+                sl = self._sidebar._device_dropdown.get_model()
+                if sl is not None:
+                    for i in range(sl.get_n_items()):
+                        if sl.get_string(i) == cfg.device_type:
+                            self._sidebar._device_dropdown.set_selected(i)
+                            break
+            if cfg.port:
+                self._sidebar._port_entry.set_text(str(cfg.port))
+            if cfg.options_json and cfg.options_json != "{}":
+                try:
+                    import json
+                    from launch_options import LaunchOptions
+                    opts_dict = json.loads(cfg.options_json)
+                    known = set(LaunchOptions.__dataclass_fields__)
+                    opts = LaunchOptions(**{k: v for k, v in opts_dict.items() if k in known})
+                    if self._panel._config_panel is not None:
+                        self._panel._config_panel.load_options(opts)
+                except Exception:
+                    pass  # silently skip malformed options
 
     def _on_state_changed(self, state: ServerState, info: str) -> None:
         """React to server state transitions: update banner, lock sidebar,
