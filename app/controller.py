@@ -279,6 +279,7 @@ class AppController:
         # Saved HealthWorker params — used to restart after an auto-retry kills it via ERROR.
         self._last_health_port: Optional[str] = None
         self._last_health_engine: str = "vllm"
+        self._last_launch_config = None   # set by _do_launch; read by _on_health_ready
 
         # Fetch compatibility catalog in the background — dispatches on_compat_catalog_loaded.
         def _on_compat(cat: Optional[CompatCatalog]) -> None:
@@ -504,6 +505,7 @@ class AppController:
             options=self._options,
             log_cb=lambda line: self._emit("on_log_line", line),
         )
+        self._last_launch_config = config   # saved so _on_health_ready can read it later
         if not config.hf_token:
             self._emit("on_log_line",
                        "⚠ HF_TOKEN not found in environment or .env — launch may fail")
@@ -1031,6 +1033,27 @@ class AppController:
                     self._current_entry.device_type,
                     dur, cold=False,
                 )
+            # Persist last-success config for restore-on-startup.
+            if self._current_entry and self._last_launch_config:
+                try:
+                    import json
+                    import dataclasses as _dc
+                    from saved_config import SavedConfig
+                    from saved_config_store import save_last_success
+                    save_last_success(SavedConfig(
+                        name="__last_success__",
+                        model_name=self._current_entry.display_name,
+                        device_type=self._current_entry.device_type,
+                        port=int(self._last_launch_config.port),
+                        docker_image=self._last_launch_config.docker_image_override,
+                        inference_engine=self._current_entry.inference_engine,
+                        options_json=json.dumps(_dc.asdict(self._options)),
+                        deploy_profile_name="",
+                        created="",
+                        last_used="",
+                    ))
+                except Exception:
+                    pass  # never crash the health callback over a save failure
             # On reconnect (no current_entry), try to identify the model from /v1/models
             if not self._current_entry and models and self._catalog:
                 self._try_identify_model_from_health(models)

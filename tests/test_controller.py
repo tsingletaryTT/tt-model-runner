@@ -418,6 +418,57 @@ def test_get_bench_history_newest_first(tmp_path):
         assert history[-1]["model_name"] == "model-0"
 
 
+# ── READY hook — last-success persistence ──────────────────────────────────────
+
+def test_ready_writes_last_success(tmp_path, monkeypatch):
+    """On READY, AppController writes a last-success SavedConfig."""
+    import saved_config_store as scs
+    monkeypatch.setattr(scs, "_SAVED_CONFIGS_DIR", tmp_path)
+
+    from controller import AppController
+    from server_manager import ServerState
+
+    ctrl = AppController(dispatch_fn=lambda fn, *a: fn(*a))
+
+    # Simulate a completed launch: set the internal state that _on_health_ready reads.
+    from model_catalog import ModelEntry
+    entry = ModelEntry(
+        model_id="llama-3-8b",
+        model_name="llama-3-8b",
+        display_name="Llama 3 8B",
+        hf_model_repo="meta-llama/Llama-3-8B",
+        model_type="LLM",
+        family="Llama",
+        device_type="n300",
+        inference_engine="vllm",
+        docker_image="",
+        status="available",
+        param_count=None,
+        min_disk_gb=None,
+        min_ram_gb=None,
+    )
+    ctrl._current_entry = entry
+    ctrl._state = ServerState.LOADING
+
+    from server_manager import LaunchConfig
+    from pathlib import Path
+    ctrl._last_launch_config = LaunchConfig(
+        repo_path=Path("/tmp"), model_name="meta-llama/Llama-3-8B",
+        device="n300", port="8000",
+        docker_image_override="ghcr.io/tt/img:v1",
+    )
+
+    ctrl._on_health_ready(["meta-llama/Llama-3-8B"])
+
+    loaded = scs.load_last_success()
+    assert loaded is not None
+    assert loaded.model_name == "Llama 3 8B"
+    assert loaded.device_type == "n300"
+    assert loaded.port == 8000
+    assert loaded.docker_image == "ghcr.io/tt/img:v1"
+    assert loaded.deploy_profile_name == ""
+
+
 # ── Bench history clear ────────────────────────────────────────────────────────
 
 def test_clear_bench_history_empties_settings(tmp_path):
