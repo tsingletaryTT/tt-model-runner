@@ -335,6 +335,22 @@ class Sidebar(Gtk.Box):
         self._launch_btn.connect("clicked", self._on_launch_clicked)
         btnbox.append(self._launch_btn)
         self.append(btnbox)
+
+        # Env vars button — shown only when state == READY
+        env_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        env_row.set_margin_start(8); env_row.set_margin_end(8)
+        env_row.set_margin_bottom(4)
+        self._env_btn = Gtk.Button(label="⎘ env")
+        self._env_btn.add_css_class("flat")
+        self._env_btn.set_tooltip_text("Copy connection env vars for external tools")
+        self._env_btn.set_hexpand(True)
+        self._env_btn.connect("clicked", self._on_env_btn_clicked)
+        self._env_btn.set_visible(False)
+        env_row.append(self._env_btn)
+        self.append(env_row)
+        self._env_port: str = "8000"
+        self._env_model_id: str = ""
+
         self.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
 
         # Hardware section
@@ -558,6 +574,80 @@ class Sidebar(Gtk.Box):
         hf_save_btn.connect("clicked", lambda _: self._save_hf_token())
         hf_entry_row.append(hf_save_btn)
         box.append(hf_entry_row)
+
+        popover.set_child(box)
+        return popover
+
+    def set_env_context(self, port: str, model_id: str) -> None:
+        """Store connection info for the env-vars popover."""
+        self._env_port = port
+        self._env_model_id = model_id
+
+    def set_env_visible(self, visible: bool) -> None:
+        """Show or hide the env-vars copy button."""
+        self._env_btn.set_visible(visible)
+
+    def _on_env_btn_clicked(self, btn) -> None:
+        """Build and show the env-vars popover anchored to the env button."""
+        popover = self._build_env_popover()
+        popover.set_parent(btn)
+        popover.popup()
+
+    def _build_env_popover(self) -> Gtk.Popover:
+        """Build a Gtk.Popover with copyable VLLM_BASE_URL / VLLM_MODEL / api_key rows."""
+        url = f"http://localhost:{self._env_port}/v1"
+        model = self._env_model_id or "default"
+
+        rows = [
+            ("VLLM_BASE_URL", url),
+            ("VLLM_MODEL",    model),
+            ("api_key",       "none"),
+        ]
+        export_block = "\n".join(f"export {k}={v}" for k, v in rows)
+
+        popover = Gtk.Popover()
+        popover.set_autohide(True)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        box.set_margin_start(12); box.set_margin_end(12)
+        box.set_margin_top(10);   box.set_margin_bottom(10)
+        box.set_size_request(340, -1)
+
+        for key, val in rows:
+            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            lbl = Gtk.Label(label=f"{key}={val}")
+            lbl.set_hexpand(True)
+            lbl.set_xalign(0)
+            lbl.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
+            lbl.add_css_class("muted")
+            copy_btn = Gtk.Button(label="⎘")
+            copy_btn.add_css_class("flat")
+            copy_btn.set_tooltip_text(f"Copy {key} value")
+            _val = val
+            copy_btn.connect(
+                "clicked",
+                lambda _, v=_val: (
+                    Gdk.Display.get_default().get_clipboard().set(v)
+                    if Gdk.Display.get_default() else None
+                ),
+            )
+            row.append(lbl)
+            row.append(copy_btn)
+            box.append(row)
+
+        box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+
+        copy_all_btn = Gtk.Button(label="Copy all as export")
+        copy_all_btn.set_hexpand(True)
+        _block = export_block
+        copy_all_btn.connect(
+            "clicked",
+            lambda _, p=popover, b=_block: [
+                Gdk.Display.get_default().get_clipboard().set(b)
+                if Gdk.Display.get_default() else None,
+                p.popdown(),
+            ],
+        )
+        box.append(copy_all_btn)
 
         popover.set_child(box)
         return popover
@@ -3152,6 +3242,8 @@ class MainWindow(Gtk.ApplicationWindow):
     def _on_state_changed(self, state: ServerState, info: str) -> None:
         """React to server state transitions: update banner, lock sidebar,
         and navigate the main panel stack to the appropriate page."""
+        if state != ServerState.READY:
+            self._sidebar.set_env_visible(False)
         self._panel.set_state(state, info)
         self._sidebar.set_locked(
             state not in (ServerState.IDLE, ServerState.ERROR, ServerState.DONE)
@@ -3205,6 +3297,8 @@ class MainWindow(Gtk.ApplicationWindow):
             # window is hidden behind other apps.
             self._notify_ready(entry)
             self._sidebar._refresh_saved_configs_section()
+            self._sidebar.set_env_context(port, entry.hf_model_repo if entry else "")
+            self._sidebar.set_env_visible(True)
 
         self._panel.update_action_strip(
             state,
