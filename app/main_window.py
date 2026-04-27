@@ -389,6 +389,9 @@ class Sidebar(Gtk.Box):
         self._saved_cfg_dropdown = Gtk.DropDown(model=self._saved_cfg_list)
         self._saved_cfg_dropdown.set_hexpand(True)
         box.append(self._saved_cfg_dropdown)
+        # Update Delete button sensitivity whenever the selection changes so that
+        # named configs become deletable as soon as the user picks them.
+        self._saved_cfg_dropdown.connect("notify::selected", lambda *_: self._update_delete_sensitivity())
 
         btn_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
         self._saved_cfg_load_btn = Gtk.Button(label="Load")
@@ -422,6 +425,20 @@ class Sidebar(Gtk.Box):
         self._refresh_saved_configs_section()
         return box
 
+    def _update_delete_sensitivity(self) -> None:
+        """Update Delete button sensitivity based on the current dropdown selection.
+
+        The Delete button should only be enabled when a named (user-created) config
+        is selected — not for the sentinel "Last Success" entry and not for the
+        placeholder text shown when no configs exist yet.
+        """
+        name = self._get_selected_saved_config_name()
+        self._saved_cfg_delete_btn.set_sensitive(
+            bool(name)
+            and name != "(no saved configs yet)"
+            and name != "__last_success__"
+        )
+
     def _refresh_saved_configs_section(self) -> None:
         """Rebuild the saved configs dropdown from disk."""
         from saved_config_store import list_named, load_last_success
@@ -444,10 +461,8 @@ class Sidebar(Gtk.Box):
         for name in named:
             sl.append(name)
         self._saved_cfg_dropdown.set_selected(0)
-        # Delete is insensitive when "Last Success" is selected (index 0 when has_last)
-        self._saved_cfg_delete_btn.set_sensitive(
-            not has_last or self._saved_cfg_dropdown.get_selected() != 0
-        )
+        # Delegate to the shared helper so the logic lives in one place.
+        self._update_delete_sensitivity()
 
     def _get_selected_saved_config_name(self) -> str:
         """Return the raw name for the currently selected dropdown entry."""
@@ -483,8 +498,14 @@ class Sidebar(Gtk.Box):
         self._saved_cfg_name_row.set_visible(False)
         self._saved_cfg_name_entry.set_text("")
         if self.on_save_config:
+            # The registered callback (MainWindow._on_save_config_from_sidebar) already
+            # calls _refresh_saved_configs_section(), so we must not call it again here
+            # to avoid a double-refresh that can reset the dropdown to index 0 twice and
+            # trigger spurious sensitivity updates.
             self.on_save_config(name)
-        self._refresh_saved_configs_section()
+        else:
+            # No callback wired (e.g. standalone sidebar tests): refresh directly.
+            self._refresh_saved_configs_section()
 
     def _on_saved_cfg_delete(self) -> None:
         from saved_config_store import delete_named
