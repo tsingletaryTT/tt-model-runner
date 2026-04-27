@@ -213,6 +213,51 @@ class ProfileOrchestrator:
         span = DEVICE_CHIP_COUNT.get(device_type, 1)
         return ",".join(str(start_chip + offset) for offset in range(span))
 
+    # ── Post-launch persistence ───────────────────────────────────────────────
+
+    def _write_last_success_if_all_ready(self, profile) -> None:
+        """Write a last-success SavedConfig if every slot reached READY.
+
+        Called at the end of _run_sequential.  If even one slot is not READY
+        (e.g. ERROR, STOPPING, or still None), the write is skipped so we only
+        record genuinely complete deployments.
+
+        The SavedConfig is a profile-only record: single-server fields
+        (model_name, device_type, port, docker_image, inference_engine) are left
+        empty / 0, and deploy_profile_name carries the profile's name so the
+        restore path knows which DeployProfile to reload.
+
+        Any I/O failure is silently swallowed — the orchestrator must never
+        crash because of a failed metrics write.
+        """
+        all_ready = (
+            bool(self._slot_states)
+            and all(
+                s is not None and s.state == ServerState.READY
+                for s in self._slot_states
+            )
+        )
+        if not all_ready:
+            return
+        try:
+            from saved_config import SavedConfig
+            from saved_config_store import save_last_success
+            save_last_success(SavedConfig(
+                name="__last_success__",
+                model_name="",
+                device_type="",
+                port=0,
+                docker_image="",
+                inference_engine="",
+                options_json="{}",
+                deploy_profile_name=profile.name,
+                created="",
+                last_used="",
+            ))
+        except Exception:
+            # Never crash the orchestrator over a save failure.
+            pass
+
     # ── Sequential launch loop ────────────────────────────────────────────────
 
     def _run_sequential(
@@ -343,4 +388,5 @@ class ProfileOrchestrator:
 
         # Notify the UI that the full profile launch sequence has completed
         # (either all slots READY, an error halted the run, or stop was requested).
+        self._write_last_success_if_all_ready(profile)
         self._dispatch(self._cbs.on_profile_done)

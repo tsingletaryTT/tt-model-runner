@@ -100,3 +100,63 @@ class TestAssignChips:
 
     def test_device_id_str_four(self, tmp_path):
         assert _orch(tmp_path)._device_id_str("P150X4", 0) == "0,1,2,3"
+
+
+def test_all_slots_ready_writes_last_success(tmp_path, monkeypatch):
+    """ProfileOrchestrator writes a last-success entry when all slots are READY."""
+    import sys; sys.path.insert(0, "app")
+    import saved_config_store as scs
+    monkeypatch.setattr(scs, "_SAVED_CONFIGS_DIR", tmp_path)
+
+    from deploy_profile import DeployProfile, ProfileSlot, OrchestratorCallbacks
+    from launch_options import LaunchOptions
+    from profile_orchestrator import ProfileOrchestrator
+    from server_manager import ServerState
+    from unittest.mock import MagicMock, patch
+
+    cbs = OrchestratorCallbacks(
+        on_slot_state=lambda *a: None,
+        on_slot_log=lambda *a: None,
+        on_slot_progress=lambda *a: None,
+        on_profile_done=lambda: None,
+    )
+
+    orch = ProfileOrchestrator(
+        settings=MagicMock(server_repo_path="/tmp", cache_root_path="", hf_token=""),
+        dispatch_fn=lambda fn, *a: fn(*a),
+        callbacks=cbs,
+    )
+
+    profile = DeployProfile(
+        name="my-profile",
+        slots=[ProfileSlot(
+            model_name="Llama-3.1-8B", device_type="n300",
+            port="8001", options=LaunchOptions(),
+        )],
+        created="",
+    )
+
+    # Patch _run_sequential to simulate all-READY without real Docker
+    from deploy_profile import SlotRunState
+    from server_manager import ServerState as SS
+
+    rs = SlotRunState(
+        slot=profile.slots[0], state=SS.READY,
+        server_mgr=MagicMock(), health_worker=MagicMock(),
+        log_lines=[], port="8001", chip_index=0,
+    )
+
+    def fake_sequential(p, catalog, chips):
+        orch._slot_states = [rs]
+        # Simulate all-READY path: write last success then dispatch done
+        orch._write_last_success_if_all_ready(p)
+        orch._dispatch(orch._cbs.on_profile_done)
+
+    orch._run_sequential = fake_sequential
+    orch.launch_profile(profile, MagicMock())
+    import time; time.sleep(0.1)  # let thread finish
+
+    loaded = scs.load_last_success()
+    assert loaded is not None
+    assert loaded.deploy_profile_name == "my-profile"
+    assert loaded.model_name == ""
