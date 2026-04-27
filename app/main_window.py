@@ -165,6 +165,8 @@ class Sidebar(Gtk.Box):
         self._cached_repos: set = set()
         self._compat_catalog = None      # set via set_compat_catalog()
         self.on_compat_select = None     # Callable[[CompatEntry], None]
+        self.on_restore_config = None   # set by MainWindow; callable(SavedConfig)
+        self.on_save_config = None      # set by MainWindow; callable(name: str)
         # Active model type filters: empty set = show all types.
         saved_tf = _settings.type_filters or []
         self._type_filter_active: set = set(saved_tf) if saved_tf else set(_TYPE_ORDER)
@@ -319,6 +321,11 @@ class Sidebar(Gtk.Box):
         self._port_check_timer: Optional[int] = None
         GLib.timeout_add(600, self._schedule_port_check)  # initial check after UI settles
 
+        # Saved configs section
+        saved_cfg_section = self._build_saved_configs_section()
+        self.append(saved_cfg_section)
+        self.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+
         # Launch button
         btnbox = Gtk.Box(); btnbox.set_margin_start(8); btnbox.set_margin_end(8)
         btnbox.set_margin_top(4); btnbox.set_margin_bottom(4)
@@ -366,6 +373,129 @@ class Sidebar(Gtk.Box):
         self.append(hw_box)
 
         self._update_hf_status()
+
+    def _build_saved_configs_section(self) -> Gtk.Box:
+        """Build the SAVED CONFIGS section: label + dropdown + Load/Save/Delete buttons."""
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        box.set_margin_start(8); box.set_margin_end(8)
+        box.set_margin_top(4);   box.set_margin_bottom(4)
+
+        hdr = Gtk.Label(label="SAVED CONFIGS")
+        hdr.add_css_class("section-label")
+        hdr.set_halign(Gtk.Align.START)
+        box.append(hdr)
+
+        self._saved_cfg_list = Gtk.StringList()
+        self._saved_cfg_dropdown = Gtk.DropDown(model=self._saved_cfg_list)
+        self._saved_cfg_dropdown.set_hexpand(True)
+        box.append(self._saved_cfg_dropdown)
+
+        btn_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        self._saved_cfg_load_btn = Gtk.Button(label="Load")
+        self._saved_cfg_load_btn.set_hexpand(True)
+        self._saved_cfg_load_btn.connect("clicked", lambda _: self._on_saved_cfg_load())
+        btn_row.append(self._saved_cfg_load_btn)
+
+        self._saved_cfg_save_btn = Gtk.Button(label="Save")
+        self._saved_cfg_save_btn.set_hexpand(True)
+        self._saved_cfg_save_btn.connect("clicked", lambda _: self._on_saved_cfg_save())
+        btn_row.append(self._saved_cfg_save_btn)
+
+        self._saved_cfg_delete_btn = Gtk.Button(label="Delete")
+        self._saved_cfg_delete_btn.set_hexpand(True)
+        self._saved_cfg_delete_btn.connect("clicked", lambda _: self._on_saved_cfg_delete())
+        btn_row.append(self._saved_cfg_delete_btn)
+        box.append(btn_row)
+
+        self._saved_cfg_name_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        self._saved_cfg_name_entry = Gtk.Entry()
+        self._saved_cfg_name_entry.set_placeholder_text("Config name…")
+        self._saved_cfg_name_entry.set_hexpand(True)
+        self._saved_cfg_name_entry.connect("activate", lambda _: self._on_saved_cfg_confirm_save())
+        confirm_btn = Gtk.Button(label="✓")
+        confirm_btn.connect("clicked", lambda _: self._on_saved_cfg_confirm_save())
+        self._saved_cfg_name_row.append(self._saved_cfg_name_entry)
+        self._saved_cfg_name_row.append(confirm_btn)
+        self._saved_cfg_name_row.set_visible(False)
+        box.append(self._saved_cfg_name_row)
+
+        self._refresh_saved_configs_section()
+        return box
+
+    def _refresh_saved_configs_section(self) -> None:
+        """Rebuild the saved configs dropdown from disk."""
+        from saved_config_store import list_named, load_last_success
+        sl = self._saved_cfg_list
+        while sl.get_n_items() > 0:
+            sl.remove(0)
+
+        has_last = load_last_success() is not None
+        named = list_named()
+
+        if not has_last and not named:
+            sl.append("(no saved configs yet)")
+            self._saved_cfg_load_btn.set_sensitive(False)
+            self._saved_cfg_delete_btn.set_sensitive(False)
+            return
+
+        self._saved_cfg_load_btn.set_sensitive(True)
+        if has_last:
+            sl.append("Last Success")
+        for name in named:
+            sl.append(name)
+        self._saved_cfg_dropdown.set_selected(0)
+        # Delete is insensitive when "Last Success" is selected (index 0 when has_last)
+        self._saved_cfg_delete_btn.set_sensitive(
+            not has_last or self._saved_cfg_dropdown.get_selected() != 0
+        )
+
+    def _get_selected_saved_config_name(self) -> str:
+        """Return the raw name for the currently selected dropdown entry."""
+        idx = self._saved_cfg_dropdown.get_selected()
+        sl = self._saved_cfg_list
+        if idx >= sl.get_n_items():
+            return ""
+        label = sl.get_string(idx)
+        if label == "Last Success":
+            return "__last_success__"
+        return label
+
+    def _on_saved_cfg_load(self) -> None:
+        from saved_config_store import load_last_success, load_named
+        name = self._get_selected_saved_config_name()
+        if not name or name == "(no saved configs yet)":
+            return
+        try:
+            cfg = load_last_success() if name == "__last_success__" else load_named(name)
+        except Exception:
+            return
+        if cfg and self.on_restore_config:
+            self.on_restore_config(cfg)
+
+    def _on_saved_cfg_save(self) -> None:
+        self._saved_cfg_name_row.set_visible(True)
+        self._saved_cfg_name_entry.grab_focus()
+
+    def _on_saved_cfg_confirm_save(self) -> None:
+        name = self._saved_cfg_name_entry.get_text().strip()
+        if not name:
+            return
+        self._saved_cfg_name_row.set_visible(False)
+        self._saved_cfg_name_entry.set_text("")
+        if self.on_save_config:
+            self.on_save_config(name)
+        self._refresh_saved_configs_section()
+
+    def _on_saved_cfg_delete(self) -> None:
+        from saved_config_store import delete_named
+        name = self._get_selected_saved_config_name()
+        if not name or name == "__last_success__" or name == "(no saved configs yet)":
+            return
+        try:
+            delete_named(name)
+        except Exception:
+            pass
+        self._refresh_saved_configs_section()
 
     def _build_settings_popover(self) -> Gtk.Popover:
         """Build the settings popover containing server repo path and HF token."""
@@ -2879,6 +3009,10 @@ class MainWindow(Gtk.ApplicationWindow):
         controller.on_download_progress = self._on_download_progress
         controller.on_environment_checked = self._on_environment_checked
 
+        # Wire saved-config sidebar callbacks.
+        self._sidebar.on_restore_config = self._restore_config
+        self._sidebar.on_save_config = self._on_save_config_from_sidebar
+
         # Connect the ↻ chip-telemetry refresh button to the controller.
         self._sidebar._hw_refresh_btn.connect(
             "clicked", lambda _: self._ctrl.refresh_hardware_status()
@@ -2970,6 +3104,30 @@ class MainWindow(Gtk.ApplicationWindow):
                 except Exception:
                     pass  # silently skip malformed options
 
+    def _on_save_config_from_sidebar(self, name: str) -> None:
+        """Called when user confirms a named save in the sidebar."""
+        from saved_config import SavedConfig
+        from saved_config_store import save_named
+        import json, dataclasses
+        entry = self._ctrl.current_entry
+        opts = self._panel.get_options() or self._ctrl.get_options()
+        try:
+            save_named(SavedConfig(
+                name=name,
+                model_name=entry.display_name if entry else "",
+                device_type=entry.device_type if entry else "",
+                port=int(self._sidebar.get_port()),
+                docker_image=getattr(opts, "docker_image_override", "") if opts else "",
+                inference_engine=entry.inference_engine if entry else "",
+                options_json=json.dumps(dataclasses.asdict(opts)) if opts else "{}",
+                deploy_profile_name="",
+                created="",
+                last_used="",
+            ))
+        except Exception:
+            pass
+        self._sidebar._refresh_saved_configs_section()
+
     def _on_state_changed(self, state: ServerState, info: str) -> None:
         """React to server state transitions: update banner, lock sidebar,
         and navigate the main panel stack to the appropriate page."""
@@ -3025,6 +3183,7 @@ class MainWindow(Gtk.ApplicationWindow):
             # Send a desktop notification so users know the model is ready even if the
             # window is hidden behind other apps.
             self._notify_ready(entry)
+            self._sidebar._refresh_saved_configs_section()
 
         self._panel.update_action_strip(
             state,
