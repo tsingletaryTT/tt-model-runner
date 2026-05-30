@@ -24,12 +24,14 @@ _HW_MAP: Dict[str, str] = {
     "p100": "P100",
     "p150": "P150",
     "p300": "P300",
-    "galaxy": "T3K",             # Galaxy = T3K (8× WH ring)
+    "galaxy": "GALAXY",          # 1 Blackhole Galaxy = 8 BH chips
     "quietbox": "P150X4",        # Quietbox (gen 1) = P150X4 (4× N150)
     "quietbox 2": "P300X2",      # Quietbox 2 = P300X2 (2× P300 Blackhole)
     "2 x quietbox": "P150X8",    # 2× Quietbox = P150X8 (8× N150)
     "loudbox": "P300X2",         # Loudbox = P300X2
-    "2 x galaxy": "P150X8",
+    "2 x galaxy": "DUAL_GALAXY", # 2 Blackhole Galaxy = 16 BH chips (was P150X8 — WH pairing, now BH)
+    "4 x galaxy": "QUAD_GALAXY", # 4 Blackhole Galaxy = 32 BH chips
+    "galaxy + t3k": "GALAXY_T3K",   # Galaxy (8 BH) + T3K (8 WH) pairing, mixed arch
 }
 
 
