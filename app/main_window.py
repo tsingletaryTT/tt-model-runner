@@ -20,6 +20,7 @@ gi.require_version("Pango", "1.0")
 from gi.repository import Gdk, GLib, Gio, Gtk, Pango
 
 from app_settings import settings as _settings
+from deploy_profile import DEVICE_CHIP_COUNT
 from model_catalog import ModelCatalog, ModelEntry
 from server_manager import ServerState
 
@@ -28,7 +29,9 @@ _TYPE_LABEL = {
     "LLM": "LLM", "VLM": "VLM", "IMAGE": "Image", "VIDEO": "Video",
     "AUDIO": "Audio", "CNN": "CNN", "EMBEDDING": "Embedding", "TTS": "TTS",
 }
-_DEVICE_ORDER = ["N150", "N300", "P100", "P150", "P150X4", "P300", "P300X2", "T3K", "P150X8"]
+_DEVICE_ORDER = ["N150", "N150X4", "N300", "P100", "P150", "P150X4",
+                 "P300", "P300X2", "T3K", "P150X8",
+                 "GALAXY", "DUAL_GALAXY", "QUAD_GALAXY", "GALAXY_T3K"]
 
 _STATE_LABELS = {
     ServerState.IDLE:          ("IDLE",          "pill-idle"),
@@ -123,12 +126,14 @@ def _format_param_count(param_count: Optional[float]) -> str:
     return ""
 
 
-def _entry_label(entry, cached_repos: set) -> str:
-    """Build model tree leaf label with optional size, ✓ (cached), and ⚠ (experimental) badges."""
+def _entry_label(entry, cached_repos: set, chip_count: Optional[int] = None) -> str:
+    """Build model tree leaf label with optional size, chip-count, ✓ (cached), and ⚠ (experimental) badges."""
     label = entry.display_name
     size = _format_param_count(getattr(entry, "param_count", None))
     if size:
         label += f"  {size}"
+    if chip_count is not None:
+        label += f"  {chip_count}-chip"
     if entry.hf_model_repo in cached_repos:
         label += "  ✓"
     if getattr(entry, "status", "") == "EXPERIMENTAL":
@@ -724,6 +729,65 @@ class Sidebar(Gtk.Box):
                     if entry.model_name == last_model:
                         self._tree_view.get_selection().select_iter(leaf_it)
                 self._tree_view.expand_row(self._tree_store.get_path(rec_it), False)
+
+        # QUIETBOX 2 section — shown when P300X2 is in the active device filter.
+        # Models also appear in the standard type sections below — duplication is intentional
+        # so users can either browse all BH-family models together (here) or by type (below).
+        if filter_devices and "P300X2" in filter_devices:
+            bh_cat = self._catalog.get_blackhole_family(filter_devices)
+            bh_tree = bh_cat.get_tree()
+            # Pre-filter bh_tree by type filter and search before computing the count,
+            # so the header reflects only visible entries and we skip the section entirely
+            # when nothing would be shown (matching the pattern used by the type loop below).
+            filtered_bh_tree: dict = {}
+            for type_name in _TYPE_ORDER:
+                if type_name not in bh_tree:
+                    continue
+                if type_name not in self._type_filter_active:
+                    continue
+                families = bh_tree[type_name]
+                if searching:
+                    families = {
+                        fam: [e for e in entries if search in e.display_name.lower() or search in fam.lower()]
+                        for fam, entries in families.items()
+                    }
+                    families = {f: e for f, e in families.items() if e}
+                if families:
+                    filtered_bh_tree[type_name] = families
+            total_bh = sum(
+                len(entries)
+                for families in filtered_bh_tree.values()
+                for entries in families.values()
+            )
+            if total_bh:
+                qb2_it = self._tree_store.append(
+                    None, [f"QUIETBOX 2 ({total_bh})", "", "", False]
+                )
+                for type_name in _TYPE_ORDER:
+                    if type_name not in filtered_bh_tree:
+                        continue
+                    families = filtered_bh_tree[type_name]
+                    type_it = self._tree_store.append(
+                        qb2_it, [f"{_TYPE_LABEL.get(type_name, type_name)}", "", "", False]
+                    )
+                    for family, entries in sorted(families.items()):
+                        fam_it = self._tree_store.append(type_it, [family, "", "", False])
+                        for entry in entries:
+                            chips = DEVICE_CHIP_COUNT.get(entry.device_type)
+                            label = _entry_label(entry, self._cached_repos, chip_count=chips)
+                            leaf_it = self._tree_store.append(
+                                fam_it, [label, entry.model_name, entry.device_type, True]
+                            )
+                            if entry.model_name == last_model:
+                                self._tree_view.get_selection().select_iter(leaf_it)
+                # Expand QB2 section by default (QB2 header + all type subgroups)
+                qb2_path = self._tree_store.get_path(qb2_it)
+                self._tree_view.expand_row(qb2_path, False)
+                n_types = self._tree_store.iter_n_children(qb2_it)
+                for i in range(n_types):
+                    child_it = self._tree_store.iter_nth_child(qb2_it, i)
+                    if child_it:
+                        self._tree_view.expand_row(self._tree_store.get_path(child_it), False)
 
         for type_name in _TYPE_ORDER:
             if type_name not in tree:
