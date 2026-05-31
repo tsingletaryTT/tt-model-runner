@@ -7,6 +7,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
 
+# Device types that run on Blackhole silicon, in ascending chip-count order.
+# Used by the QUIETBOX 2 sidebar section to surface all BH-family models
+# when a QB2 (P300X2) is detected.
+BLACKHOLE_FAMILY: List[str] = ["P100", "P150", "P300", "P300X2"]
+
 _FAMILY_STOP_WORDS = {
     "instruct", "chat", "base", "distill", "v0", "v1", "v2", "v3", "b", "it",
     "hf", "bf16", "fp16", "int4", "int8", "gptq", "awq", "gguf", "preview",
@@ -110,3 +115,12 @@ class ModelCatalog:
 
     def all_entries(self) -> List[ModelEntry]:
         return list(self._entries)
+
+    def get_blackhole_family(self, detected_devices: List[str]) -> "ModelCatalog":
+        """Return entries whose device_type is in BLACKHOLE_FAMILY and detected.
+
+        On a QB2 (P300X2 detected), device_detector adds P100/P150/P300/P300X2 to
+        the detected set via _SUPERSET_INCLUDES, so all BH-family models appear.
+        """
+        eligible = set(BLACKHOLE_FAMILY) & {d.upper() for d in detected_devices}
+        return ModelCatalog([e for e in self._entries if e.device_type.upper() in eligible])

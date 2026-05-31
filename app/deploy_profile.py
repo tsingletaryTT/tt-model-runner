@@ -26,9 +26,14 @@ DEVICE_CHIP_COUNT: dict = {
     "P300":             2,
     "P300X2":           2,
     "P150X4":           4,
+    "N150X4":           4,    # 4× N150 chips
     "P150X8":           8,
     "T3K":              8,
     "BLACKHOLE_GALAXY": 8,
+    "GALAXY":           8,    # 1 Blackhole Galaxy = 8 chips
+    "GALAXY_T3K":       16,   # 1 Galaxy (8 BH) + T3K (8 WH) = 16 chips, mixed arch
+    "DUAL_GALAXY":      16,   # 2 Galaxy = 16 chips
+    "QUAD_GALAXY":      32,   # 4 Galaxy = 32 chips
 }
 
 
