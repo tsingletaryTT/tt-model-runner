@@ -702,3 +702,48 @@ def test_preflight_apply_warns_but_does_not_apply_non_auto_remedy(tmp_path):
     assert not (tmp_path / ".env").exists()
     assert any("tt-metal#99999" in line or "manual-fix" in line
                for line in view.log_lines)
+
+
+# ── Reactive remediation (_maybe_remediate) ─────────────────────────────────────
+
+def test_reactive_remediation_relaunches_once(tmp_path, monkeypatch):
+    """A crash log line matching a KB symptom triggers apply + relaunch, once."""
+    ctrl, _ = make_controller()
+    fake_settings = _make_test_settings(tmp_path)
+    fake_settings.server_repo_path = str(tmp_path)
+
+    entry = MagicMock()
+    entry.display_name = "Llama-3.1-8B-Instruct"
+    entry.device_type = "P100"
+
+    ctrl._current_entry = entry
+    ctrl._port = "8000"
+
+    relaunches = []
+    monkeypatch.setattr(ctrl, "_do_launch",
+                        lambda entry, port: relaunches.append(port))
+
+    w = wr.Workaround(id="p100", devices=["P100"], models=["*"],
+                       symptom="clash with L1 buffers",
+                       env={"MAX_PREFILL_CHUNK_SIZE": "2"}, vllm={"max_model_len": 1024})
+
+    crash = "TT_THROW ... clash with L1 buffers"
+
+    with patch("controller._settings", fake_settings), \
+         patch("controller._wr.match_symptom", lambda line, device, model: w):
+        # First crash → apply + relaunch (async: _do_launch runs on a daemon thread).
+        assert ctrl._maybe_remediate(crash) is True
+
+        deadline = time.monotonic() + 2.0
+        while len(relaunches) < 1 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert len(relaunches) == 1
+        assert ctrl._options.max_model_len == 1024
+
+        # Second crash → capped, no further relaunch.
+        assert ctrl._maybe_remediate(crash) is False
+
+        deadline = time.monotonic() + 0.2
+        while time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert len(relaunches) == 1

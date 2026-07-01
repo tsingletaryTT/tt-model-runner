@@ -759,6 +759,41 @@ class AppController:
         self._emit("on_log_line", "║ [config logged · undo available]")
         self._emit("on_log_line", "╚══════════════════════════════════════════")
 
+    def _maybe_remediate(self, line: str) -> bool:
+        """If a log line matches a known crash symptom, apply the fix + relaunch.
+
+        Reactive counterpart to `_preflight_apply`: fires on error-ish log lines
+        seen *during* a run (e.g. a mid-launch container crash) rather than
+        before launch. Capped at one attempt per session
+        (self._remediation_attempts) so a workaround that doesn't actually fix
+        the crash can never loop us into a relaunch storm.
+
+        Returns True only when a reactive relaunch was actually triggered
+        (i.e. matched + applied + a relaunch thread was started); False
+        otherwise (already capped, no current launch context, no KB match,
+        or the match is not auto-appliable).
+        """
+        if self._remediation_attempts >= 1:
+            return False
+        entry = self._current_entry
+        port = self._port
+        if not entry or not port:
+            return False
+        try:
+            w = _wr.match_symptom(line, entry.device_type, entry.display_name)
+        except Exception:
+            w = None
+        if not w or not w.auto:
+            return False
+        self._remediation_attempts += 1
+        repo_path = Path(_settings.server_repo_path)
+        self._apply_remedy(w, repo_path)
+        self._emit_remediation_banner(w, preflight=False)
+        self._emit("on_log_line", f"↺ Relaunching with workaround {w.id} (attempt 2)…")
+        threading.Thread(target=lambda: self._do_launch(entry, port),
+                         daemon=True).start()
+        return True
+
     # ── Hardware utilities ────────────────────────────────────────────────────
 
     def _rebooted_since_last_launch(self) -> bool:
@@ -1142,6 +1177,12 @@ class AppController:
             stripped = line.strip()
             if stripped and not re.search(r'error_handler|on_error|ErrorHandler', stripped):
                 self._last_error_hint = stripped[:120]
+                # Known-issue auto-remediation: try to fix + relaunch before we
+                # settle into ERROR. Only fires once per session (see
+                # _maybe_remediate) and never on READY/normal lines since this
+                # whole block is gated on the error-ish regex above.
+                if self._maybe_remediate(line):
+                    return
         # Emit a recovery suggestion for well-known error patterns (once per pattern per run).
         for pattern, hint in self._ERROR_HINTS:
             pid = id(pattern)
