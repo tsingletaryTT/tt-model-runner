@@ -254,6 +254,24 @@ def _scrub_env_key(env_path: Path, key: str) -> None:
         pass
 
 
+def _set_env_key(env_path: Path, key: str, value: str) -> None:
+    """Idempotently set KEY=value in a .env file.
+
+    Replaces any existing line for `key`, preserves all other lines, and
+    creates the file (and parent dir) if it does not exist.  Sibling of
+    _scrub_env_key — together they support workaround apply/undo.
+    """
+    try:
+        env_path.parent.mkdir(parents=True, exist_ok=True)
+        lines = (env_path.read_text().splitlines()
+                 if env_path.exists() else [])
+        kept = [l for l in lines if not l.strip().startswith(f"{key}=")]
+        kept.append(f"{key}={value}")
+        env_path.write_text("\n".join(kept) + "\n")
+    except OSError:
+        pass
+
+
 class ServerManager:
     # Docker image-not-found patterns — capture the full image reference.
     # Covers:
