@@ -2861,7 +2861,7 @@ class MainWindow(Gtk.ApplicationWindow):
         controller.on_model_identified = self._on_model_identified
         controller.on_download_progress = self._on_download_progress
         controller.on_environment_checked = self._on_environment_checked
-        controller.on_remediation_applied = lambda _remedy: None  # banner already logged via on_log_line
+        controller.on_remediation_applied = self._on_remediation_applied
 
         # Connect the ↻ chip-telemetry refresh button to the controller.
         self._sidebar._hw_refresh_btn.connect(
@@ -3006,6 +3006,15 @@ class MainWindow(Gtk.ApplicationWindow):
     def _on_environment_checked(self, results: list) -> None:
         """Show prereq status pills in the sidebar; hide when everything is green."""
         self._sidebar.update_prereq_status(results)
+
+    def _on_remediation_applied(self, remedy) -> None:
+        """A known-issue workaround was auto-applied; add a concise confirmation.
+
+        The full banner already streamed via on_log_line — this is a short,
+        distinct pointer so the user notices config was auto-tuned.
+        """
+        ref = getattr(remedy, "ref", "") or getattr(remedy, "id", "")
+        self.append_log(f"⚙ Auto-tuned for known issue {ref} · config logged above · undo in Config")
 
     def _on_running_servers_detected(self, servers: list) -> None:
         """Show a banner when already-running TT inference containers are found."""
