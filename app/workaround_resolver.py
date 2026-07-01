@@ -6,7 +6,9 @@ Pure logic — NO GTK / Textual / controller imports.  Matches a device+model
 (and optionally a crash log line) against a bundled knowledge base and returns
 the workarounds that apply.  See docs/superpowers/specs/2026-07-01-*.md.
 """
+import fnmatch
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
@@ -54,3 +56,66 @@ def load_workarounds(path: Optional[Path] = None) -> List[Workaround]:
             applies_to_versions=obj.get("applies_to_versions"),
         ))
     return out
+
+
+def _glob_match(pattern: str, value: str) -> bool:
+    """Match pattern against value, case-insensitive."""
+    return fnmatch.fnmatch(value.lower(), pattern.lower())
+
+
+def _version_applies(constraint: Optional[str], version: Optional[str]) -> bool:
+    """True if `version` satisfies `constraint` (e.g. '<=0.10.0'). Fail open."""
+    if not constraint or not version:
+        return True
+    ops = [("<=", lambda a, b: a <= b), (">=", lambda a, b: a >= b),
+           ("==", lambda a, b: a == b), ("<", lambda a, b: a < b),
+           (">", lambda a, b: a > b)]
+    for prefix, cmp in ops:
+        if constraint.startswith(prefix):
+            target = constraint[len(prefix):].strip()
+            try:
+                va = tuple(int(x) for x in version.lstrip("v").split("."))
+                vb = tuple(int(x) for x in target.lstrip("v").split("."))
+            except ValueError:
+                return True  # unparseable → fail open
+            # pad to equal length so (0, 10) vs (0, 10, 0) compares correctly
+            n = max(len(va), len(vb))
+            va += (0,) * (n - len(va))
+            vb += (0,) * (n - len(vb))
+            return cmp(va, vb)
+    return True  # unrecognized constraint syntax → fail open
+
+
+def _device_matches(w: "Workaround", device: str) -> bool:
+    """True if workaround applies to any device (empty list) or device is in the list."""
+    return not w.devices or device.upper() in {d.upper() for d in w.devices}
+
+
+def _model_matches(w: "Workaround", model: str) -> bool:
+    """True if workaround applies to any model (empty list) or model matches a glob pattern."""
+    return not w.models or any(_glob_match(p, model) for p in w.models)
+
+
+def match_preflight(device: str, model: str,
+                    repo_version: Optional[str] = None,
+                    kb: Optional[List["Workaround"]] = None) -> List["Workaround"]:
+    """Return all workarounds matching device, model, and version (ignoring symptom)."""
+    items = kb if kb is not None else load_workarounds()
+    return [w for w in items
+            if _device_matches(w, device)
+            and _model_matches(w, model)
+            and _version_applies(w.applies_to_versions, repo_version)]
+
+
+def match_symptom(log_line: str, device: str, model: str,
+                  kb: Optional[List["Workaround"]] = None) -> Optional["Workaround"]:
+    """Return the first workaround whose device+model match AND whose symptom regex hits the log line."""
+    items = kb if kb is not None else load_workarounds()
+    for w in items:
+        if not w.symptom:
+            continue
+        if not (_device_matches(w, device) and _model_matches(w, model)):
+            continue
+        if re.search(w.symptom, log_line, re.I):
+            return w
+    return None
