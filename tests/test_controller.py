@@ -630,6 +630,41 @@ def test_undo_remediation_scrubs_and_clears(tmp_path):
         assert ctrl._applied_remedy is None
 
 
+def test_undo_remediation_uses_repo_path_captured_at_apply_time(tmp_path):
+    """undo_remediation must scrub the .env at the repo_path recorded on
+    AppliedRemedy, not whatever _settings.server_repo_path happens to be at
+    undo time. Regression test: previously undo_remediation re-read
+    _settings.server_repo_path, so if the setting changed between apply and
+    undo (e.g. the user repointed the repo path), undo would scrub the wrong
+    .env — or silently no-op — instead of the one that was actually written.
+    """
+    ctrl, _ = make_controller()
+    fake_settings = _make_test_settings(tmp_path)
+    fake_settings.server_repo_path = str(tmp_path)
+    w = wr.Workaround(id="p100", devices=["P100"], models=["*"],
+                       env={"MAX_PREFILL_CHUNK_SIZE": "2"}, vllm={"max_model_len": 1024})
+
+    other_repo = tmp_path / "other_repo"
+    other_repo.mkdir()
+
+    with patch("controller._settings", fake_settings):
+        ctrl._apply_remedy(w, Path(tmp_path))
+
+        assert "MAX_PREFILL_CHUNK_SIZE=2" in (tmp_path / ".env").read_text()
+
+        # Simulate the setting changing after apply but before undo.
+        fake_settings.server_repo_path = str(other_repo)
+
+        ctrl.undo_remediation()
+
+        # The ORIGINAL .env (captured repo_path) was scrubbed...
+        assert "MAX_PREFILL_CHUNK_SIZE" not in (tmp_path / ".env").read_text()
+        # ...and undo never touched/created a .env under the new setting path.
+        assert not (other_repo / ".env").exists()
+        assert ctrl._options.max_model_len is None
+        assert ctrl._applied_remedy is None
+
+
 # ── Pre-flight hook (_preflight_apply) ──────────────────────────────────────────
 
 def test_preflight_applies_remedy_before_launch(tmp_path):
@@ -708,7 +743,7 @@ def test_preflight_apply_warns_but_does_not_apply_non_auto_remedy(tmp_path):
 
 def test_reactive_remediation_relaunches_once(tmp_path, monkeypatch):
     """A crash log line matching a KB symptom triggers apply + relaunch, once."""
-    ctrl, _ = make_controller()
+    ctrl, view = make_controller()
     fake_settings = _make_test_settings(tmp_path)
     fake_settings.server_repo_path = str(tmp_path)
 
@@ -739,6 +774,15 @@ def test_reactive_remediation_relaunches_once(tmp_path, monkeypatch):
             time.sleep(0.01)
         assert len(relaunches) == 1
         assert ctrl._options.max_model_len == 1024
+
+        # Exactly one, correctly-labeled banner: reactive path must say
+        # AUTO-RETRY (never PRE-FLIGHT) and must not double-emit the banner
+        # (regression check for the old _apply_remedy + _maybe_remediate
+        # double-banner bug).
+        banner_headers = [l for l in view.log_lines if "known issue" in l]
+        assert len(banner_headers) == 1
+        assert all("AUTO-RETRY" in l for l in banner_headers)
+        assert not any("PRE-FLIGHT" in l for l in view.log_lines)
 
         # Second crash → capped, no further relaunch.
         assert ctrl._maybe_remediate(crash) is False

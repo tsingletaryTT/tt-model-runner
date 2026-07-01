@@ -125,6 +125,7 @@ class AppliedRemedy:
     """Record of a workaround the controller applied, for logging + undo."""
     remedy: "_wr.Workaround"
     env_keys_written: list          # .env keys we wrote (to scrub on undo)
+    repo_path: Path                 # repo root captured at apply time (undo target)
 
 
 def _env_file_has_key(env_path: Path, key: str) -> bool:
@@ -665,7 +666,8 @@ class AppController:
 
     # ── Known-issue auto-remediation ────────────────────────────────────────────
 
-    def _apply_remedy(self, w: "_wr.Workaround", repo_path: Path) -> AppliedRemedy:
+    def _apply_remedy(self, w: "_wr.Workaround", repo_path: Path,
+                       preflight: bool = True) -> AppliedRemedy:
         """Apply a known-issue workaround: merge vLLM overrides, write .env.
 
         Records what changed on self._applied_remedy so undo_remediation can
@@ -690,9 +692,9 @@ class AppController:
                 _set_env_key(env_path, name, val)
                 written.append(name)
 
-        applied = AppliedRemedy(remedy=w, env_keys_written=written)
+        applied = AppliedRemedy(remedy=w, env_keys_written=written, repo_path=repo_path)
         self._applied_remedy = applied
-        self._emit_remediation_banner(w)
+        self._emit_remediation_banner(w, preflight=preflight)
         self._emit("on_remediation_applied", w)
         return applied
 
@@ -701,7 +703,7 @@ class AppController:
         applied = self._applied_remedy
         if not applied:
             return
-        env_path = Path(_settings.server_repo_path) / ".env"
+        env_path = applied.repo_path / ".env"
         for key in applied.env_keys_written:
             _scrub_env_key(env_path, key)
         if "max_model_len" in applied.remedy.vllm:
@@ -787,8 +789,7 @@ class AppController:
             return False
         self._remediation_attempts += 1
         repo_path = Path(_settings.server_repo_path)
-        self._apply_remedy(w, repo_path)
-        self._emit_remediation_banner(w, preflight=False)
+        self._apply_remedy(w, repo_path, preflight=False)
         self._emit("on_log_line", f"↺ Relaunching with workaround {w.id} (attempt 2)…")
         threading.Thread(target=lambda: self._do_launch(entry, port),
                          daemon=True).start()
