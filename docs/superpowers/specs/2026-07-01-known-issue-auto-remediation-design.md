@@ -55,6 +55,14 @@ multi-hour debugging session into an automatic recovery.
    and the lossy tradeoff. The reactive crash→retry path stays as a safety net
    for anything not caught pre-flight. Every applied change is logged and
    reversible.
+4. **CLI-ready, headless core + a `doctor` command** (inspired by
+   `tenstorrent/tt-local-generator`'s `tt-ctl`). The resolver and `apply_remedy`
+   have zero UI dependencies so GTK, TUI, and any future headless CLI share one
+   implementation. This pass ships one small read-only diagnostic entry point
+   (`doctor`) that dry-runs the KB against a device+model and prints what it
+   *would* do — mirroring `tt-ctl recover`'s "report findings, don't mutate"
+   ethos. A full `tt-runner-ctl` view (launch/status/logs/mcp-config) is noted
+   as a future step, not built here.
 
 ### Two defaulted calls (easy to flip)
 
@@ -77,9 +85,10 @@ controller-adjacent modules (`device_detector`, `launch_options`, etc.).
 
 ```
 data/workarounds.json          ← knowledge base (bundled)
-app/workaround_resolver.py     ← pure matching logic + Workaround dataclass
-app/controller.py              ← consults resolver at pre-flight and on ERROR
+app/workaround_resolver.py     ← pure matching logic + Workaround dataclass (no UI deps)
+app/controller.py              ← consults resolver at pre-flight and on ERROR; owns apply_remedy
 app/server_manager.py          ← gains _set_env_key (sibling of _scrub_env_key)
+run / app/main.py              ← gains a --doctor headless dry-run entry (tt-ctl-inspired)
 ```
 
 ### Integration points in `controller.py`
@@ -219,6 +228,29 @@ GTK/TUI may optionally render an "auto-tuned · undo" affordance; at minimum bot
 log the banner. `auto: false` remedies log a warning + one-click apply instead
 of self-applying.
 
+## Component: `doctor` — headless dry-run diagnostic
+
+Inspired by `tt-ctl recover`/`status`: a read-only command that reports what the
+tool *would* do, mutating nothing. It gives "figure out and try Adam's fixes" a
+scriptable, GUI-free entry point (usable by a person, CI, or an agent).
+
+- **Surface:** a `--doctor` flag on the existing `./run` entry point (cheapest —
+  no new binary; reuses the same arg plumbing as `--tui`). It resolves the
+  device from `device_detector` (or a `--device` override) and the model from a
+  `--model` override, calls `workaround_resolver.match_preflight(...)`, and
+  prints each matching workaround: id, `ref`, the `env`/`vllm` it would apply,
+  and the `tradeoff`. Exits non-zero when matches exist (so scripts/CI can gate
+  on "known issue present"), zero when clean.
+- **Output discipline (borrowed from tt-ctl):** colour only when
+  `stdout.isatty()`; machine-readable lines on stdout; guidance/notes on stderr.
+  A `--json` flag emits the matched workarounds as JSON for programmatic use.
+- **No mutation:** `doctor` never writes `.env` or launches. It only reports.
+  Applying still happens through the normal launch (pre-flight) or reactive path.
+
+This keeps the headless surface tiny while proving out the shared core; a fuller
+`tt-runner-ctl` (launch/status/logs, and a `mcp-config` command like tt-ctl's so
+Claude Code can drive the tool) is a documented future step, out of scope here.
+
 ## Testing
 
 - `tests/test_workaround_resolver.py`
@@ -233,6 +265,9 @@ of self-applying.
 - `.env` round-trip test for `_set_env_key` (set / overwrite / then scrub).
 - Extend `ViewContract` + `GtkViewStub` + `TuiViewStub` for
   `on_remediation_applied` (contract tests fail until both stubs implement it).
+- `doctor` tests: matching device+model prints the remedy and exits non-zero;
+  a clean combo exits zero; `--json` emits valid JSON; and `doctor` writes no
+  `.env` / launches nothing (mutation-free assertion).
 
 ## Scope guardrails (YAGNI — explicitly out of this pass)
 
@@ -241,6 +276,9 @@ of self-applying.
   env + vllm changes).
 - Remedies that require rebuilding tt-metal or otherwise can't be expressed as
   env/override tweaks.
+- A full `tt-runner-ctl` CLI view (launch/status/logs) and an MCP `mcp-config`
+  command — the resolver is built headless-ready and `doctor` proves the
+  pattern, but the broader CLI surface is a separate future effort.
 - Prompt submission / evals / anything already out of the tool's scope.
 
 ## Seed entry
