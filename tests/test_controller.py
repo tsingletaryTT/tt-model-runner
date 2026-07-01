@@ -628,3 +628,77 @@ def test_undo_remediation_scrubs_and_clears(tmp_path):
         assert "MAX_PREFILL_CHUNK_SIZE" not in (tmp_path / ".env").read_text()
         assert ctrl._options.max_model_len is None
         assert ctrl._applied_remedy is None
+
+
+# ── Pre-flight hook (_preflight_apply) ──────────────────────────────────────────
+
+def test_preflight_applies_remedy_before_launch(tmp_path):
+    """_preflight_apply should apply matching auto remedies before _do_launch runs."""
+    ctrl, _ = make_controller()
+    fake_settings = _make_test_settings(tmp_path)
+    fake_settings.server_repo_path = str(tmp_path)
+    (tmp_path / "run.py").write_text("# stub")
+
+    entry = MagicMock()
+    entry.display_name = "Llama-3.1-8B-Instruct"
+    entry.device_type = "P100"
+    entry.inference_engine = "vllm"
+
+    w = wr.Workaround(id="p100", devices=["P100"], models=["*"],
+                       env={"MAX_PREFILL_CHUNK_SIZE": "2"}, vllm={"max_model_len": 1024})
+
+    captured = {}
+    with patch("controller._settings", fake_settings), \
+         patch("controller._wr.match_preflight",
+               lambda device, model, repo_version=None: [w]), \
+         patch.object(ctrl, "_do_launch",
+                      lambda entry, port: captured.update(mml=ctrl._options.max_model_len)):
+        ctrl._preflight_apply(entry)
+        ctrl._do_launch(entry, "8000")
+
+    assert captured["mml"] == 1024
+    assert "MAX_PREFILL_CHUNK_SIZE=2" in (tmp_path / ".env").read_text()
+
+
+def test_preflight_apply_skips_launch_block_on_resolver_error(tmp_path):
+    """A resolver exception must never propagate — pre-flight fails open."""
+    ctrl, _ = make_controller()
+    fake_settings = _make_test_settings(tmp_path)
+    fake_settings.server_repo_path = str(tmp_path)
+
+    entry = MagicMock()
+    entry.display_name = "Llama-3.1-8B-Instruct"
+    entry.device_type = "P100"
+    entry.inference_engine = "vllm"
+
+    with patch("controller._settings", fake_settings), \
+         patch("controller._wr.match_preflight", side_effect=RuntimeError("kb boom")):
+        ctrl._preflight_apply(entry)   # must not raise
+
+    assert ctrl._applied_remedy is None
+
+
+def test_preflight_apply_warns_but_does_not_apply_non_auto_remedy(tmp_path):
+    """auto: false remedies should log a warning, not be silently applied."""
+    ctrl, view = make_controller()
+    fake_settings = _make_test_settings(tmp_path)
+    fake_settings.server_repo_path = str(tmp_path)
+
+    entry = MagicMock()
+    entry.display_name = "Llama-3.1-8B-Instruct"
+    entry.device_type = "P100"
+    entry.inference_engine = "vllm"
+
+    w = wr.Workaround(id="manual-fix", devices=["P100"], models=["*"],
+                       env={"SOME_FLAG": "1"}, auto=False,
+                       tradeoff="requires manual review", ref="tt-metal#99999")
+
+    with patch("controller._settings", fake_settings), \
+         patch("controller._wr.match_preflight",
+               lambda device, model, repo_version=None: [w]):
+        ctrl._preflight_apply(entry)
+
+    assert ctrl._applied_remedy is None
+    assert not (tmp_path / ".env").exists()
+    assert any("tt-metal#99999" in line or "manual-fix" in line
+               for line in view.log_lines)

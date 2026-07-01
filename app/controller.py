@@ -508,6 +508,7 @@ class AppController:
                 self._emit("on_log_line",
                            f"⚠ Port {port} is already in use by an unknown process — "
                            f"launch may fail")
+            self._preflight_apply(entry)
             self._do_launch(entry, port)
 
         threading.Thread(target=_preflight_and_launch, daemon=True).start()
@@ -707,6 +708,39 @@ class AppController:
             self._options.max_model_len = None
         self._applied_remedy = None
         self._emit("on_log_line", f"↩ Reverted workaround {applied.remedy.id}")
+
+    def _preflight_apply(self, entry: ModelEntry) -> None:
+        """Pre-apply any known-issue workarounds matching this device+model.
+
+        Runs before _do_launch so context caps / env relocations are in place
+        before the container starts. The resolver must never block a launch:
+        any lookup failure is swallowed and treated as "no known workarounds".
+        """
+        repo_path = Path(_settings.server_repo_path)
+        try:
+            hits = _wr.match_preflight(entry.device_type, entry.display_name,
+                                        self._server_repo_version())
+        except Exception:                        # resolver must never block launch
+            hits = []
+        for w in hits:
+            if w.auto:
+                self._apply_remedy(w, repo_path)
+            else:
+                self._emit("on_log_line",
+                            f"⚠ Known issue {w.ref or w.id} may apply "
+                            f"({w.tradeoff}) — not auto-applied (auto=false)")
+
+    def _server_repo_version(self) -> Optional[str]:
+        """Best-effort server repo tag (e.g. '0.10.0'); None if undeterminable."""
+        try:
+            out = subprocess.run(
+                ["git", "-C", str(_settings.server_repo_path),
+                 "describe", "--tags", "--abbrev=0"],
+                capture_output=True, text=True, timeout=5)
+            tag = out.stdout.strip().lstrip("v")
+            return tag or None
+        except (OSError, subprocess.SubprocessError):
+            return None
 
     def _emit_remediation_banner(self, w: "_wr.Workaround", preflight: bool = True) -> None:
         """Log the house-style left-bar banner describing an applied remedy."""

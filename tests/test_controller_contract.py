@@ -61,6 +61,9 @@ class ViewContract(ABC):
     @abstractmethod
     def on_environment_checked(self, results: list): ...
 
+    @abstractmethod
+    def on_remediation_applied(self, remedy): ...
+
 
 class GtkViewStub(ViewContract):
     def on_state_changed(self, state, info): pass
@@ -79,6 +82,7 @@ class GtkViewStub(ViewContract):
     def on_model_identified(self, entry): pass
     def on_download_progress(self, hf_repo, fraction, status_line): pass
     def on_environment_checked(self, results): pass
+    def on_remediation_applied(self, remedy): pass
 
 
 class TuiViewStub(ViewContract):
@@ -98,6 +102,7 @@ class TuiViewStub(ViewContract):
     def on_model_identified(self, entry): pass
     def on_download_progress(self, hf_repo, fraction, status_line): pass
     def on_environment_checked(self, results): pass
+    def on_remediation_applied(self, remedy): pass
 
 
 def test_gtk_stub_satisfies_contract():

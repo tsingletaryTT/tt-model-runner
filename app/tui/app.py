@@ -116,6 +116,7 @@ class TuiApp(App[None]):
         self._ctrl.on_model_identified = self._on_model_identified
         self._ctrl.on_download_progress = self._on_download_progress
         self._ctrl.on_environment_checked = self._on_environment_checked
+        self._ctrl.on_remediation_applied = lambda _remedy: None  # banner already logged via on_log_line
 
         self._set_ready_tabs_enabled(False)
 

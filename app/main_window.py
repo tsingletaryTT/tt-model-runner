@@ -2861,6 +2861,7 @@ class MainWindow(Gtk.ApplicationWindow):
         controller.on_model_identified = self._on_model_identified
         controller.on_download_progress = self._on_download_progress
         controller.on_environment_checked = self._on_environment_checked
+        controller.on_remediation_applied = lambda _remedy: None  # banner already logged via on_log_line
 
         # Connect the ↻ chip-telemetry refresh button to the controller.
         self._sidebar._hw_refresh_btn.connect(
