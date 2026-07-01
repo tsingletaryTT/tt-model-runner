@@ -5,6 +5,7 @@ Uses NullDispatch (synchronous direct call) so callbacks fire inline and
 assertions run immediately after the triggering method.
 """
 import sys, os, time, threading
+from pathlib import Path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
 
 import pytest
@@ -582,3 +583,48 @@ def test_select_model_restores_saved_options(tmp_path):
         opts = ctrl.get_options()
         assert opts.use_case == "code_completion"
         assert opts.max_model_len == 32768
+
+
+# ── Known-issue auto-remediation (_apply_remedy / undo_remediation) ────────────
+
+import workaround_resolver as wr
+
+
+def test_apply_remedy_writes_env_and_sets_override(tmp_path, monkeypatch):
+    ctrl, _ = make_controller()
+    fake_settings = _make_test_settings(tmp_path)
+    fake_settings.server_repo_path = str(tmp_path)
+    w = wr.Workaround(
+        id="p100", devices=["P100"], models=["Llama-3.1-8B*"],
+        symptom="clash with L1 buffers", env={"MAX_PREFILL_CHUNK_SIZE": "2"},
+        vllm={"max_model_len": 1024}, also_move_to_env=["HF_TOKEN"],
+        tradeoff="context capped", ref="tt-metal#28835",
+    )
+    monkeypatch.setenv("HF_TOKEN", "hf_secret")
+
+    with patch("controller._settings", fake_settings):
+        applied = ctrl._apply_remedy(w, Path(tmp_path))
+
+        env_text = (tmp_path / ".env").read_text()
+        assert "MAX_PREFILL_CHUNK_SIZE=2" in env_text
+        assert "HF_TOKEN=hf_secret" in env_text          # relocated from environment
+        assert ctrl._options.max_model_len == 1024
+        assert ctrl._applied_remedy is applied
+        assert "MAX_PREFILL_CHUNK_SIZE" in applied.env_keys_written
+
+
+def test_undo_remediation_scrubs_and_clears(tmp_path):
+    ctrl, _ = make_controller()
+    fake_settings = _make_test_settings(tmp_path)
+    fake_settings.server_repo_path = str(tmp_path)
+    w = wr.Workaround(id="p100", devices=["P100"], models=["*"],
+                       env={"MAX_PREFILL_CHUNK_SIZE": "2"}, vllm={"max_model_len": 1024})
+
+    with patch("controller._settings", fake_settings):
+        ctrl._apply_remedy(w, Path(tmp_path))
+
+        ctrl.undo_remediation()
+
+        assert "MAX_PREFILL_CHUNK_SIZE" not in (tmp_path / ".env").read_text()
+        assert ctrl._options.max_model_len is None
+        assert ctrl._applied_remedy is None

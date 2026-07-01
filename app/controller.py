@@ -29,8 +29,10 @@ from health_worker import HealthWorker
 from hf_cache import ModelCacheInfo, scan_model_cache
 from launch_options import LaunchOptions
 from model_catalog import ModelCatalog, ModelEntry
-from server_manager import LaunchConfig, ServerManager, ServerState
+from server_manager import LaunchConfig, ServerManager, ServerState, \
+    _set_env_key, _scrub_env_key
 from timing_store import TimingStore
+import workaround_resolver as _wr
 
 
 @dataclass
@@ -116,6 +118,24 @@ class BenchResult:
     mean_e2el_ms: float
     request_throughput: float
     tier_pass: str   # "PASS" | "BELOW_TARGET" | "FAIL"
+
+
+@dataclass
+class AppliedRemedy:
+    """Record of a workaround the controller applied, for logging + undo."""
+    remedy: "_wr.Workaround"
+    env_keys_written: list          # .env keys we wrote (to scrub on undo)
+
+
+def _env_file_has_key(env_path: Path, key: str) -> bool:
+    """True if a .env file already has a KEY=... line (used to avoid clobbering)."""
+    if not env_path.exists():
+        return False
+    try:
+        return any(l.strip().startswith(f"{key}=")
+                   for l in env_path.read_text().splitlines())
+    except OSError:
+        return False
 
 
 from tool_client import run_session as _tc_run_session
@@ -273,6 +293,8 @@ class AppController:
         self._pull_layers_done: int = 0   # layers that reached "Pull complete"
         self._pull_downloading: dict = {}  # layer_id → (current_bytes, total_bytes)
         self._emitted_error_hints: set = set()  # patterns already suggested this run
+        self._applied_remedy: Optional[AppliedRemedy] = None
+        self._remediation_attempts: int = 0   # reactive relaunches used (cap = 1)
         self._hw_poll_timer: Optional[threading.Timer] = None
         self._hw_poll_active: bool = False  # set True after first repo load
         self._session_log = _SessionLog()
@@ -303,6 +325,7 @@ class AppController:
         self.on_model_identified: Optional[Callable] = None          # (ModelEntry,) — fired after reconnect identifies the running model
         self.on_download_progress: Optional[Callable] = None         # (hf_repo, fraction, status_line)
         self.on_environment_checked: Optional[Callable] = None       # (list[tuple[str, bool, str]],)
+        self.on_remediation_applied: Optional[Callable] = None       # (Workaround,)
         self._weights_warning_emitted: bool = False
 
     # ── Read-only properties for views ──────────────────────────────────────
@@ -638,6 +661,69 @@ class AppController:
         """Fallback: transition to IDLE if still stuck in STOPPING after timeout."""
         if self._state == ServerState.STOPPING:
             self._transition(ServerState.IDLE)
+
+    # ── Known-issue auto-remediation ────────────────────────────────────────────
+
+    def _apply_remedy(self, w: "_wr.Workaround", repo_path: Path) -> AppliedRemedy:
+        """Apply a known-issue workaround: merge vLLM overrides, write .env.
+
+        Records what changed on self._applied_remedy so undo_remediation can
+        reverse it.  Emits a transparent banner and on_remediation_applied.
+        """
+        env_path = repo_path / ".env"
+        written: list = []
+
+        # 1. vLLM overrides (reuses launch_options' max_model_len handling).
+        if "max_model_len" in w.vllm:
+            self._options.max_model_len = w.vllm["max_model_len"]
+
+        # 2. env keys written verbatim into repo-root .env.
+        for key, value in w.env.items():
+            _set_env_key(env_path, key, str(value))
+            written.append(key)
+
+        # 3. relocate env vars that v0.10.0 only reads from .env.
+        for name in w.also_move_to_env:
+            val = os.environ.get(name, "")
+            if val and not _env_file_has_key(env_path, name):
+                _set_env_key(env_path, name, val)
+                written.append(name)
+
+        applied = AppliedRemedy(remedy=w, env_keys_written=written)
+        self._applied_remedy = applied
+        self._emit_remediation_banner(w)
+        self._emit("on_remediation_applied", w)
+        return applied
+
+    def undo_remediation(self) -> None:
+        """Reverse the last applied remedy: scrub .env keys, clear overrides."""
+        applied = self._applied_remedy
+        if not applied:
+            return
+        env_path = Path(_settings.server_repo_path) / ".env"
+        for key in applied.env_keys_written:
+            _scrub_env_key(env_path, key)
+        if "max_model_len" in applied.remedy.vllm:
+            self._options.max_model_len = None
+        self._applied_remedy = None
+        self._emit("on_log_line", f"↩ Reverted workaround {applied.remedy.id}")
+
+    def _emit_remediation_banner(self, w: "_wr.Workaround", preflight: bool = True) -> None:
+        """Log the house-style left-bar banner describing an applied remedy."""
+        head = "PRE-FLIGHT" if preflight else "AUTO-RETRY"
+        changes = []
+        if w.env:
+            changes.append(", ".join(f"{k}={v}" for k, v in w.env.items()))
+        if "max_model_len" in w.vllm:
+            changes.append(f"max_model_len={w.vllm['max_model_len']}")
+        self._emit("on_log_line", "╔══════════════════════════════════════════")
+        self._emit("on_log_line", f"║ {head}: known issue {w.ref or w.id}")
+        if changes:
+            self._emit("on_log_line", f"║ Applying: {'; '.join(changes)}")
+        if w.tradeoff:
+            self._emit("on_log_line", f"║ ⚠ {w.tradeoff}")
+        self._emit("on_log_line", "║ [config logged · undo available]")
+        self._emit("on_log_line", "╚══════════════════════════════════════════")
 
     # ── Hardware utilities ────────────────────────────────────────────────────
 
