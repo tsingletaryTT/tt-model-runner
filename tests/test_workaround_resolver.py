@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Unit tests for the workaround resolver (pure logic, no UI)."""
 from pathlib import Path
-import re
 
 import workaround_resolver as wr
 
@@ -91,3 +90,17 @@ def test_match_symptom_no_match_on_wrong_model():
 def test_match_symptom_none_when_regex_misses():
     w = wr.match_symptom("all good here", "P100", "Llama-3.1-8B-Instruct", kb=_kb())
     assert w is None
+
+
+def test_load_caches_parsed_kb(tmp_path):
+    """load_workarounds caches per path: match_preflight/match_symptom run hot,
+    and the bundled KB never changes within a session, so a second call for the
+    same path returns the cached parse rather than re-reading disk."""
+    kb = tmp_path / "cache_test.json"
+    kb.write_text('[{"id": "first"}]')
+    first = wr.load_workarounds(kb)
+    assert [w.id for w in first] == ["first"]
+
+    kb.write_text('[{"id": "second"}]')          # change on disk after first load
+    again = wr.load_workarounds(kb)
+    assert [w.id for w in again] == ["first"]     # served from cache, not re-parsed

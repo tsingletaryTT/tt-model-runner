@@ -476,6 +476,13 @@ class AppController:
         if options:
             self._options = options
 
+        # Fresh remediation budget for each user-initiated launch. The reactive
+        # auto-retry relaunch goes through _do_launch (not launch()), so it never
+        # resets these — preserving the one-attempt cap on a single crash while
+        # still re-enabling remediation for the next launch the user starts.
+        self._remediation_attempts = 0
+        self._applied_remedy = None
+
         # Run pre-flight checks + actual launch in a background thread so we
         # never block the UI for the docker-ps / stat calls.
         def _preflight_and_launch():
@@ -724,13 +731,23 @@ class AppController:
                                         self._server_repo_version())
         except Exception:                        # resolver must never block launch
             hits = []
+        applied_one = False
         for w in hits:
-            if w.auto:
-                self._apply_remedy(w, repo_path)
-            else:
+            if not w.auto:
                 self._emit("on_log_line",
                             f"⚠ Known issue {w.ref or w.id} may apply "
                             f"({w.tradeoff}) — not auto-applied (auto=false)")
+                continue
+            if applied_one:
+                # Only one workaround is applied per launch (KB order = priority)
+                # so undo_remediation, which records a single AppliedRemedy, can
+                # always fully reverse what pre-flight changed.
+                self._emit("on_log_line",
+                            f"ℹ Known issue {w.ref or w.id} also matches — "
+                            f"skipped (one workaround applied per launch)")
+                continue
+            self._apply_remedy(w, repo_path)
+            applied_one = True
 
     def _server_repo_version(self) -> Optional[str]:
         """Best-effort server repo tag (e.g. '0.10.0'); None if undeterminable."""
@@ -786,6 +803,11 @@ class AppController:
         except Exception:
             w = None
         if not w or not w.auto:
+            return False
+        if self._applied_remedy and self._applied_remedy.remedy.id == w.id:
+            # This exact workaround was already applied (pre-flight or earlier).
+            # Reapplying identical env/overrides cannot change the crash, so
+            # don't burn the single retry and mask the real failure.
             return False
         self._remediation_attempts += 1
         repo_path = Path(_settings.server_repo_path)

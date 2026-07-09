@@ -47,7 +47,8 @@ def run_doctor(argv: Optional[List[str]] = None) -> int:
             matched.append((dev, w))
 
     if args.json:
-        print(json.dumps([dataclasses.asdict(w) for _, w in matched], indent=2))
+        print(json.dumps([{"device": dev, **dataclasses.asdict(w)}
+                           for dev, w in matched], indent=2))
         return 1 if matched else 0
 
     if not matched:

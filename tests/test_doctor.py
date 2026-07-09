@@ -30,3 +30,14 @@ def test_doctor_writes_nothing(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     doctor_main.run_doctor(["--device", "P100", "--model", "Llama-3.1-8B-Instruct"])
     assert not (tmp_path / ".env").exists()
+
+
+def test_doctor_json_includes_device(capsys):
+    # --json must carry the matched device so consumers can tell which device
+    # each workaround applied to (matters when devices are auto-detected).
+    code = doctor_main.run_doctor(
+        ["--device", "P100", "--model", "Llama-3.1-8B-Instruct", "--json"])
+    data = json.loads(capsys.readouterr().out)
+    assert data[0]["device"] == "P100"
+    assert data[0]["id"] == "p100-llama31-8b-l1-prefill"
+    assert code != 0

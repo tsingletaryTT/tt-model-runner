@@ -31,9 +31,21 @@ class Workaround:
     applies_to_versions: Optional[str] = None
 
 
+_kb_cache: dict = {}
+
+
 def load_workarounds(path: Optional[Path] = None) -> List[Workaround]:
-    """Load and parse the knowledge base. Returns [] on any read/parse error."""
+    """Load and parse the knowledge base. Returns [] on any read/parse error.
+
+    The parsed result is cached per path — match_preflight() runs on every
+    launch and match_symptom() is consulted during crash-log processing, and
+    the bundled KB never changes within a session. A failed read is not cached,
+    so a transiently missing file can still recover on a later call.
+    """
     p = Path(path) if path else _DEFAULT_KB
+    key = str(p)
+    if key in _kb_cache:
+        return _kb_cache[key]
     try:
         raw = json.loads(p.read_text())
     except (OSError, json.JSONDecodeError):
@@ -55,6 +67,7 @@ def load_workarounds(path: Optional[Path] = None) -> List[Workaround]:
             ref=obj.get("ref", ""),
             applies_to_versions=obj.get("applies_to_versions"),
         ))
+    _kb_cache[key] = out
     return out
 
 

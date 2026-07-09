@@ -791,3 +791,94 @@ def test_reactive_remediation_relaunches_once(tmp_path, monkeypatch):
         while time.monotonic() < deadline:
             time.sleep(0.01)
         assert len(relaunches) == 1
+
+
+# ── Remediation state lifecycle (Copilot review) ────────────────────────────────
+
+def test_launch_resets_remediation_budget(tmp_path, monkeypatch):
+    """Each user-initiated launch() clears the reactive cap + applied remedy,
+    so remediation is not permanently disabled after one prior auto-retry."""
+    ctrl, _ = make_controller()
+    fake_settings = _make_test_settings(tmp_path)
+    fake_settings.server_repo_path = str(tmp_path)
+
+    entry = MagicMock()
+    entry.display_name = "Llama-3.1-8B-Instruct"
+    entry.device_type = "P100"
+    entry.min_disk_gb = 0                       # skip the disk-space branch
+
+    # Simulate leftover state from a previous launch's reactive remediation.
+    ctrl._remediation_attempts = 1
+    ctrl._applied_remedy = MagicMock()
+
+    # Neutralize the background launch work — we only assert the sync reset.
+    monkeypatch.setattr(ctrl, "_preflight_apply", lambda e: None)
+    monkeypatch.setattr(ctrl, "_do_launch", lambda e, p: None)
+    monkeypatch.setattr(ctrl, "_is_port_open", lambda p: False)
+
+    with patch("controller._settings", fake_settings):
+        ctrl.launch(entry, "8000")
+
+    assert ctrl._remediation_attempts == 0
+    assert ctrl._applied_remedy is None
+
+
+def test_reactive_skips_workaround_already_applied(tmp_path):
+    """If the matched workaround is already the one applied (e.g. pre-flight),
+    the reactive path does not burn the single retry re-applying identical config."""
+    from controller import AppliedRemedy
+    ctrl, _ = make_controller()
+    fake_settings = _make_test_settings(tmp_path)
+    fake_settings.server_repo_path = str(tmp_path)
+
+    entry = MagicMock()
+    entry.display_name = "Llama-3.1-8B-Instruct"
+    entry.device_type = "P100"
+    ctrl._current_entry = entry
+    ctrl._port = "8000"
+
+    w = wr.Workaround(id="p100", devices=["P100"], models=["*"],
+                      symptom="clash with L1 buffers",
+                      env={"MAX_PREFILL_CHUNK_SIZE": "2"}, vllm={"max_model_len": 1024})
+    ctrl._applied_remedy = AppliedRemedy(remedy=w, env_keys_written=[],
+                                         repo_path=Path(tmp_path))
+
+    relaunches = []
+    with patch("controller._settings", fake_settings), \
+         patch.object(ctrl, "_do_launch", lambda e, p: relaunches.append(p)), \
+         patch("controller._wr.match_symptom", lambda line, device, model: w):
+        assert ctrl._maybe_remediate("crash: clash with L1 buffers") is False
+
+    assert relaunches == []
+    assert ctrl._remediation_attempts == 0
+
+
+def test_preflight_applies_at_most_one_remedy(tmp_path):
+    """When several auto workarounds match, only the first is applied (KB order =
+    priority) so the single AppliedRemedy record can fully reverse on undo; extras
+    are logged as skipped, not silently dropped."""
+    ctrl, view = make_controller()
+    fake_settings = _make_test_settings(tmp_path)
+    fake_settings.server_repo_path = str(tmp_path)
+
+    entry = MagicMock()
+    entry.display_name = "Llama-3.1-8B-Instruct"
+    entry.device_type = "P100"
+
+    w1 = wr.Workaround(id="first", devices=["P100"], models=["*"],
+                       env={"A": "1"}, ref="ref-first")
+    w2 = wr.Workaround(id="second", devices=["P100"], models=["*"],
+                       env={"B": "2"}, ref="ref-second")
+
+    with patch("controller._settings", fake_settings), \
+         patch("controller._wr.match_preflight",
+               lambda device, model, repo_version=None: [w1, w2]):
+        ctrl._preflight_apply(entry)
+
+    assert ctrl._applied_remedy is not None
+    assert ctrl._applied_remedy.remedy.id == "first"
+    env_text = (tmp_path / ".env").read_text()
+    assert "A=1" in env_text
+    assert "B=2" not in env_text                 # second remedy not applied
+    assert any("skipped" in l and ("ref-second" in l or "second" in l)
+               for l in view.log_lines)
