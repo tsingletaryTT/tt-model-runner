@@ -1,0 +1,15 @@
+[
+  {
+    "id": "p100-llama31-8b-l1-prefill",
+    "devices": ["P100", "P150", "P300"],
+    "models": ["Llama-3.1-8B*"],
+    "symptom": "clash with L1 buffers",
+    "env": { "MAX_PREFILL_CHUNK_SIZE": "2" },
+    "vllm": { "max_model_len": 1024 },
+    "also_move_to_env": ["HF_TOKEN", "JWT_SECRET"],
+    "auto": true,
+    "tradeoff": "Requests needing a >1024-token prefill will fail — a hard P100 limit (MIN_CHUNK_SIZE=2048).",
+    "ref": "tt-metal#28835",
+    "applies_to_versions": "<=0.10.0"
+  }
+]
