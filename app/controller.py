@@ -29,8 +29,10 @@ from health_worker import HealthWorker
 from hf_cache import ModelCacheInfo, scan_model_cache
 from launch_options import LaunchOptions
 from model_catalog import ModelCatalog, ModelEntry
-from server_manager import LaunchConfig, ServerManager, ServerState
+from server_manager import LaunchConfig, ServerManager, ServerState, \
+    _set_env_key, _scrub_env_key
 from timing_store import TimingStore
+import workaround_resolver as _wr
 
 
 @dataclass
@@ -116,6 +118,46 @@ class BenchResult:
     mean_e2el_ms: float
     request_throughput: float
     tier_pass: str   # "PASS" | "BELOW_TARGET" | "FAIL"
+
+
+@dataclass
+class AppliedRemedy:
+    """Record of a workaround the controller applied, for logging + undo."""
+    remedy: "_wr.Workaround"
+    env_keys_written: list          # .env keys we wrote (to restore/scrub on undo)
+    repo_path: Path                 # repo root captured at apply time (undo target)
+    prior_env: dict                 # key -> its .env value before apply (None if absent)
+    prior_max_model_len: object     # LaunchOptions.max_model_len before apply
+    set_max_model_len: bool         # whether this remedy changed max_model_len
+
+
+def _env_file_has_key(env_path: Path, key: str) -> bool:
+    """True if a .env file already has a KEY=... line (used to avoid clobbering)."""
+    if not env_path.exists():
+        return False
+    try:
+        return any(l.strip().startswith(f"{key}=")
+                   for l in env_path.read_text().splitlines())
+    except OSError:
+        return False
+
+
+def _env_file_get(env_path: Path, key: str) -> Optional[str]:
+    """Return the current value of KEY in a .env file, or None if absent.
+
+    Used to snapshot a user's pre-existing value before a remedy overwrites it,
+    so undo can restore it rather than deleting the key outright.
+    """
+    if not env_path.exists():
+        return None
+    try:
+        for line in env_path.read_text().splitlines():
+            s = line.strip()
+            if s.startswith(f"{key}="):
+                return s.split("=", 1)[1]
+    except OSError:
+        return None
+    return None
 
 
 from tool_client import run_session as _tc_run_session
@@ -273,6 +315,8 @@ class AppController:
         self._pull_layers_done: int = 0   # layers that reached "Pull complete"
         self._pull_downloading: dict = {}  # layer_id → (current_bytes, total_bytes)
         self._emitted_error_hints: set = set()  # patterns already suggested this run
+        self._applied_remedy: Optional[AppliedRemedy] = None
+        self._remediation_attempts: int = 0   # reactive relaunches used (cap = 1)
         self._hw_poll_timer: Optional[threading.Timer] = None
         self._hw_poll_active: bool = False  # set True after first repo load
         self._session_log = _SessionLog()
@@ -303,6 +347,7 @@ class AppController:
         self.on_model_identified: Optional[Callable] = None          # (ModelEntry,) — fired after reconnect identifies the running model
         self.on_download_progress: Optional[Callable] = None         # (hf_repo, fraction, status_line)
         self.on_environment_checked: Optional[Callable] = None       # (list[tuple[str, bool, str]],)
+        self.on_remediation_applied: Optional[Callable] = None       # (Workaround,)
         self._weights_warning_emitted: bool = False
 
     # ── Read-only properties for views ──────────────────────────────────────
@@ -452,6 +497,13 @@ class AppController:
         if options:
             self._options = options
 
+        # Fresh remediation budget for each user-initiated launch. The reactive
+        # auto-retry relaunch goes through _do_launch (not launch()), so it never
+        # resets these — preserving the one-attempt cap on a single crash while
+        # still re-enabling remediation for the next launch the user starts.
+        self._remediation_attempts = 0
+        self._applied_remedy = None
+
         # Run pre-flight checks + actual launch in a background thread so we
         # never block the UI for the docker-ps / stat calls.
         def _preflight_and_launch():
@@ -485,6 +537,7 @@ class AppController:
                 self._emit("on_log_line",
                            f"⚠ Port {port} is already in use by an unknown process — "
                            f"launch may fail")
+            self._preflight_apply(entry)
             self._do_launch(entry, port)
 
         threading.Thread(target=_preflight_and_launch, daemon=True).start()
@@ -638,6 +691,166 @@ class AppController:
         """Fallback: transition to IDLE if still stuck in STOPPING after timeout."""
         if self._state == ServerState.STOPPING:
             self._transition(ServerState.IDLE)
+
+    # ── Known-issue auto-remediation ────────────────────────────────────────────
+
+    def _apply_remedy(self, w: "_wr.Workaround", repo_path: Path,
+                       preflight: bool = True) -> AppliedRemedy:
+        """Apply a known-issue workaround: merge vLLM overrides, write .env.
+
+        Records what changed on self._applied_remedy so undo_remediation can
+        reverse it.  Emits a transparent banner and on_remediation_applied.
+        """
+        env_path = repo_path / ".env"
+        written: list = []
+        prior_env: dict = {}        # snapshot of each written key's prior value
+
+        # 1. vLLM overrides (reuses launch_options' max_model_len handling).
+        #    Snapshot the prior value first so undo restores it, not just None.
+        set_mml = "max_model_len" in w.vllm
+        prior_mml = self._options.max_model_len
+        if set_mml:
+            self._options.max_model_len = w.vllm["max_model_len"]
+
+        # 2. env keys written verbatim into repo-root .env (snapshot prior first).
+        for key, value in w.env.items():
+            if key not in prior_env:
+                prior_env[key] = _env_file_get(env_path, key)
+            _set_env_key(env_path, key, str(value))
+            written.append(key)
+
+        # 3. relocate env vars that v0.10.0 only reads from .env. These are only
+        #    written when absent, so their prior value is None (undo scrubs them).
+        for name in w.also_move_to_env:
+            val = os.environ.get(name, "")
+            if val and not _env_file_has_key(env_path, name):
+                prior_env.setdefault(name, None)
+                _set_env_key(env_path, name, val)
+                written.append(name)
+
+        applied = AppliedRemedy(remedy=w, env_keys_written=written, repo_path=repo_path,
+                                prior_env=prior_env, prior_max_model_len=prior_mml,
+                                set_max_model_len=set_mml)
+        self._applied_remedy = applied
+        self._emit_remediation_banner(w, preflight=preflight)
+        self._emit("on_remediation_applied", w)
+        return applied
+
+    def undo_remediation(self) -> None:
+        """Reverse the last applied remedy: scrub .env keys, clear overrides."""
+        applied = self._applied_remedy
+        if not applied:
+            return
+        env_path = applied.repo_path / ".env"
+        for key in applied.env_keys_written:
+            prior = applied.prior_env.get(key)
+            if prior is not None:
+                _set_env_key(env_path, key, prior)   # restore the user's prior value
+            else:
+                _scrub_env_key(env_path, key)         # key was ours — remove it
+        if applied.set_max_model_len:
+            self._options.max_model_len = applied.prior_max_model_len
+        self._applied_remedy = None
+        self._emit("on_log_line", f"↩ Reverted workaround {applied.remedy.id}")
+
+    def _preflight_apply(self, entry: ModelEntry) -> None:
+        """Pre-apply any known-issue workarounds matching this device+model.
+
+        Runs before _do_launch so context caps / env relocations are in place
+        before the container starts. The resolver must never block a launch:
+        any lookup failure is swallowed and treated as "no known workarounds".
+        """
+        repo_path = Path(_settings.server_repo_path)
+        try:
+            hits = _wr.match_preflight(entry.device_type, entry.display_name,
+                                        self._server_repo_version())
+        except Exception:                        # resolver must never block launch
+            hits = []
+        applied_one = False
+        for w in hits:
+            if not w.auto:
+                self._emit("on_log_line",
+                            f"⚠ Known issue {w.ref or w.id} may apply "
+                            f"({w.tradeoff}) — not auto-applied (auto=false)")
+                continue
+            if applied_one:
+                # Only one workaround is applied per launch (KB order = priority)
+                # so undo_remediation, which records a single AppliedRemedy, can
+                # always fully reverse what pre-flight changed.
+                self._emit("on_log_line",
+                            f"ℹ Known issue {w.ref or w.id} also matches — "
+                            f"skipped (one workaround applied per launch)")
+                continue
+            self._apply_remedy(w, repo_path)
+            applied_one = True
+
+    def _server_repo_version(self) -> Optional[str]:
+        """Best-effort server repo tag (e.g. '0.10.0'); None if undeterminable."""
+        try:
+            out = subprocess.run(
+                ["git", "-C", str(_settings.server_repo_path),
+                 "describe", "--tags", "--abbrev=0"],
+                capture_output=True, text=True, timeout=5)
+            tag = out.stdout.strip().lstrip("v")
+            return tag or None
+        except (OSError, subprocess.SubprocessError):
+            return None
+
+    def _emit_remediation_banner(self, w: "_wr.Workaround", preflight: bool = True) -> None:
+        """Log the house-style left-bar banner describing an applied remedy."""
+        head = "PRE-FLIGHT" if preflight else "AUTO-RETRY"
+        changes = []
+        if w.env:
+            changes.append(", ".join(f"{k}={v}" for k, v in w.env.items()))
+        if "max_model_len" in w.vllm:
+            changes.append(f"max_model_len={w.vllm['max_model_len']}")
+        self._emit("on_log_line", "╔══════════════════════════════════════════")
+        self._emit("on_log_line", f"║ {head}: known issue {w.ref or w.id}")
+        if changes:
+            self._emit("on_log_line", f"║ Applying: {'; '.join(changes)}")
+        if w.tradeoff:
+            self._emit("on_log_line", f"║ ⚠ {w.tradeoff}")
+        self._emit("on_log_line", "║ [config logged · undo available]")
+        self._emit("on_log_line", "╚══════════════════════════════════════════")
+
+    def _maybe_remediate(self, line: str) -> bool:
+        """If a log line matches a known crash symptom, apply the fix + relaunch.
+
+        Reactive counterpart to `_preflight_apply`: fires on error-ish log lines
+        seen *during* a run (e.g. a mid-launch container crash) rather than
+        before launch. Capped at one attempt per session
+        (self._remediation_attempts) so a workaround that doesn't actually fix
+        the crash can never loop us into a relaunch storm.
+
+        Returns True only when a reactive relaunch was actually triggered
+        (i.e. matched + applied + a relaunch thread was started); False
+        otherwise (already capped, no current launch context, no KB match,
+        or the match is not auto-appliable).
+        """
+        if self._remediation_attempts >= 1:
+            return False
+        entry = self._current_entry
+        port = self._port
+        if not entry or not port:
+            return False
+        try:
+            w = _wr.match_symptom(line, entry.device_type, entry.display_name)
+        except Exception:
+            w = None
+        if not w or not w.auto:
+            return False
+        if self._applied_remedy and self._applied_remedy.remedy.id == w.id:
+            # This exact workaround was already applied (pre-flight or earlier).
+            # Reapplying identical env/overrides cannot change the crash, so
+            # don't burn the single retry and mask the real failure.
+            return False
+        self._remediation_attempts += 1
+        repo_path = Path(_settings.server_repo_path)
+        self._apply_remedy(w, repo_path, preflight=False)
+        self._emit("on_log_line", f"↺ Relaunching with workaround {w.id} (attempt 2)…")
+        threading.Thread(target=lambda: self._do_launch(entry, port),
+                         daemon=True).start()
+        return True
 
     # ── Hardware utilities ────────────────────────────────────────────────────
 
@@ -1022,6 +1235,12 @@ class AppController:
             stripped = line.strip()
             if stripped and not re.search(r'error_handler|on_error|ErrorHandler', stripped):
                 self._last_error_hint = stripped[:120]
+                # Known-issue auto-remediation: try to fix + relaunch before we
+                # settle into ERROR. Only fires once per session (see
+                # _maybe_remediate) and never on READY/normal lines since this
+                # whole block is gated on the error-ish regex above.
+                if self._maybe_remediate(line):
+                    return
         # Emit a recovery suggestion for well-known error patterns (once per pattern per run).
         for pattern, hint in self._ERROR_HINTS:
             pid = id(pattern)

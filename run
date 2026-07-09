@@ -11,6 +11,8 @@ export PYTHONPATH="$SCRIPT_DIR/app"
 
 if [[ "${1:-}" == "--tui" ]]; then
     exec "$PYTHON" "$SCRIPT_DIR/app/tui_main.py" "${@:2}"
+elif [[ "${1:-}" == "--doctor" ]]; then
+    exec "$PYTHON" "$SCRIPT_DIR/app/doctor_main.py" "${@:2}"
 else
     exec "$PYTHON" "$SCRIPT_DIR/app/main.py" "$@"
 fi

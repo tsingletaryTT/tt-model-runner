@@ -116,6 +116,7 @@ class TuiApp(App[None]):
         self._ctrl.on_model_identified = self._on_model_identified
         self._ctrl.on_download_progress = self._on_download_progress
         self._ctrl.on_environment_checked = self._on_environment_checked
+        self._ctrl.on_remediation_applied = self._on_remediation_applied
 
         self._set_ready_tabs_enabled(False)
 
@@ -278,6 +279,11 @@ class TuiApp(App[None]):
                 title="Environment check",
                 timeout=8,
             )
+
+    def _on_remediation_applied(self, remedy) -> None:
+        """Reflect an auto-applied workaround as a toast (banner streams via log)."""
+        ref = getattr(remedy, "ref", "") or getattr(remedy, "id", "")
+        self.notify(f"Auto-tuned for {ref}", title="Known issue", severity="warning")
 
     def _on_download_progress(self, hf_repo: str, fraction: float, status_line: str) -> None:
         from textual.widgets import Static, Button

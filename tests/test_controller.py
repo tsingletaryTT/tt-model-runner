@@ -5,6 +5,7 @@ Uses NullDispatch (synchronous direct call) so callbacks fire inline and
 assertions run immediately after the triggering method.
 """
 import sys, os, time, threading
+from pathlib import Path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
 
 import pytest
@@ -582,3 +583,335 @@ def test_select_model_restores_saved_options(tmp_path):
         opts = ctrl.get_options()
         assert opts.use_case == "code_completion"
         assert opts.max_model_len == 32768
+
+
+# ── Known-issue auto-remediation (_apply_remedy / undo_remediation) ────────────
+
+import workaround_resolver as wr
+
+
+def test_apply_remedy_writes_env_and_sets_override(tmp_path, monkeypatch):
+    ctrl, _ = make_controller()
+    fake_settings = _make_test_settings(tmp_path)
+    fake_settings.server_repo_path = str(tmp_path)
+    w = wr.Workaround(
+        id="p100", devices=["P100"], models=["Llama-3.1-8B*"],
+        symptom="clash with L1 buffers", env={"MAX_PREFILL_CHUNK_SIZE": "2"},
+        vllm={"max_model_len": 1024}, also_move_to_env=["HF_TOKEN"],
+        tradeoff="context capped", ref="tt-metal#28835",
+    )
+    monkeypatch.setenv("HF_TOKEN", "hf_secret")
+
+    with patch("controller._settings", fake_settings):
+        applied = ctrl._apply_remedy(w, Path(tmp_path))
+
+        env_text = (tmp_path / ".env").read_text()
+        assert "MAX_PREFILL_CHUNK_SIZE=2" in env_text
+        assert "HF_TOKEN=hf_secret" in env_text          # relocated from environment
+        assert ctrl._options.max_model_len == 1024
+        assert ctrl._applied_remedy is applied
+        assert "MAX_PREFILL_CHUNK_SIZE" in applied.env_keys_written
+
+
+def test_undo_remediation_scrubs_and_clears(tmp_path):
+    ctrl, _ = make_controller()
+    fake_settings = _make_test_settings(tmp_path)
+    fake_settings.server_repo_path = str(tmp_path)
+    w = wr.Workaround(id="p100", devices=["P100"], models=["*"],
+                       env={"MAX_PREFILL_CHUNK_SIZE": "2"}, vllm={"max_model_len": 1024})
+
+    with patch("controller._settings", fake_settings):
+        ctrl._apply_remedy(w, Path(tmp_path))
+
+        ctrl.undo_remediation()
+
+        assert "MAX_PREFILL_CHUNK_SIZE" not in (tmp_path / ".env").read_text()
+        assert ctrl._options.max_model_len is None
+        assert ctrl._applied_remedy is None
+
+
+def test_undo_remediation_uses_repo_path_captured_at_apply_time(tmp_path):
+    """undo_remediation must scrub the .env at the repo_path recorded on
+    AppliedRemedy, not whatever _settings.server_repo_path happens to be at
+    undo time. Regression test: previously undo_remediation re-read
+    _settings.server_repo_path, so if the setting changed between apply and
+    undo (e.g. the user repointed the repo path), undo would scrub the wrong
+    .env — or silently no-op — instead of the one that was actually written.
+    """
+    ctrl, _ = make_controller()
+    fake_settings = _make_test_settings(tmp_path)
+    fake_settings.server_repo_path = str(tmp_path)
+    w = wr.Workaround(id="p100", devices=["P100"], models=["*"],
+                       env={"MAX_PREFILL_CHUNK_SIZE": "2"}, vllm={"max_model_len": 1024})
+
+    other_repo = tmp_path / "other_repo"
+    other_repo.mkdir()
+
+    with patch("controller._settings", fake_settings):
+        ctrl._apply_remedy(w, Path(tmp_path))
+
+        assert "MAX_PREFILL_CHUNK_SIZE=2" in (tmp_path / ".env").read_text()
+
+        # Simulate the setting changing after apply but before undo.
+        fake_settings.server_repo_path = str(other_repo)
+
+        ctrl.undo_remediation()
+
+        # The ORIGINAL .env (captured repo_path) was scrubbed...
+        assert "MAX_PREFILL_CHUNK_SIZE" not in (tmp_path / ".env").read_text()
+        # ...and undo never touched/created a .env under the new setting path.
+        assert not (other_repo / ".env").exists()
+        assert ctrl._options.max_model_len is None
+        assert ctrl._applied_remedy is None
+
+
+# ── Pre-flight hook (_preflight_apply) ──────────────────────────────────────────
+
+def test_preflight_applies_remedy_before_launch(tmp_path):
+    """_preflight_apply should apply matching auto remedies before _do_launch runs."""
+    ctrl, _ = make_controller()
+    fake_settings = _make_test_settings(tmp_path)
+    fake_settings.server_repo_path = str(tmp_path)
+    (tmp_path / "run.py").write_text("# stub")
+
+    entry = MagicMock()
+    entry.display_name = "Llama-3.1-8B-Instruct"
+    entry.device_type = "P100"
+    entry.inference_engine = "vllm"
+
+    w = wr.Workaround(id="p100", devices=["P100"], models=["*"],
+                       env={"MAX_PREFILL_CHUNK_SIZE": "2"}, vllm={"max_model_len": 1024})
+
+    captured = {}
+    with patch("controller._settings", fake_settings), \
+         patch("controller._wr.match_preflight",
+               lambda device, model, repo_version=None: [w]), \
+         patch.object(ctrl, "_do_launch",
+                      lambda entry, port: captured.update(mml=ctrl._options.max_model_len)):
+        ctrl._preflight_apply(entry)
+        ctrl._do_launch(entry, "8000")
+
+    assert captured["mml"] == 1024
+    assert "MAX_PREFILL_CHUNK_SIZE=2" in (tmp_path / ".env").read_text()
+
+
+def test_preflight_apply_skips_launch_block_on_resolver_error(tmp_path):
+    """A resolver exception must never propagate — pre-flight fails open."""
+    ctrl, _ = make_controller()
+    fake_settings = _make_test_settings(tmp_path)
+    fake_settings.server_repo_path = str(tmp_path)
+
+    entry = MagicMock()
+    entry.display_name = "Llama-3.1-8B-Instruct"
+    entry.device_type = "P100"
+    entry.inference_engine = "vllm"
+
+    with patch("controller._settings", fake_settings), \
+         patch("controller._wr.match_preflight", side_effect=RuntimeError("kb boom")):
+        ctrl._preflight_apply(entry)   # must not raise
+
+    assert ctrl._applied_remedy is None
+
+
+def test_preflight_apply_warns_but_does_not_apply_non_auto_remedy(tmp_path):
+    """auto: false remedies should log a warning, not be silently applied."""
+    ctrl, view = make_controller()
+    fake_settings = _make_test_settings(tmp_path)
+    fake_settings.server_repo_path = str(tmp_path)
+
+    entry = MagicMock()
+    entry.display_name = "Llama-3.1-8B-Instruct"
+    entry.device_type = "P100"
+    entry.inference_engine = "vllm"
+
+    w = wr.Workaround(id="manual-fix", devices=["P100"], models=["*"],
+                       env={"SOME_FLAG": "1"}, auto=False,
+                       tradeoff="requires manual review", ref="tt-metal#99999")
+
+    with patch("controller._settings", fake_settings), \
+         patch("controller._wr.match_preflight",
+               lambda device, model, repo_version=None: [w]):
+        ctrl._preflight_apply(entry)
+
+    assert ctrl._applied_remedy is None
+    assert not (tmp_path / ".env").exists()
+    assert any("tt-metal#99999" in line or "manual-fix" in line
+               for line in view.log_lines)
+
+
+# ── Reactive remediation (_maybe_remediate) ─────────────────────────────────────
+
+def test_reactive_remediation_relaunches_once(tmp_path, monkeypatch):
+    """A crash log line matching a KB symptom triggers apply + relaunch, once."""
+    ctrl, view = make_controller()
+    fake_settings = _make_test_settings(tmp_path)
+    fake_settings.server_repo_path = str(tmp_path)
+
+    entry = MagicMock()
+    entry.display_name = "Llama-3.1-8B-Instruct"
+    entry.device_type = "P100"
+
+    ctrl._current_entry = entry
+    ctrl._port = "8000"
+
+    relaunches = []
+    monkeypatch.setattr(ctrl, "_do_launch",
+                        lambda entry, port: relaunches.append(port))
+
+    w = wr.Workaround(id="p100", devices=["P100"], models=["*"],
+                       symptom="clash with L1 buffers",
+                       env={"MAX_PREFILL_CHUNK_SIZE": "2"}, vllm={"max_model_len": 1024})
+
+    crash = "TT_THROW ... clash with L1 buffers"
+
+    with patch("controller._settings", fake_settings), \
+         patch("controller._wr.match_symptom", lambda line, device, model: w):
+        # First crash → apply + relaunch (async: _do_launch runs on a daemon thread).
+        assert ctrl._maybe_remediate(crash) is True
+
+        deadline = time.monotonic() + 2.0
+        while len(relaunches) < 1 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert len(relaunches) == 1
+        assert ctrl._options.max_model_len == 1024
+
+        # Exactly one, correctly-labeled banner: reactive path must say
+        # AUTO-RETRY (never PRE-FLIGHT) and must not double-emit the banner
+        # (regression check for the old _apply_remedy + _maybe_remediate
+        # double-banner bug).
+        banner_headers = [l for l in view.log_lines if "known issue" in l]
+        assert len(banner_headers) == 1
+        assert all("AUTO-RETRY" in l for l in banner_headers)
+        assert not any("PRE-FLIGHT" in l for l in view.log_lines)
+
+        # Second crash → capped, no further relaunch.
+        assert ctrl._maybe_remediate(crash) is False
+
+        deadline = time.monotonic() + 0.2
+        while time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert len(relaunches) == 1
+
+
+# ── Remediation state lifecycle (Copilot review) ────────────────────────────────
+
+def test_launch_resets_remediation_budget(tmp_path, monkeypatch):
+    """Each user-initiated launch() clears the reactive cap + applied remedy,
+    so remediation is not permanently disabled after one prior auto-retry."""
+    ctrl, _ = make_controller()
+    fake_settings = _make_test_settings(tmp_path)
+    fake_settings.server_repo_path = str(tmp_path)
+
+    entry = MagicMock()
+    entry.display_name = "Llama-3.1-8B-Instruct"
+    entry.device_type = "P100"
+    entry.min_disk_gb = 0                       # skip the disk-space branch
+
+    # Simulate leftover state from a previous launch's reactive remediation.
+    ctrl._remediation_attempts = 1
+    ctrl._applied_remedy = MagicMock()
+
+    # Neutralize the background launch work — we only assert the sync reset.
+    monkeypatch.setattr(ctrl, "_preflight_apply", lambda e: None)
+    monkeypatch.setattr(ctrl, "_do_launch", lambda e, p: None)
+    monkeypatch.setattr(ctrl, "_is_port_open", lambda p: False)
+
+    with patch("controller._settings", fake_settings):
+        ctrl.launch(entry, "8000")
+
+    assert ctrl._remediation_attempts == 0
+    assert ctrl._applied_remedy is None
+
+
+def test_reactive_skips_workaround_already_applied(tmp_path):
+    """If the matched workaround is already the one applied (e.g. pre-flight),
+    the reactive path does not burn the single retry re-applying identical config."""
+    from controller import AppliedRemedy
+    ctrl, _ = make_controller()
+    fake_settings = _make_test_settings(tmp_path)
+    fake_settings.server_repo_path = str(tmp_path)
+
+    entry = MagicMock()
+    entry.display_name = "Llama-3.1-8B-Instruct"
+    entry.device_type = "P100"
+    ctrl._current_entry = entry
+    ctrl._port = "8000"
+
+    w = wr.Workaround(id="p100", devices=["P100"], models=["*"],
+                      symptom="clash with L1 buffers",
+                      env={"MAX_PREFILL_CHUNK_SIZE": "2"}, vllm={"max_model_len": 1024})
+    ctrl._applied_remedy = AppliedRemedy(remedy=w, env_keys_written=[],
+                                         repo_path=Path(tmp_path), prior_env={},
+                                         prior_max_model_len=None,
+                                         set_max_model_len=False)
+
+    relaunches = []
+    with patch("controller._settings", fake_settings), \
+         patch.object(ctrl, "_do_launch", lambda e, p: relaunches.append(p)), \
+         patch("controller._wr.match_symptom", lambda line, device, model: w):
+        assert ctrl._maybe_remediate("crash: clash with L1 buffers") is False
+
+    assert relaunches == []
+    assert ctrl._remediation_attempts == 0
+
+
+def test_preflight_applies_at_most_one_remedy(tmp_path):
+    """When several auto workarounds match, only the first is applied (KB order =
+    priority) so the single AppliedRemedy record can fully reverse on undo; extras
+    are logged as skipped, not silently dropped."""
+    ctrl, view = make_controller()
+    fake_settings = _make_test_settings(tmp_path)
+    fake_settings.server_repo_path = str(tmp_path)
+
+    entry = MagicMock()
+    entry.display_name = "Llama-3.1-8B-Instruct"
+    entry.device_type = "P100"
+
+    w1 = wr.Workaround(id="first", devices=["P100"], models=["*"],
+                       env={"A": "1"}, ref="ref-first")
+    w2 = wr.Workaround(id="second", devices=["P100"], models=["*"],
+                       env={"B": "2"}, ref="ref-second")
+
+    with patch("controller._settings", fake_settings), \
+         patch("controller._wr.match_preflight",
+               lambda device, model, repo_version=None: [w1, w2]):
+        ctrl._preflight_apply(entry)
+
+    assert ctrl._applied_remedy is not None
+    assert ctrl._applied_remedy.remedy.id == "first"
+    env_text = (tmp_path / ".env").read_text()
+    assert "A=1" in env_text
+    assert "B=2" not in env_text                 # second remedy not applied
+    assert any("skipped" in l and ("ref-second" in l or "second" in l)
+               for l in view.log_lines)
+
+
+def test_undo_restores_prior_env_and_option_values(tmp_path):
+    """undo must RESTORE pre-existing user values, not delete keys / null options.
+    A workaround that overwrites an existing .env key or an already-set
+    max_model_len should, on undo, put the prior values back."""
+    from controller import AppliedRemedy   # noqa: F401 (ensure import path valid)
+    ctrl, _ = make_controller()
+    fake_settings = _make_test_settings(tmp_path)
+    fake_settings.server_repo_path = str(tmp_path)
+
+    # Pre-existing user state: a value in .env and an explicit max_model_len.
+    (tmp_path / ".env").write_text("MAX_PREFILL_CHUNK_SIZE=8\nHF_TOKEN=keep-me\n")
+    ctrl._options.max_model_len = 32768
+
+    w = wr.Workaround(id="p100", devices=["P100"], models=["*"],
+                      env={"MAX_PREFILL_CHUNK_SIZE": "2"}, vllm={"max_model_len": 1024})
+
+    with patch("controller._settings", fake_settings):
+        ctrl._apply_remedy(w, Path(tmp_path))
+        # Applied state reflects the remedy.
+        assert "MAX_PREFILL_CHUNK_SIZE=2" in (tmp_path / ".env").read_text()
+        assert ctrl._options.max_model_len == 1024
+
+        ctrl.undo_remediation()
+
+    env_text = (tmp_path / ".env").read_text()
+    assert "MAX_PREFILL_CHUNK_SIZE=8" in env_text        # prior value restored, not deleted
+    assert "HF_TOKEN=keep-me" in env_text                # untouched
+    assert ctrl._options.max_model_len == 32768          # prior option restored, not None
+    assert ctrl._applied_remedy is None
