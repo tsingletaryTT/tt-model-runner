@@ -6,7 +6,10 @@ Reports which workarounds WOULD apply to a device+model. Mutates nothing:
 no .env writes, no launches. Inspired by tt-local-generator's `tt-ctl recover`.
 
     ./run --doctor --device P100 --model Llama-3.1-8B-Instruct
-    ./run --doctor --json          # machine-readable
+    ./run --doctor --model Llama-3.1-8B-Instruct --json   # machine-readable
+
+--model is required: the KB entries carry the glob patterns, so the model must
+be a concrete name to match against them (a bare "*" matches nothing).
 """
 import argparse
 import dataclasses
@@ -30,8 +33,9 @@ def run_doctor(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(prog="tt-model-runner --doctor")
     parser.add_argument("--device", help="DeviceType (P100, N150, …); "
                         "auto-detected via tt-smi if omitted")
-    parser.add_argument("--model", default="*",
-                        help="Model display name (glob-matched)")
+    parser.add_argument("--model", required=True,
+                        help="Model display name, matched against the KB "
+                             "workaround glob patterns (required)")
     parser.add_argument("--json", action="store_true",
                         help="Emit matched workarounds as JSON")
     args = parser.parse_args(argv)

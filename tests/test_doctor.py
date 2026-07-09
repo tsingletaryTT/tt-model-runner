@@ -41,3 +41,11 @@ def test_doctor_json_includes_device(capsys):
     assert data[0]["device"] == "P100"
     assert data[0]["id"] == "p100-llama31-8b-l1-prefill"
     assert code != 0
+
+
+def test_doctor_requires_model():
+    # --model is required: defaulting to "*" silently matched no KB pattern, so
+    # the flag is now mandatory (argparse exits non-zero when it is missing).
+    import pytest
+    with pytest.raises(SystemExit):
+        doctor_main.run_doctor(["--device", "P100"])

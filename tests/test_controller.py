@@ -841,7 +841,9 @@ def test_reactive_skips_workaround_already_applied(tmp_path):
                       symptom="clash with L1 buffers",
                       env={"MAX_PREFILL_CHUNK_SIZE": "2"}, vllm={"max_model_len": 1024})
     ctrl._applied_remedy = AppliedRemedy(remedy=w, env_keys_written=[],
-                                         repo_path=Path(tmp_path))
+                                         repo_path=Path(tmp_path), prior_env={},
+                                         prior_max_model_len=None,
+                                         set_max_model_len=False)
 
     relaunches = []
     with patch("controller._settings", fake_settings), \
@@ -882,3 +884,34 @@ def test_preflight_applies_at_most_one_remedy(tmp_path):
     assert "B=2" not in env_text                 # second remedy not applied
     assert any("skipped" in l and ("ref-second" in l or "second" in l)
                for l in view.log_lines)
+
+
+def test_undo_restores_prior_env_and_option_values(tmp_path):
+    """undo must RESTORE pre-existing user values, not delete keys / null options.
+    A workaround that overwrites an existing .env key or an already-set
+    max_model_len should, on undo, put the prior values back."""
+    from controller import AppliedRemedy   # noqa: F401 (ensure import path valid)
+    ctrl, _ = make_controller()
+    fake_settings = _make_test_settings(tmp_path)
+    fake_settings.server_repo_path = str(tmp_path)
+
+    # Pre-existing user state: a value in .env and an explicit max_model_len.
+    (tmp_path / ".env").write_text("MAX_PREFILL_CHUNK_SIZE=8\nHF_TOKEN=keep-me\n")
+    ctrl._options.max_model_len = 32768
+
+    w = wr.Workaround(id="p100", devices=["P100"], models=["*"],
+                      env={"MAX_PREFILL_CHUNK_SIZE": "2"}, vllm={"max_model_len": 1024})
+
+    with patch("controller._settings", fake_settings):
+        ctrl._apply_remedy(w, Path(tmp_path))
+        # Applied state reflects the remedy.
+        assert "MAX_PREFILL_CHUNK_SIZE=2" in (tmp_path / ".env").read_text()
+        assert ctrl._options.max_model_len == 1024
+
+        ctrl.undo_remediation()
+
+    env_text = (tmp_path / ".env").read_text()
+    assert "MAX_PREFILL_CHUNK_SIZE=8" in env_text        # prior value restored, not deleted
+    assert "HF_TOKEN=keep-me" in env_text                # untouched
+    assert ctrl._options.max_model_len == 32768          # prior option restored, not None
+    assert ctrl._applied_remedy is None

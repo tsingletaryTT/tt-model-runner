@@ -124,8 +124,11 @@ class BenchResult:
 class AppliedRemedy:
     """Record of a workaround the controller applied, for logging + undo."""
     remedy: "_wr.Workaround"
-    env_keys_written: list          # .env keys we wrote (to scrub on undo)
+    env_keys_written: list          # .env keys we wrote (to restore/scrub on undo)
     repo_path: Path                 # repo root captured at apply time (undo target)
+    prior_env: dict                 # key -> its .env value before apply (None if absent)
+    prior_max_model_len: object     # LaunchOptions.max_model_len before apply
+    set_max_model_len: bool         # whether this remedy changed max_model_len
 
 
 def _env_file_has_key(env_path: Path, key: str) -> bool:
@@ -137,6 +140,24 @@ def _env_file_has_key(env_path: Path, key: str) -> bool:
                    for l in env_path.read_text().splitlines())
     except OSError:
         return False
+
+
+def _env_file_get(env_path: Path, key: str) -> Optional[str]:
+    """Return the current value of KEY in a .env file, or None if absent.
+
+    Used to snapshot a user's pre-existing value before a remedy overwrites it,
+    so undo can restore it rather than deleting the key outright.
+    """
+    if not env_path.exists():
+        return None
+    try:
+        for line in env_path.read_text().splitlines():
+            s = line.strip()
+            if s.startswith(f"{key}="):
+                return s.split("=", 1)[1]
+    except OSError:
+        return None
+    return None
 
 
 from tool_client import run_session as _tc_run_session
@@ -682,24 +703,34 @@ class AppController:
         """
         env_path = repo_path / ".env"
         written: list = []
+        prior_env: dict = {}        # snapshot of each written key's prior value
 
         # 1. vLLM overrides (reuses launch_options' max_model_len handling).
-        if "max_model_len" in w.vllm:
+        #    Snapshot the prior value first so undo restores it, not just None.
+        set_mml = "max_model_len" in w.vllm
+        prior_mml = self._options.max_model_len
+        if set_mml:
             self._options.max_model_len = w.vllm["max_model_len"]
 
-        # 2. env keys written verbatim into repo-root .env.
+        # 2. env keys written verbatim into repo-root .env (snapshot prior first).
         for key, value in w.env.items():
+            if key not in prior_env:
+                prior_env[key] = _env_file_get(env_path, key)
             _set_env_key(env_path, key, str(value))
             written.append(key)
 
-        # 3. relocate env vars that v0.10.0 only reads from .env.
+        # 3. relocate env vars that v0.10.0 only reads from .env. These are only
+        #    written when absent, so their prior value is None (undo scrubs them).
         for name in w.also_move_to_env:
             val = os.environ.get(name, "")
             if val and not _env_file_has_key(env_path, name):
+                prior_env.setdefault(name, None)
                 _set_env_key(env_path, name, val)
                 written.append(name)
 
-        applied = AppliedRemedy(remedy=w, env_keys_written=written, repo_path=repo_path)
+        applied = AppliedRemedy(remedy=w, env_keys_written=written, repo_path=repo_path,
+                                prior_env=prior_env, prior_max_model_len=prior_mml,
+                                set_max_model_len=set_mml)
         self._applied_remedy = applied
         self._emit_remediation_banner(w, preflight=preflight)
         self._emit("on_remediation_applied", w)
@@ -712,9 +743,13 @@ class AppController:
             return
         env_path = applied.repo_path / ".env"
         for key in applied.env_keys_written:
-            _scrub_env_key(env_path, key)
-        if "max_model_len" in applied.remedy.vllm:
-            self._options.max_model_len = None
+            prior = applied.prior_env.get(key)
+            if prior is not None:
+                _set_env_key(env_path, key, prior)   # restore the user's prior value
+            else:
+                _scrub_env_key(env_path, key)         # key was ours — remove it
+        if applied.set_max_model_len:
+            self._options.max_model_len = applied.prior_max_model_len
         self._applied_remedy = None
         self._emit("on_log_line", f"↩ Reverted workaround {applied.remedy.id}")
 
