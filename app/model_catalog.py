@@ -41,6 +41,7 @@ class ModelEntry:
     param_count: Optional[float]
     min_disk_gb: Optional[float]
     min_ram_gb: Optional[float]
+    source: str = "inference_server"   # "inference_server" | "community"
 
 
 class ModelCatalog:
@@ -110,3 +111,16 @@ class ModelCatalog:
 
     def all_entries(self) -> List[ModelEntry]:
         return list(self._entries)
+
+    def merge_community(self, entries: List[ModelEntry]) -> None:
+        """Append community-sourced entries (from community_catalog.py).
+
+        Idempotent by model_id: re-merging (e.g. after a catalog refresh)
+        replaces existing community entries with the same model_id instead
+        of duplicating them.
+        """
+        existing_ids = {e.model_id for e in entries}
+        self._entries = [
+            e for e in self._entries
+            if not (e.source == "community" and e.model_id in existing_ids)
+        ] + list(entries)

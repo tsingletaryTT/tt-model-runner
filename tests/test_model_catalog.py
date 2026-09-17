@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "app"))
-from model_catalog import ModelCatalog, extract_family
+from model_catalog import ModelCatalog, ModelEntry, extract_family
 
 MINI_SPEC = {
     "schema_version": "2",
@@ -99,3 +99,29 @@ def test_extract_family():
     assert extract_family("Wan2.2-T2V-A14B-Diffusers") == "Wan"
     assert extract_family("meta-llama/Llama-3.2-1B") == "Llama"
     assert extract_family("mistralai/Mistral-7B-v0.3") == "Mistral"
+
+
+def test_model_entry_defaults_to_inference_server_source():
+    entry = ModelEntry(
+        model_id="x", model_name="x", display_name="x", hf_model_repo="x",
+        model_type="LLM", family="x", device_type="N150",
+        inference_engine="vllm", docker_image="", status="COMPLETE",
+        param_count=None, min_disk_gb=None, min_ram_gb=None,
+    )
+    assert entry.source == "inference_server"
+
+
+def test_merge_community_appends_entries():
+    cat = ModelCatalog([])
+    community_entry = ModelEntry(
+        model_id="org/bundle", model_name="org/bundle", display_name="bundle",
+        hf_model_repo="org/weights", model_type="COMMUNITY", family="org",
+        device_type="UNKNOWN", inference_engine="vllm", docker_image="",
+        status="COMMUNITY", param_count=None, min_disk_gb=None, min_ram_gb=None,
+        source="community",
+    )
+    cat.merge_community([community_entry])
+    all_entries = cat.all_entries()
+    assert len(all_entries) == 1
+    assert all_entries[0].source == "community"
+    assert all_entries[0].model_id == "org/bundle"
