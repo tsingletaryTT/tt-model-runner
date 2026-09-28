@@ -165,6 +165,7 @@ class Sidebar(Gtk.Box):
         self._cached_repos: set = set()
         self._compat_catalog = None      # set via set_compat_catalog()
         self.on_compat_select = None     # Callable[[CompatEntry], None]
+        self._community_entries: list = []
         # Active model type filters: empty set = show all types.
         saved_tf = _settings.type_filters or []
         self._type_filter_active: set = set(saved_tf) if saved_tf else set(_TYPE_ORDER)
@@ -765,6 +766,33 @@ class Sidebar(Gtk.Box):
         # DISCOVER section — compat catalog entries not in model_spec, shown when searching.
         if searching and self._compat_catalog:
             self._append_discover_results(search)
+
+        # COMMUNITY section — tt-model-manager bundles, always shown (not
+        # gated by device compatibility filtering like the main tree).
+        if self._community_entries:
+            visible = self._community_entries
+            if search:
+                visible = [
+                    e for e in visible
+                    if search in e.display_name.lower() or search in (e.family or "").lower()
+                ]
+            if visible:
+                comm_it = self._tree_store.append(
+                    None, [f"COMMUNITY ({len(visible)})", "", "", False]
+                )
+                for entry in visible:
+                    label = f"{entry.display_name}  [{entry.device_type}]"
+                    self._tree_store.append(
+                        comm_it, [label, entry.model_name, entry.device_type, True]
+                    )
+
+    def load_community_entries(self, entries: list) -> None:
+        """Store community bundles and re-render the tree to include them."""
+        self._community_entries = list(entries)
+        if self._selected_device:
+            self._rebuild_tree([self._selected_device])
+        else:
+            self._rebuild_tree(None)
 
     def _append_discover_results(self, search: str) -> None:
         """Add DISCOVER tree section from compat catalog for search query."""
@@ -3162,11 +3190,7 @@ class MainWindow(Gtk.ApplicationWindow):
             self._refresh_ad_unit()
 
     def _on_community_catalog_loaded(self, entries: list) -> None:
-        """Pass freshly-fetched tt-model-manager bundles to the sidebar.
-
-        Sidebar.load_community_entries is added in Task 7 — until then this
-        callback is registered but unresolved if actually invoked.
-        """
+        """Pass freshly-fetched tt-model-manager bundles to the sidebar."""
         self._sidebar.load_community_entries(entries)
 
     # ── User action handlers (called from Sidebar widgets) ────────────────────
@@ -3175,6 +3199,9 @@ class MainWindow(Gtk.ApplicationWindow):
         """Collect current options from the config panel and ask the controller
         to start the server.  If the engine family changed since the last launch,
         show a dialog recommending tt-smi -r first."""
+        if getattr(entry, "source", "inference_server") == "community":
+            self._ctrl.launch_community(entry, port)
+            return
         warning = self._ctrl.needs_reset_warning(entry)
         if warning:
             old_engine, new_engine, old_model = warning
