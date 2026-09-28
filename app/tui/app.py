@@ -117,6 +117,7 @@ class TuiApp(App[None]):
         self._ctrl.on_download_progress = self._on_download_progress
         self._ctrl.on_environment_checked = self._on_environment_checked
         self._ctrl.on_remediation_applied = self._on_remediation_applied
+        self._ctrl.on_community_catalog_loaded = self._on_community_catalog_loaded
 
         self._set_ready_tabs_enabled(False)
 
@@ -199,6 +200,15 @@ class TuiApp(App[None]):
         device = getattr(self, "_detected_device", None)
         self.query_one(ModelRail).load_compat_catalog(catalog, device)
         self._rebuild_ad_cards()
+
+    def _on_community_catalog_loaded(self, entries: list) -> None:
+        """Wire freshly-fetched tt-model-manager community bundles into the rail.
+
+        ModelRail.load_community_entries is added in Task 6 — until then this
+        callback is registered but unresolved if actually invoked.
+        """
+        rail = self.query_one(ModelRail)
+        rail.load_community_entries(entries)
 
     def _rebuild_ad_cards(self) -> None:
         """Rebuild the rotating card pool from the current catalog + compat catalog."""

@@ -2862,6 +2862,7 @@ class MainWindow(Gtk.ApplicationWindow):
         controller.on_download_progress = self._on_download_progress
         controller.on_environment_checked = self._on_environment_checked
         controller.on_remediation_applied = self._on_remediation_applied
+        controller.on_community_catalog_loaded = self._on_community_catalog_loaded
 
         # Connect the ↻ chip-telemetry refresh button to the controller.
         self._sidebar._hw_refresh_btn.connect(
@@ -3159,6 +3160,14 @@ class MainWindow(Gtk.ApplicationWindow):
         if catalog:
             self._sidebar.set_compat_catalog(catalog)
             self._refresh_ad_unit()
+
+    def _on_community_catalog_loaded(self, entries: list) -> None:
+        """Pass freshly-fetched tt-model-manager bundles to the sidebar.
+
+        Sidebar.load_community_entries is added in Task 7 — until then this
+        callback is registered but unresolved if actually invoked.
+        """
+        self._sidebar.load_community_entries(entries)
 
     # ── User action handlers (called from Sidebar widgets) ────────────────────
 

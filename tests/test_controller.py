@@ -915,3 +915,24 @@ def test_undo_restores_prior_env_and_option_values(tmp_path):
     assert "HF_TOKEN=keep-me" in env_text                # untouched
     assert ctrl._options.max_model_len == 32768          # prior option restored, not None
     assert ctrl._applied_remedy is None
+
+
+# ── Community bundle launch ──────────────────────────────────────────────────
+
+def test_launch_community_uses_tt_model_launcher(monkeypatch):
+    ctrl, _ = make_controller()
+    from model_catalog import ModelEntry
+    entry = ModelEntry(
+        model_id="org/bundle", model_name="org/bundle", display_name="bundle",
+        hf_model_repo="org/weights", model_type="COMMUNITY", family="org",
+        device_type="UNKNOWN", inference_engine="vllm", docker_image="",
+        status="COMMUNITY", param_count=None, min_disk_gb=None, min_ram_gb=None,
+        source="community",
+    )
+    launched = {}
+    def _fake_launch(config, on_log_line, on_state):
+        launched["bundle_id"] = config.bundle_id
+        launched["port"] = config.port
+    monkeypatch.setattr(ctrl._tt_model_launcher, "launch", _fake_launch)
+    ctrl.launch_community(entry, "8001")
+    assert launched == {"bundle_id": "org/bundle", "port": "8001"}

@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Callable, List, Optional
 
 from app_settings import settings as _settings
+from community_catalog import load_async as _community_load_async
 from compat_catalog import CompatCatalog, load_async as _compat_load_async
 from dev_image_launcher import DevImageLauncher, DevLaunchConfig
 from device_detector import ChipStatus, detect_devices, get_chip_statuses_live
@@ -32,6 +33,7 @@ from model_catalog import ModelCatalog, ModelEntry
 from server_manager import LaunchConfig, ServerManager, ServerState, \
     _set_env_key, _scrub_env_key
 from timing_store import TimingStore
+from tt_model_launcher import TtModelLauncher, TtModelLaunchConfig
 import workaround_resolver as _wr
 
 
@@ -299,6 +301,7 @@ class AppController:
         self._health_worker: Optional[HealthWorker] = None
         self._timing = TimingStore(_TIMING_PATH)
         self._catalog: Optional[ModelCatalog] = None
+        self._last_compatible_devices: List[str] = []
         self._current_entry: Optional[ModelEntry] = None
         self._cache_info: Optional[ModelCacheInfo] = None
         self._state = ServerState.IDLE
@@ -312,6 +315,8 @@ class AppController:
         self._last_error_hint: str = ""   # last error-ish log line, shown in ERROR banner
         self._compat_catalog: Optional[CompatCatalog] = None
         self._dev_launcher = DevImageLauncher()
+        self._tt_model_launcher = TtModelLauncher()
+        self._community_entries: List[ModelEntry] = []
         self._pull_layers_done: int = 0   # layers that reached "Pull complete"
         self._pull_downloading: dict = {}  # layer_id → (current_bytes, total_bytes)
         self._emitted_error_hints: set = set()  # patterns already suggested this run
@@ -329,6 +334,17 @@ class AppController:
             self._compat_catalog = cat
             self._emit("on_compat_catalog_loaded", cat)
         _compat_load_async(_on_compat)
+
+        # Fetch tt-model-manager community bundles in the background —
+        # merges into self._catalog once loaded (or immediately if the
+        # catalog is already loaded) and dispatches on_community_catalog_loaded.
+        def _on_community(entries: List[ModelEntry]) -> None:
+            self._community_entries = entries
+            if self._catalog is not None and entries:
+                self._catalog.merge_community(entries)
+                self._emit("on_catalog_loaded", self._catalog, self._last_compatible_devices)
+            self._emit("on_community_catalog_loaded", entries)
+        _community_load_async(_on_community)
 
         # Callbacks — views set these after construction; None = ignored
         self.on_state_changed: Optional[Callable] = None        # (ServerState, str)
@@ -348,6 +364,7 @@ class AppController:
         self.on_download_progress: Optional[Callable] = None         # (hf_repo, fraction, status_line)
         self.on_environment_checked: Optional[Callable] = None       # (list[tuple[str, bool, str]],)
         self.on_remediation_applied: Optional[Callable] = None       # (Workaround,)
+        self.on_community_catalog_loaded: Optional[Callable] = None  # (List[ModelEntry],)
         self._weights_warning_emitted: bool = False
 
     # ── Read-only properties for views ──────────────────────────────────────
@@ -419,6 +436,9 @@ class AppController:
             compatible = devices if devices else self._catalog.all_device_types()
             if not devices:
                 self._emit("on_log_line", "⚠ tt-smi not found — showing all devices")
+            self._last_compatible_devices = compatible
+            if self._community_entries:
+                self._catalog.merge_community(self._community_entries)
             self._emit("on_catalog_loaded", self._catalog, compatible)
             # Emit live chip telemetry for the hardware status widget.
             chips = get_chip_statuses_live()
@@ -643,13 +663,14 @@ class AppController:
         self._server_mgr.launch(config, self._handle_log_line, self._on_server_state)
 
     def stop(self) -> None:
-        """Stop the running server or dev-image script."""
+        """Stop the running server, dev-image script, or community bundle."""
         self._transition(ServerState.STOPPING)
         if self._health_worker:
             self._health_worker.stop()
             self._health_worker = None
         self._server_mgr.stop()
         self._dev_launcher.stop()
+        self._tt_model_launcher.stop()
         t = threading.Timer(10.0, self._force_idle)
         t.daemon = True
         t.start()
@@ -1141,6 +1162,33 @@ class AppController:
                    f"▶ Dev image launch: {model_id} via {software_stack}")
         self._transition(ServerState.LAUNCHING)
         self._dev_launcher.launch(config, self._handle_log_line, self._on_server_state)
+
+    def launch_community(self, entry: ModelEntry, port: str) -> None:
+        """Launch a tt-model-manager community bundle via `tt serve` (TtModelLauncher).
+
+        entry.source must be "community"; entry.model_id is the bundle id
+        (e.g. "org/name"). No LaunchOptions, no GHCR resolution, no
+        auto-remediation — see docs/superpowers/specs/2026-09-17-tt-cli-community-models-design.md.
+        """
+        if self._state not in (ServerState.IDLE, ServerState.ERROR):
+            return
+        self._current_entry = entry
+        self._port = port
+        config = TtModelLaunchConfig(bundle_id=entry.model_id, port=port)
+        self._emit("on_log_line", f"▶ Launching community bundle {entry.model_id} · port {port}")
+        self._transition(ServerState.LAUNCHING)
+
+        self._last_health_port = port
+        self._last_health_engine = "auto"
+        self._health_worker = HealthWorker(
+            port=port,
+            on_ready=self._on_health_ready,
+            on_lost=self._on_health_lost,
+            dispatch_fn=self._dispatch,
+            engine="auto",
+        )
+        self._health_worker.start()
+        self._tt_model_launcher.launch(config, self._handle_log_line, self._on_server_state)
 
     def download_model(self, hf_repo: str, on_done: Optional[Callable[[bool], None]] = None) -> None:
         """Download a HuggingFace model repo to the local cache in a background thread.
