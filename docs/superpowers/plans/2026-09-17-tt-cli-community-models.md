@@ -2,9 +2,23 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add tt-model-manager community bundles as a second, first-class model source (discovered via `tt model list --community`, launched via `tt-model serve`), shown in their own "Community" sidebar section in both GTK and TUI, without touching the existing tt-inference-server `run.py`/Docker launch path.
+**Goal:** Add tt-model-manager community bundles as a second, first-class model source (discovered via `tt model list --community --all`, launched via `tt serve`), shown in their own "Community" sidebar section in both GTK and TUI, without touching the existing tt-inference-server `run.py`/Docker launch path.
 
-**Architecture:** `ModelEntry` gains a `source` field (`"inference_server"` | `"community"`). A new `community_catalog.py` shells the `tt` CLI and parses results into `ModelEntry` objects merged into the existing `ModelCatalog`. A new `TtModelLauncher` (parallel to `ServerManager`/`DevImageLauncher`) shells `tt-model serve`/`tt-model stop`, reusing the existing `LogParser` and `HealthWorker` for state/readiness detection. `AppController` gains `launch_community()` alongside `launch()`/`launch_dev_image()`; both GTK and TUI views branch to it based on `entry.source`.
+**Architecture:** `ModelEntry` gains a `source` field (`"inference_server"` | `"community"`). A new `community_catalog.py` shells the `tt` CLI and parses results into `ModelEntry` objects merged into the existing `ModelCatalog`. A new `TtModelLauncher` (parallel to `ServerManager`/`DevImageLauncher`) shells `tt serve <bundle_id>`/`tt model stop <bundle_id>` (via the `tt` binary — see 2026-09-28 note below), reusing the existing `LogParser` and `HealthWorker` for state/readiness detection. `AppController` gains `launch_community()` alongside `launch()`/`launch_dev_image()`; both GTK and TUI views branch to it based on `entry.source`.
+
+> **2026-09-28 correction:** Tasks 2 and 3 below were revised after reading
+> the live `~/code/tt-cli` and `~/code/tt-model-manager` checkouts directly
+> (the 2026-09-17 spec was Glean/secondary-source based). Three changes,
+> recorded with full reasoning in this plan's SDD ledger
+> (`.superpowers/sdd/2026-09-17-tt-cli-community-models/progress.md`):
+> `tt model list --community` needs `--all` to bypass hardware
+> auto-filtering; the real `BundleInfo` JSON schema uses `name`/`hardware`
+> (a list)/`engine`, not `id`/`mesh`/`kind`; and `TtModelLauncher` shells
+> `tt serve`/`tt model stop` (the `tt` binary) rather than `tt-model`
+> directly, because `tt-model` is a lazily-installed tool `tt` itself
+> manages and is not reliably present on PATH otherwise. This reverses this
+> plan's original "no dependency on tt serve auto-dispatch" constraint for
+> the community-bundle path specifically — see the constraint below.
 
 **Tech Stack:** Python 3, GTK4 (PyGObject), Textual, pytest. No new third-party dependencies — shells the `tt`/`tt-model` CLI binaries via `subprocess`.
 
@@ -13,8 +27,8 @@
 ## Global Constraints
 
 - Do not modify `run.py` invocation, GHCR resolution, docker shim, or auto-remediation logic in `app/server_manager.py` — confirmed still correct against current tt-inference-server images.
-- No new dependency on `tt-cli`'s own `tt serve` auto-dispatch — the app already knows an entry's source, so `TtModelLauncher` calls `tt-model serve` directly.
-- Community bundle launches get no auto-remediation/retry logic in this plan — errors surface as `ServerState.ERROR` with the raw `tt-model serve` output.
+- `TtModelLauncher` calls `tt serve <bundle_id>` / `tt model stop <bundle_id>` via the `tt` binary (not `tt-model` directly — confirmed 2026-09-28 that `tt-model` is a lazily-installed `uv-tool` `tt` itself manages, not reliably on PATH otherwise). This is safe here specifically because `TtModelLauncher` is only ever invoked for entries already tagged `source == "community"`.
+- Community bundle launches get no auto-remediation/retry logic in this plan — errors surface as `ServerState.ERROR` with the raw CLI output.
 - Every new `on_*` controller callback must be added to `ViewContract` (`tests/test_controller_contract.py`) and both stubs before use elsewhere, per the project's "Adding a new feature to both UIs" workflow.
 - Missing `tt`/`tt-model` binaries must degrade gracefully (empty Community section + a hint), never raise or block the rest of the app.
 
@@ -113,7 +127,10 @@ git commit -m "feat: add ModelEntry.source and ModelCatalog.merge_community"
 
 ---
 
-### Task 2: `community_catalog.py` — discover bundles via `tt model list --community`
+### Task 2: `community_catalog.py` — discover bundles via `tt model list --community --all`
+
+> Revised 2026-09-28 against the real `~/code/tt-cli` source (`BundleInfo`
+> dataclass, `commands/model.py`) — see the ledger and spec addendum for why.
 
 **Files:**
 - Create: `app/community_catalog.py`
@@ -136,17 +153,34 @@ from unittest.mock import patch, MagicMock
 sys.path.insert(0, str(Path(__file__).parent.parent / "app"))
 from community_catalog import parse_community_list, fetch_community_entries
 
-JSON_OUTPUT = json.dumps([
-    {"id": "episod/tt-animatediff", "kind": "tt-dit-server",
-     "arch": "blackhole", "mesh": "p150", "weights": "CompVis/stable-diffusion-v1-4"},
-    {"id": "acme/llama-fast", "kind": "vllm",
-     "arch": "wormhole", "mesh": "t3000", "weights": "meta-llama/Llama-3.2-1B"},
-])
+# Real `tt model list --community --json` shape: {"device":..., "scope":...,
+# "models": [...]} where each row is a BundleInfo dict (tt-cli's
+# modelhub/bundles.py) — name, source, kind, engine, arch (list),
+# hardware (list of board/mesh tags), downloads, installed, weights_repo,
+# weights_bytes.
+JSON_OUTPUT = json.dumps({
+    "device": None,
+    "scope": "community",
+    "models": [
+        {"name": "episod/tt-animatediff", "source": "HuggingFace", "kind": "self-contained",
+         "engine": None, "arch": ["blackhole"], "hardware": ["p150"],
+         "downloads": 12, "installed": False, "weights_repo": "CompVis/stable-diffusion-v1-4",
+         "weights_bytes": None},
+        {"name": "acme/llama-fast", "source": "HuggingFace", "kind": "thin",
+         "engine": "vLLM", "arch": ["wormhole_b0"], "hardware": ["t3000"],
+         "downloads": 4, "installed": True, "weights_repo": "meta-llama/Llama-3.2-1B",
+         "weights_bytes": 2400000000},
+    ],
+})
 
+# Fallback text form: the CLI's own table columns are
+# (name, source, engine, serving profiles, weights) — used only if --json
+# ever fails; parsing is best-effort (first whitespace-separated column is
+# the bundle id).
 TEXT_OUTPUT = """\
-NAME                     KIND           ARCH        MESH
-episod/tt-animatediff    tt-dit-server  blackhole   p150
-acme/llama-fast          vllm           wormhole    t3000
+NAME                     SOURCE       ENGINE   SERVING PROFILES   WEIGHTS
+episod/tt-animatediff    HuggingFace  -        p150                CompVis/stable-diffusion-v1-4
+acme/llama-fast          HuggingFace  vLLM     t3000               meta-llama/Llama-3.2-1B
 """
 
 
@@ -155,22 +189,36 @@ def test_parse_community_list_json():
     assert len(entries) == 2
     assert entries[0].model_id == "episod/tt-animatediff"
     assert entries[0].source == "community"
-    assert entries[0].inference_engine == "tt-dit-server"
+    assert entries[0].inference_engine == "vllm"  # engine=None defaults to "vllm"
     assert entries[0].device_type == "P150"
     assert entries[0].hf_model_repo == "CompVis/stable-diffusion-v1-4"
-    assert entries[1].device_type == "T3K"
+    assert entries[1].device_type == "T3K"          # "t3000" -> "T3K" alias
+    assert entries[1].inference_engine == "vllm"    # "vLLM" lowercased
 
 
 def test_parse_community_list_text_fallback():
     entries = parse_community_list(TEXT_OUTPUT)
     assert len(entries) == 2
     assert entries[0].model_id == "episod/tt-animatediff"
-    assert entries[0].inference_engine == "tt-dit-server"
     assert entries[1].model_id == "acme/llama-fast"
 
 
-def test_parse_community_list_unmapped_device_is_unknown():
-    raw = json.dumps([{"id": "x/y", "kind": "vllm", "arch": "exotic", "mesh": ""}])
+def test_parse_community_list_unmapped_hardware_is_uppercased():
+    """A hardware tag not in the small alias table still gets uppercased,
+    matching model_spec.json's own device_type vocabulary (e.g. "p300x2" ->
+    "P300X2") — UNKNOWN is reserved for a missing/empty hardware list only."""
+    raw = json.dumps({"models": [
+        {"name": "x/y", "kind": "thin", "engine": "vLLM", "arch": ["blackhole"],
+         "hardware": ["p300x2"], "weights_repo": None},
+    ]})
+    entries = parse_community_list(raw)
+    assert entries[0].device_type == "P300X2"
+
+
+def test_parse_community_list_missing_hardware_is_unknown():
+    raw = json.dumps({"models": [
+        {"name": "x/y", "kind": "thin", "engine": None, "arch": [], "hardware": []},
+    ]})
     entries = parse_community_list(raw)
     assert entries[0].device_type == "UNKNOWN"
 
@@ -183,6 +231,22 @@ def test_parse_community_list_empty_input():
 def test_fetch_community_entries_returns_empty_when_tt_missing():
     with patch("community_catalog.shutil.which", return_value=None):
         assert fetch_community_entries() == []
+
+
+def test_fetch_community_entries_uses_all_and_json_flags():
+    captured = {}
+    def _run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        result = MagicMock()
+        result.returncode = 0
+        result.stdout = JSON_OUTPUT
+        return result
+
+    with patch("community_catalog.shutil.which", return_value="/usr/bin/tt"), \
+         patch("community_catalog.subprocess.run", side_effect=_run):
+        entries = fetch_community_entries()
+    assert captured["cmd"] == ["/usr/bin/tt", "model", "list", "--community", "--all", "--json"]
+    assert len(entries) == 2
 
 
 def test_fetch_community_entries_falls_back_to_text_when_json_flag_unsupported():
@@ -215,12 +279,15 @@ Create `app/community_catalog.py`:
 ```python
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Discover tt-model-manager community bundles via `tt model list --community`.
+"""Discover tt-model-manager community bundles via `tt model list --community --all`.
 
 Community bundles are self-contained (no docker_image, no model_spec-style
 device_type) — this module maps what's available onto ModelEntry so the rest
 of the app (filtering, tree building, launching) doesn't need to know the
-difference beyond checking `source`.
+difference beyond checking `source`. Field mapping matches tt-cli's real
+`BundleInfo` dataclass (modelhub/bundles.py): name, hardware (list of
+board/mesh tags), engine, weights_repo — verified against the live
+~/code/tt-cli checkout on 2026-09-28.
 """
 import json
 import shutil
@@ -232,37 +299,42 @@ from model_catalog import ModelEntry
 
 _TIMEOUT = 15
 
-# Maps tt-model-manager arch/mesh labels (lowercase) to model_spec.json
-# device_type strings used elsewhere in the app (device_detector.py,
-# compat_catalog.py). Unrecognized values fall back to "UNKNOWN".
-_DEVICE_MAP = {
-    "p100": "P100", "p150": "P150", "p300": "P300", "p300x2": "P300X2",
-    "n150": "N150", "n300": "N300",
-    "t3000": "T3K", "t3k": "T3K",
+# Maps tt-cli hardware tags (lowercase) that don't already match
+# model_spec.json's device_type vocabulary as a plain uppercase (e.g.
+# "p300x2" -> "P300X2" needs no entry here). Only real aliases need listing.
+_DEVICE_ALIASES = {
+    "t3000": "T3K",
+    "t3k": "T3K",
     "galaxy": "GALAXY",
 }
 
 
-def _map_device_type(mesh: str, arch: str) -> str:
-    key = (mesh or arch or "").lower()
-    return _DEVICE_MAP.get(key, "UNKNOWN")
+def _map_device_type(hardware: list) -> str:
+    if not hardware:
+        return "UNKNOWN"
+    tag = str(hardware[0]).lower()
+    return _DEVICE_ALIASES.get(tag, tag.upper())
 
 
 def _entry_from_record(rec: dict) -> ModelEntry:
-    bundle_id = rec.get("id") or rec.get("name") or rec.get("bundle_id") or ""
+    bundle_id = rec.get("name") or rec.get("id") or rec.get("bundle_id") or ""
     display = bundle_id.split("/")[-1] if "/" in bundle_id else bundle_id
     org = bundle_id.split("/")[0] if "/" in bundle_id else "community"
-    mesh = rec.get("mesh") or rec.get("mesh_device") or ""
-    arch = rec.get("arch") or ""
+    hardware = rec.get("hardware") or []
+    if isinstance(hardware, str):
+        hardware = [hardware]
+    engine = rec.get("engine")
+    if isinstance(engine, list):
+        engine = engine[0] if engine else None
     return ModelEntry(
         model_id=bundle_id,
         model_name=bundle_id,
         display_name=display,
-        hf_model_repo=rec.get("weights") or rec.get("weights_repo") or bundle_id,
+        hf_model_repo=rec.get("weights_repo") or rec.get("weights") or bundle_id,
         model_type="COMMUNITY",
         family=org,
-        device_type=_map_device_type(mesh, arch),
-        inference_engine=rec.get("kind") or "vllm",
+        device_type=_map_device_type(hardware),
+        inference_engine=(engine or "vllm").lower(),
         docker_image="",
         status="COMMUNITY",
         param_count=None,
@@ -273,12 +345,11 @@ def _entry_from_record(rec: dict) -> ModelEntry:
 
 
 def parse_community_list(raw: str) -> List[ModelEntry]:
-    """Parse `tt model list --community` output into ModelEntry objects.
+    """Parse `tt model list --community --all` output into ModelEntry objects.
 
-    Tries JSON first (a list of bundle dicts, or {"models": [...]});  falls
-    back to a whitespace-separated text table (NAME KIND ARCH MESH, one
-    bundle per line) since the CLI's machine-readable support was
-    unconfirmed at design time — both must be handled.
+    Tries JSON first (`{"models": [...]}`, tt-cli's real shape — a bare list
+    is also accepted defensively); falls back to a whitespace-separated text
+    table (first column is the bundle id) if --json is ever unavailable.
     """
     raw = raw.strip()
     if not raw:
@@ -297,13 +368,7 @@ def parse_community_list(raw: str) -> List[ModelEntry]:
         parts = line.split()
         if not parts or "/" not in parts[0]:
             continue
-        rec = {
-            "id": parts[0],
-            "kind": parts[1] if len(parts) > 1 else "vllm",
-            "arch": parts[2] if len(parts) > 2 else "",
-            "mesh": parts[3] if len(parts) > 3 else "",
-        }
-        entries.append(_entry_from_record(rec))
+        entries.append(_entry_from_record({"name": parts[0]}))
     return entries
 
 
@@ -323,18 +388,21 @@ def _run_tt(args: List[str]) -> Optional[str]:
 
 
 def fetch_community_entries() -> List[ModelEntry]:
-    """Shell `tt model list --community` and parse the result.
+    """Shell `tt model list --community --all` and parse the result.
 
-    Tries --json first; if that flag isn't supported (or any other failure),
-    retries without it and parses the text-table fallback. Returns [] if the
-    `tt` CLI isn't installed or both attempts fail — an empty community list
-    is "nothing to show", not an error the caller needs to surface.
+    `--all` bypasses tt-cli's own hardware auto-detection filtering — this
+    app's Community section always shows every community bundle regardless
+    of this machine's detected hardware (see spec). Tries --json first; if
+    that flag isn't supported (or any other failure), retries without it and
+    parses the text-table fallback. Returns [] if the `tt` CLI isn't
+    installed or both attempts fail — an empty community list is "nothing
+    to show", not an error the caller needs to surface.
     """
     if not shutil.which("tt"):
         return []
-    out = _run_tt(["model", "list", "--community", "--json"])
+    out = _run_tt(["model", "list", "--community", "--all", "--json"])
     if out is None:
-        out = _run_tt(["model", "list", "--community"])
+        out = _run_tt(["model", "list", "--community", "--all"])
     if out is None:
         return []
     return parse_community_list(out)
@@ -359,7 +427,7 @@ def load_async(on_done: Callable[[List[ModelEntry]], None]) -> None:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `cd /home/ttuser/code/tt-model-runner && PYTHONPATH=app pytest tests/test_community_catalog.py -v`
-Expected: PASS (all 6 tests)
+Expected: PASS (all 7 tests)
 
 - [ ] **Step 5: Commit**
 
@@ -370,7 +438,16 @@ git commit -m "feat: add community_catalog.py to discover tt-model-manager bundl
 
 ---
 
-### Task 3: `TtModelLauncher` — launch community bundles via `tt-model serve`
+### Task 3: `TtModelLauncher` — launch community bundles via `tt serve`
+
+> Revised 2026-09-28: shells `tt serve`/`tt model stop` (the `tt` binary),
+> not `tt-model` directly — `tt-model` is a lazily-installed `uv-tool` `tt`
+> itself manages (`tools/supplement.toml`, `kind = "uv-tool"`, golden-pinned)
+> and is not reliably present on PATH otherwise; shelling it directly would
+> lose `tt`'s free auto-install and its HF_HOME env pinning
+> (`backends/serving/model_manager.py`). Confirmed safe because this
+> launcher only ever handles entries already tagged `source == "community"`
+> — see the ledger for full reasoning.
 
 **Files:**
 - Create: `app/tt_model_launcher.py`
@@ -405,7 +482,7 @@ def _fake_popen(lines, returncode=0):
 def test_launch_builds_expected_command_and_reports_launching():
     launcher = TtModelLauncher()
     log_lines, states = [], []
-    with patch("tt_model_launcher.shutil.which", return_value="/usr/bin/tt-model"), \
+    with patch("tt_model_launcher.shutil.which", return_value="/usr/bin/tt"), \
          patch("tt_model_launcher.subprocess.Popen") as mock_popen:
         mock_popen.return_value = _fake_popen(["Starting vLLM API server\n"])
         launcher.launch(
@@ -415,14 +492,14 @@ def test_launch_builds_expected_command_and_reports_launching():
         launcher._thread.join(timeout=5)
 
     args = mock_popen.call_args[0][0]
-    assert args == ["/usr/bin/tt-model", "serve", "acme/llama-fast", "--port", "8001"]
+    assert args == ["/usr/bin/tt", "serve", "acme/llama-fast", "--port", "8001"]
     assert ServerState.LAUNCHING in states
     assert ServerState.LOADING in states  # "Starting vLLM API server" → LOADING via LogParser
 
 
 def test_launch_includes_profile_flag_when_set():
     launcher = TtModelLauncher()
-    with patch("tt_model_launcher.shutil.which", return_value="/usr/bin/tt-model"), \
+    with patch("tt_model_launcher.shutil.which", return_value="/usr/bin/tt"), \
          patch("tt_model_launcher.subprocess.Popen") as mock_popen:
         mock_popen.return_value = _fake_popen([])
         launcher.launch(
@@ -432,10 +509,10 @@ def test_launch_includes_profile_flag_when_set():
         launcher._thread.join(timeout=5)
 
     args = mock_popen.call_args[0][0]
-    assert args == ["/usr/bin/tt-model", "serve", "acme/llama-fast", "--port", "8001", "--profile", "fast"]
+    assert args == ["/usr/bin/tt", "serve", "acme/llama-fast", "--port", "8001", "--profile", "fast"]
 
 
-def test_launch_reports_error_when_tt_model_missing():
+def test_launch_reports_error_when_tt_missing():
     launcher = TtModelLauncher()
     log_lines, states = [], []
     with patch("tt_model_launcher.shutil.which", return_value=None):
@@ -446,13 +523,13 @@ def test_launch_reports_error_when_tt_model_missing():
         launcher._thread.join(timeout=5)
 
     assert ServerState.ERROR in states
-    assert any("tt-model not found" in l for l in log_lines)
+    assert any("tt not found" in l for l in log_lines)
 
 
 def test_launch_reports_error_on_nonzero_exit():
     launcher = TtModelLauncher()
     states = []
-    with patch("tt_model_launcher.shutil.which", return_value="/usr/bin/tt-model"), \
+    with patch("tt_model_launcher.shutil.which", return_value="/usr/bin/tt"), \
          patch("tt_model_launcher.subprocess.Popen") as mock_popen:
         mock_popen.return_value = _fake_popen(["some error\n"], returncode=1)
         launcher.launch(
@@ -466,7 +543,7 @@ def test_launch_reports_error_on_nonzero_exit():
 
 def test_stop_calls_tt_model_stop_with_bundle_id():
     launcher = TtModelLauncher()
-    with patch("tt_model_launcher.shutil.which", return_value="/usr/bin/tt-model"), \
+    with patch("tt_model_launcher.shutil.which", return_value="/usr/bin/tt"), \
          patch("tt_model_launcher.subprocess.Popen") as mock_popen, \
          patch("tt_model_launcher.subprocess.run") as mock_run:
         mock_popen.return_value = _fake_popen([])
@@ -478,7 +555,7 @@ def test_stop_calls_tt_model_stop_with_bundle_id():
         launcher.stop()
 
     stop_args = mock_run.call_args[0][0]
-    assert stop_args == ["/usr/bin/tt-model", "stop", "acme/llama-fast"]
+    assert stop_args == ["/usr/bin/tt", "model", "stop", "acme/llama-fast"]
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -493,14 +570,23 @@ Create `app/tt_model_launcher.py`:
 ```python
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Launch a tt-model-manager community bundle via `tt-model serve`.
+"""Launch a tt-model-manager community bundle via `tt serve`.
+
+Shells the `tt` binary (not `tt-model` directly): `tt-model` is a
+lazily-installed tool `tt` itself manages (installed on first use, pinned to
+a golden version, with its own HF_HOME env pinning) — shelling it directly
+would bypass all of that and fail with "not found" on a machine that has
+never served a community bundle before. `tt serve <bundle_id>` and
+`tt model stop <bundle_id>` both dispatch correctly by bundle-id shape on
+tt-cli's side; safe here because this launcher is only ever invoked for
+entries already tagged source == "community".
 
 Unlike ServerManager (which drives run.py inside Docker, with GHCR image
-resolution and auto-remediation) `tt-model serve` is a single self-contained
-foreground process — no container to poll, no image to resolve. Reuses
-ServerManager's LogParser since vllm/tt-dit-server bundles produce the same
-startup log patterns run.py's own images do; readiness is left to the
-existing HealthWorker (polls the configured port), not detected here.
+resolution and auto-remediation) this is a single self-contained foreground
+process — no container to poll, no image to resolve. Reuses ServerManager's
+LogParser since vLLM-backed bundles produce the same startup log patterns
+run.py's own images do; readiness is left to the existing HealthWorker
+(polls the configured port), not detected here.
 """
 import shutil
 import subprocess
@@ -519,7 +605,7 @@ class TtModelLaunchConfig:
 
 
 class TtModelLauncher:
-    """Runs `tt-model serve <bundle_id>` and tails its output.
+    """Runs `tt serve <bundle_id>` and tails its output.
 
     Public API mirrors ServerManager/DevImageLauncher:
         launch(config, on_log_line, on_state)
@@ -548,11 +634,11 @@ class TtModelLauncher:
         self._stop_event.set()
         bundle_id = self._bundle_id
         if bundle_id:
-            tt_model_bin = shutil.which("tt-model")
-            if tt_model_bin:
+            tt_bin = shutil.which("tt")
+            if tt_bin:
                 try:
                     subprocess.run(
-                        [tt_model_bin, "stop", bundle_id],
+                        [tt_bin, "model", "stop", bundle_id],
                         check=False, capture_output=True, timeout=15,
                     )
                 except Exception:
@@ -567,13 +653,13 @@ class TtModelLauncher:
     def _run(self, config: TtModelLaunchConfig,
               on_log_line: Callable[[str], None],
               on_state: Callable[[ServerState], None]) -> None:
-        tt_model_bin = shutil.which("tt-model")
-        if not tt_model_bin:
-            on_log_line("✗ tt-model not found — install the tt CLI toolchain")
+        tt_bin = shutil.which("tt")
+        if not tt_bin:
+            on_log_line("✗ tt not found — install the tt CLI toolchain")
             on_state(ServerState.ERROR)
             return
 
-        cmd = [tt_model_bin, "serve", config.bundle_id, "--port", str(config.port)]
+        cmd = [tt_bin, "serve", config.bundle_id, "--port", str(config.port)]
         if config.profile:
             cmd += ["--profile", config.profile]
 
@@ -585,7 +671,7 @@ class TtModelLauncher:
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
             )
         except FileNotFoundError:
-            on_log_line("✗ tt-model not found — install the tt CLI toolchain")
+            on_log_line("✗ tt not found — install the tt CLI toolchain")
             on_state(ServerState.ERROR)
             return
 
@@ -602,7 +688,7 @@ class TtModelLauncher:
         if self._stop_event.is_set():
             on_state(ServerState.IDLE)
         elif rc != 0:
-            on_log_line(f"✗ tt-model serve exited with code {rc}")
+            on_log_line(f"✗ tt serve exited with code {rc}")
             on_state(ServerState.ERROR)
 ```
 
@@ -615,7 +701,7 @@ Expected: PASS (all 5 tests)
 
 ```bash
 git add app/tt_model_launcher.py tests/test_tt_model_launcher.py
-git commit -m "feat: add TtModelLauncher to serve tt-model-manager bundles"
+git commit -m "feat: add TtModelLauncher to serve tt-model-manager bundles via tt CLI"
 ```
 
 ---
@@ -715,7 +801,7 @@ Add near `launch_dev_image` (`app/controller.py:1068-1087`):
 
 ```python
     def launch_community(self, entry: ModelEntry, port: str) -> None:
-        """Launch a tt-model-manager community bundle via `tt-model serve`.
+        """Launch a tt-model-manager community bundle via `tt serve` (TtModelLauncher).
 
         entry.source must be "community"; entry.model_id is the bundle id
         (e.g. "org/name"). No LaunchOptions, no GHCR resolution, no
