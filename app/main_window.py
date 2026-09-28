@@ -172,6 +172,7 @@ class Sidebar(Gtk.Box):
         self.on_compat_select = None     # Callable[[CompatEntry], None]
         self.on_restore_config = None   # set by MainWindow; callable(SavedConfig)
         self.on_save_config = None      # set by MainWindow; callable(name: str)
+        self._community_entries: list = []
         # Active model type filters: empty set = show all types.
         saved_tf = _settings.type_filters or []
         self._type_filter_active: set = set(saved_tf) if saved_tf else set(_TYPE_ORDER)
@@ -1071,6 +1072,33 @@ class Sidebar(Gtk.Box):
         if searching and self._compat_catalog:
             self._append_discover_results(search)
 
+        # COMMUNITY section — tt-model-manager bundles, always shown (not
+        # gated by device compatibility filtering like the main tree).
+        if self._community_entries:
+            visible = self._community_entries
+            if search:
+                visible = [
+                    e for e in visible
+                    if search in e.display_name.lower() or search in (e.family or "").lower()
+                ]
+            if visible:
+                comm_it = self._tree_store.append(
+                    None, [f"COMMUNITY ({len(visible)})", "", "", False]
+                )
+                for entry in visible:
+                    label = f"{entry.display_name}  [{entry.device_type}]"
+                    self._tree_store.append(
+                        comm_it, [label, entry.model_name, entry.device_type, True]
+                    )
+
+    def load_community_entries(self, entries: list) -> None:
+        """Store community bundles and re-render the tree to include them."""
+        self._community_entries = list(entries)
+        if self._selected_device:
+            self._rebuild_tree([self._selected_device])
+        else:
+            self._rebuild_tree(None)
+
     def _append_discover_results(self, search: str) -> None:
         """Add DISCOVER tree section from compat catalog for search query."""
         from compat_catalog import _HW_MAP
@@ -1149,7 +1177,12 @@ class Sidebar(Gtk.Box):
             if entry:
                 self._selected_entry = entry
                 _settings.last_model = model_key
-                _settings.last_device = device
+                # Community bundles carry tt-cli hardware tags as device_type
+                # (often not in the curated device dropdown); persisting one as
+                # last_device would corrupt the curated tree's device filter
+                # on the next start/reload.
+                if entry.source != "community":
+                    _settings.last_device = device
                 _settings.save()
                 self._on_model_select(entry)
 
@@ -3184,6 +3217,7 @@ class MainWindow(Gtk.ApplicationWindow):
         controller.on_download_progress = self._on_download_progress
         controller.on_environment_checked = self._on_environment_checked
         controller.on_remediation_applied = self._on_remediation_applied
+        controller.on_community_catalog_loaded = self._on_community_catalog_loaded
 
         # Wire saved-config sidebar callbacks.
         self._sidebar.on_restore_config = self._restore_config
@@ -3563,12 +3597,19 @@ class MainWindow(Gtk.ApplicationWindow):
             self._sidebar.set_compat_catalog(catalog)
             self._refresh_ad_unit()
 
+    def _on_community_catalog_loaded(self, entries: list) -> None:
+        """Pass freshly-fetched tt-model-manager bundles to the sidebar."""
+        self._sidebar.load_community_entries(entries)
+
     # ── User action handlers (called from Sidebar widgets) ────────────────────
 
     def _on_launch_clicked(self, entry: ModelEntry, port: str) -> None:
         """Collect current options from the config panel and ask the controller
         to start the server.  If the engine family changed since the last launch,
         show a dialog recommending tt-smi -r first."""
+        if getattr(entry, "source", "inference_server") == "community":
+            self._ctrl.launch_community(entry, port)
+            return
         warning = self._ctrl.needs_reset_warning(entry)
         if warning:
             old_engine, new_engine, old_model = warning

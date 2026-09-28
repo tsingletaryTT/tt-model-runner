@@ -392,6 +392,13 @@ class ServerManager:
             (config.options.docker_image_override if config.options else "")
             or config.docker_image_override
         )
+        if config.options and config.options.dev_mode and not _docker_img:
+            on_log_line(
+                "✗ --dev-mode requires --override-docker-image when using "
+                "--docker-server — dev specs do not pin a docker image"
+            )
+            on_state(ServerState.ERROR)
+            return
         if _docker_img:
             cmd += ["--override-docker-image", _docker_img]
 

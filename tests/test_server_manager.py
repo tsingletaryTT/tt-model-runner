@@ -1,9 +1,11 @@
 import sys
 from pathlib import Path
 import pytest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "app"))
-from server_manager import LogParser, ServerState
+from server_manager import LogParser, ServerState, LaunchConfig, ServerManager
+from launch_options import LaunchOptions
 
 
 def test_parse_pulling_image():
@@ -62,3 +64,47 @@ def test_parse_warmup_complete():
     p = LogParser()
     p.feed("All devices are warmed up and ready to serve")
     assert p.last_substage == "warmup_complete"
+
+
+def test_launch_errors_when_dev_mode_without_docker_image_override(tmp_path):
+    mgr = ServerManager()
+    config = LaunchConfig(
+        repo_path=tmp_path,
+        model_name="test-model",
+        device="N150",
+        port="8000",
+        options=LaunchOptions(dev_mode=True, docker_image_override=""),
+    )
+    log_lines, states = [], []
+    with patch("server_manager.subprocess.Popen") as mock_popen:
+        mgr.launch(config, log_lines.append, states.append)
+
+    mock_popen.assert_not_called()
+    assert ServerState.ERROR in states
+    assert any("--dev-mode" in l and "--override-docker-image" in l for l in log_lines)
+
+
+def test_launch_allows_dev_mode_with_docker_image_override(tmp_path):
+    mgr = ServerManager()
+    config = LaunchConfig(
+        repo_path=tmp_path,
+        model_name="test-model",
+        device="N150",
+        port="8000",
+        options=LaunchOptions(dev_mode=True, docker_image_override="ghcr.io/tt/dev:latest"),
+    )
+    states = []
+    with patch("server_manager.subprocess.Popen") as mock_popen:
+        # Mock the process to have stderr and poll() that returns a non-None value (exited)
+        mock_popen.return_value.stderr = iter([])
+        mock_popen.return_value.poll.return_value = 0
+        mgr.launch(config, lambda l: None, states.append)
+
+    mock_popen.assert_called_once()
+    # Check that Popen was called with --override-docker-image in the args
+    call_args = mock_popen.call_args[0][0]
+    assert "--override-docker-image" in call_args
+    assert "ghcr.io/tt/dev:latest" in call_args
+    # Should not have emitted ERROR for the dev_mode check (though may emit ERROR for other reasons)
+    # The key is that we proceed to call Popen, meaning the guard didn't trip
+    assert mock_popen.call_count == 1

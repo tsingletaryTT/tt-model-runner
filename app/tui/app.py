@@ -117,6 +117,7 @@ class TuiApp(App[None]):
         self._ctrl.on_download_progress = self._on_download_progress
         self._ctrl.on_environment_checked = self._on_environment_checked
         self._ctrl.on_remediation_applied = self._on_remediation_applied
+        self._ctrl.on_community_catalog_loaded = self._on_community_catalog_loaded
 
         self._set_ready_tabs_enabled(False)
 
@@ -199,6 +200,11 @@ class TuiApp(App[None]):
         device = getattr(self, "_detected_device", None)
         self.query_one(ModelRail).load_compat_catalog(catalog, device)
         self._rebuild_ad_cards()
+
+    def _on_community_catalog_loaded(self, entries: list) -> None:
+        """Wire freshly-fetched tt-model-manager community bundles into the rail."""
+        rail = self.query_one(ModelRail)
+        rail.load_community_entries(entries)
 
     def _rebuild_ad_cards(self) -> None:
         """Rebuild the rotating card pool from the current catalog + compat catalog."""
@@ -319,13 +325,20 @@ class TuiApp(App[None]):
         rail = self.query_one(ModelRail)
         entry = rail.selected_entry
         port  = rail.port_value
-        if entry:
+        if not entry:
+            return
+        if getattr(entry, "source", "inference_server") == "community":
+            self._ctrl.launch_community(entry, port)
+        else:
             opts = self._ctrl.get_options()
             self._ctrl.launch(entry, port, opts)
 
     def _do_launch(self, entry, port: str) -> None:
-        opts = self._ctrl.get_options()
-        self._ctrl.launch(entry, port, opts)
+        if getattr(entry, "source", "inference_server") == "community":
+            self._ctrl.launch_community(entry, port)
+        else:
+            opts = self._ctrl.get_options()
+            self._ctrl.launch(entry, port, opts)
         # Refresh RECENT section after launch so the new entry appears immediately.
         self.call_after_refresh(
             lambda: self.query_one(ModelRail)._refresh_starred_recent()

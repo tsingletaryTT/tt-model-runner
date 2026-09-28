@@ -46,6 +46,7 @@ class ModelEntry:
     param_count: Optional[float]
     min_disk_gb: Optional[float]
     min_ram_gb: Optional[float]
+    source: str = "inference_server"   # "inference_server" | "community"
 
 
 class ModelCatalog:
@@ -111,7 +112,14 @@ class ModelCatalog:
         return None
 
     def all_device_types(self) -> List[str]:
-        return sorted(set(e.device_type for e in self._entries))
+        """Device types from the curated tt-inference-server catalog only.
+
+        Community entries are excluded: their device_type comes from tt-cli's
+        `hardware` tag, which is outside model_spec.json's device taxonomy,
+        and they must never contribute to the curated device filter.
+        """
+        return sorted(set(e.device_type for e in self._entries
+                          if e.source == "inference_server"))
 
     def all_entries(self) -> List[ModelEntry]:
         return list(self._entries)
@@ -124,3 +132,16 @@ class ModelCatalog:
         """
         eligible = set(BLACKHOLE_FAMILY) & {d.upper() for d in detected_devices}
         return ModelCatalog([e for e in self._entries if e.device_type.upper() in eligible])
+
+    def merge_community(self, entries: List[ModelEntry]) -> None:
+        """Append community-sourced entries (from community_catalog.py).
+
+        Idempotent by model_id: re-merging (e.g. after a catalog refresh)
+        replaces existing community entries with the same model_id instead
+        of duplicating them.
+        """
+        existing_ids = {e.model_id for e in entries}
+        self._entries = [
+            e for e in self._entries
+            if not (e.source == "community" and e.model_id in existing_ids)
+        ] + list(entries)

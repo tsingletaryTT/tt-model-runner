@@ -3,6 +3,23 @@
 Date: 2026-09-17
 Status: approved, entering implementation planning
 
+**2026-09-28 addendum:** the 2026-09-17 research below was Glean-based
+(secondary sources — Slack, Jira, docs). Mid-implementation, verified the
+actual current source in `~/code/tt-cli` and `~/code/tt-model-manager` and
+found three corrections, recorded in the implementation plan's ledger and
+folded into the "Decisions" and "Launcher & controller changes" sections
+below: (1) `tt model list --community` needs `--all` to bypass hardware
+auto-filtering; (2) the real `BundleInfo` schema uses `name`/`hardware`
+(list)/`engine`, not the guessed `id`/`mesh`/`kind`; (3) Task 3 now shells
+`tt serve <bundle_id>` / `tt model stop <bundle_id>` (via the `tt` binary)
+rather than `tt-model serve`/`tt-model stop` directly — `tt-model` is a
+lazily-installed `uv-tool` tt-cli itself manages (golden-pinned, HF_HOME-pinned
+env), not reliably present on PATH otherwise, and shelling it directly would
+lose that free auto-install. This does not reopen the decision to keep
+`run.py` direct for tt-inference-server models — that constraint's rationale
+(the inference-server's own git-venv checkout) is unrelated to tt-model and
+still holds.
+
 ## Prompt
 
 > Let's modernize this to work with the new `tt` and `tt-model` CLI and expand
@@ -57,10 +74,12 @@ and `tenstorrent/tt-inference-server`) established:
    checkout — the docker shim, GHCR resolution, and auto-remediation logic
    are confirmed still correct and are not touched by this project.
 2. **Add tt-model-manager community bundles as a second model source**,
-   launched through a new, separate launcher that shells out to
-   `tt-model serve` — not a replacement for `run.py`, and not routed through
-   `tt serve`'s own auto-dispatch (the app already knows which source an
-   entry came from, so it can call the right backend directly).
+   launched through a new, separate launcher — not a replacement for
+   `run.py`. (2026-09-28: this launcher shells `tt serve <bundle_id>` /
+   `tt model stop <bundle_id>` via the `tt` binary, not `tt-model` directly
+   — see addendum above. `tt`'s dispatch by bundle-id shape is safe here
+   because this launcher is only ever invoked for entries already tagged
+   `source == "community"`.)
 3. **Discover community bundles via `tt model list --community`** (shelling
    the `tt` CLI), not by querying the HF-backed index directly — one
    dependency (the tt CLI toolchain), inherits whatever curation tt-cli
@@ -81,18 +100,26 @@ and `tenstorrent/tt-inference-server`) established:
 
 - `source: str` — `"inference_server"` (default, existing entries) or
   `"community"`.
-- Existing fields are reused for community entries where the shape fits:
-  - `model_id` / `model_name` ← the bundle id (`"org/name"`)
-  - `hf_model_repo` ← the bundle's `weights` pointer (HF repo id)
-  - `inference_engine` ← the bundle's `kind` (`vllm` / `tt-dit-server`) so the
-    existing `LogParser` regexes apply unmodified (both kinds produce log
-    patterns it already recognizes — vLLM startup lines, or ASGI/uvicorn
-    startup for `tt-dit-server`)
-  - `device_type` ← best-effort mapped from the bundle's `arch`/`mesh` onto
-    the existing device-type taxonomy (e.g. `p150` → `P150`); unmappable
-    values fall back to a new `"UNKNOWN"` bucket that is always shown —
-    community bundles skip the strict hardware-compatibility gate that
-    `get_compatible`/`get_blackhole_family` apply to inference-server entries
+- Existing fields are reused for community entries where the shape fits.
+  (2026-09-28: corrected to match `app/community_catalog.py`, which follows
+  tt-cli's real `BundleInfo` record — the earlier `kind`/`arch`/`mesh`
+  mapping described here was superseded.)
+  - `model_id` / `model_name` ← the bundle's `name` (bundle id, `"org/name"`);
+    `display_name` is the part after `/`, `family` the org
+  - `hf_model_repo` ← the bundle's `weights_repo` (falls back to the bundle id)
+  - `inference_engine` ← the bundle's `engine`, lowercased (e.g. `vLLM` →
+    `vllm`); a missing `engine` defaults to `vllm`
+  - `device_type` ← the first tag in the bundle's `hardware` list, uppercased
+    (e.g. `p150` → `P150`, `p300x2` → `P300X2`), with a small alias table for
+    tags that don't uppercase onto model_spec.json's vocabulary (`t3000`/`t3k`
+    → `T3K`, `galaxy` → `GALAXY`); an empty/missing `hardware` list maps to
+    `"UNKNOWN"`. Community bundles skip the strict hardware-compatibility gate
+    that `get_compatible`/`get_blackhole_family` apply to inference-server
+    entries, and never contribute to the curated device filter
+    (`all_device_types()` only considers `source == "inference_server"`)
+  - Duplicate rows for the same bundle id (tt-cli lists a bundle once per
+    source when it is both published and installed locally) are collapsed to
+    one entry, preferring the `installed: true` record
   - `status` ← new value `"COMMUNITY"`, driving a badge in the UI
   - `docker_image` ← empty (no docker image; bundles are self-contained)
   - `param_count` / `min_disk_gb` / `min_ram_gb` ← `None` (not exposed by the
@@ -113,19 +140,19 @@ listings are more mutable than the 24h-cached `compatibility.json`.
 New `app/tt_model_launcher.py::TtModelLauncher`, same public shape as
 `DevImageLauncher` (`launch(config, on_log_line, on_state)`, `stop()`):
 
-- `launch()` shells `tt-model serve <bundle_id> --port <port> [--profile <profile>]`
-  as a foreground subprocess (simpler than `DevImageLauncher` — no Docker
-  container to poll for liveness, `tt-model serve` owns the process directly)
-  and tails its stdout through the **existing** `LogParser` for state
-  transitions.
+- `launch()` shells `tt serve <bundle_id> --port <port> [--profile <profile>]`
+  (via the `tt` binary — see 2026-09-28 addendum) as a foreground subprocess
+  (simpler than `DevImageLauncher` — no Docker container to poll for
+  liveness, the process owns its own lifecycle directly) and tails its
+  stdout through the **existing** `LogParser` for state transitions.
 - Readiness is detected via the **existing** `HealthWorker` (already just
   polls `/v1/models` / `/tt-liveness` on the configured port — bundle-agnostic,
   no changes needed).
-- `stop()` shells `tt-model stop <bundle_id>`.
+- `stop()` shells `tt model stop <bundle_id>`.
 - No GHCR resolution, no auto-remediation, no retry logic initially — errors
-  surface as `ServerState.ERROR` with `tt-model serve`'s own stderr/exit code
-  in the log. `tt-model`'s own `compare()` step already fatally rejects
-  `arch` mismatches and warns on `device_count` mismatches; the launcher does
+  surface as `ServerState.ERROR` with the CLI's own stderr/exit code in the
+  log. `tt-model`'s own `compare()` step already fatally rejects `arch`
+  mismatches and warns on `device_count` mismatches; the launcher does
   not duplicate that pre-flight check.
 
 `AppController` gets a new public method `launch_community(entry, port, ...)`

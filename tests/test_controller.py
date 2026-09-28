@@ -966,3 +966,132 @@ def test_undo_restores_prior_env_and_option_values(tmp_path):
     assert "HF_TOKEN=keep-me" in env_text                # untouched
     assert ctrl._options.max_model_len == 32768          # prior option restored, not None
     assert ctrl._applied_remedy is None
+
+
+# ── Community bundle launch ──────────────────────────────────────────────────
+
+def test_launch_community_uses_tt_model_launcher(monkeypatch):
+    ctrl, _ = make_controller()
+    from model_catalog import ModelEntry
+    entry = ModelEntry(
+        model_id="org/bundle", model_name="org/bundle", display_name="bundle",
+        hf_model_repo="org/weights", model_type="COMMUNITY", family="org",
+        device_type="UNKNOWN", inference_engine="vllm", docker_image="",
+        status="COMMUNITY", param_count=None, min_disk_gb=None, min_ram_gb=None,
+        source="community",
+    )
+    launched = {}
+    def _fake_launch(config, on_log_line, on_state):
+        launched["bundle_id"] = config.bundle_id
+        launched["port"] = config.port
+    monkeypatch.setattr(ctrl._tt_model_launcher, "launch", _fake_launch)
+    ctrl.launch_community(entry, "8001")
+    assert launched == {"bundle_id": "org/bundle", "port": "8001"}
+
+
+# ── Fix wave 1: community launches must never route through run.py ──────────
+
+def _entry(source="community", device="P300X2"):
+    from model_catalog import ModelEntry
+    return ModelEntry(
+        model_id="org/bundle", model_name="org/bundle", display_name="bundle",
+        hf_model_repo="org/weights", model_type="COMMUNITY", family="org",
+        device_type=device, inference_engine="vllm", docker_image="",
+        status="COMMUNITY", param_count=None, min_disk_gb=None, min_ram_gb=None,
+        source=source,
+    )
+
+
+def _run_restart(monkeypatch, entry):
+    """Drive restart() with all launchers stubbed; return the recorded calls."""
+    ctrl, _ = make_controller()
+    ctrl._current_entry = entry
+    ctrl._port = "8001"
+    ctrl._state = ServerState.READY
+    calls = []
+
+    def _stopper(name):
+        def _stop():
+            calls.append(name)
+            # Simulate the launcher's thread reporting IDLE after the stop so
+            # restart()'s settle loop exits promptly.
+            ctrl._state = ServerState.IDLE
+        return _stop
+
+    monkeypatch.setattr(ctrl._server_mgr, "stop", _stopper("server_mgr.stop"))
+    monkeypatch.setattr(ctrl._dev_launcher, "stop", _stopper("dev.stop"))
+    monkeypatch.setattr(ctrl._tt_model_launcher, "stop", _stopper("tt.stop"))
+    done = threading.Event()
+
+    def _do_launch(e, p):
+        calls.append(("_do_launch", p))
+        done.set()
+
+    def _launch_community(e, p):
+        calls.append(("launch_community", e.model_id, p))
+        done.set()
+
+    monkeypatch.setattr(ctrl, "_do_launch", _do_launch)
+    monkeypatch.setattr(ctrl, "launch_community", _launch_community)
+    ctrl.restart()
+    assert done.wait(timeout=5), "restart() never relaunched"
+    return calls
+
+
+def test_restart_community_stops_tt_serve_and_relaunches_via_launch_community(monkeypatch):
+    """restart() on a community bundle must stop `tt serve` and relaunch via
+    launch_community — never via _do_launch (which runs run.py)."""
+    calls = _run_restart(monkeypatch, _entry(source="community"))
+    assert "tt.stop" in calls
+    assert ("launch_community", "org/bundle", "8001") in calls
+    assert not any(isinstance(c, tuple) and c[0] == "_do_launch" for c in calls)
+
+
+def test_restart_inference_server_entry_still_uses_do_launch(monkeypatch):
+    calls = _run_restart(monkeypatch, _entry(source="inference_server"))
+    assert ("_do_launch", "8001") in calls
+    assert not any(isinstance(c, tuple) and c[0] == "launch_community" for c in calls)
+
+
+def test_maybe_remediate_never_fires_for_community_entry(monkeypatch):
+    """Auto-remediation is out of scope for community bundles (spec) — even an
+    auto-appliable KB match must not apply a remedy or relaunch via run.py."""
+    import workaround_resolver as wr
+    ctrl, _ = make_controller()
+    ctrl._current_entry = _entry(source="community")
+    ctrl._port = "8001"
+    matched = wr.Workaround(id="x", devices=["*"], models=["*"], env={"A": "1"}, auto=True)
+    monkeypatch.setattr("controller._wr.match_symptom", lambda *a, **k: matched)
+    side_effects = []
+    monkeypatch.setattr(ctrl, "_do_launch", lambda e, p: side_effects.append("relaunch"))
+    monkeypatch.setattr(ctrl, "_apply_remedy", lambda *a, **k: side_effects.append("applied"))
+    assert ctrl._maybe_remediate("ERROR: something crashed") is False
+    assert side_effects == []
+    assert ctrl._remediation_attempts == 0
+
+
+def test_launch_community_resets_remediation_and_server_mgr_parser(monkeypatch):
+    ctrl, _ = make_controller()
+    ctrl._remediation_attempts = 1
+    ctrl._applied_remedy = object()
+    stale = ctrl._server_mgr.parser
+    stale.weights_missing = True
+    monkeypatch.setattr(ctrl._tt_model_launcher, "launch", lambda *a: None)
+    monkeypatch.setattr("controller.HealthWorker", MagicMock())
+    ctrl.launch_community(_entry(source="community"), "8001")
+    assert ctrl._remediation_attempts == 0
+    assert ctrl._applied_remedy is None
+    assert ctrl._server_mgr.parser is not stale
+    assert not ctrl._server_mgr.parser.weights_missing
+
+
+def test_error_transition_stops_tt_model_launcher(monkeypatch):
+    """An ERROR transition (e.g. lost health check) must stop `tt serve` too,
+    or it keeps holding the port and the next launch hits a conflict."""
+    ctrl, _ = make_controller()
+    ctrl._state = ServerState.READY
+    calls = []
+    monkeypatch.setattr(ctrl._server_mgr, "stop", lambda: calls.append("server_mgr"))
+    monkeypatch.setattr(ctrl._tt_model_launcher, "stop", lambda: calls.append("tt"))
+    ctrl._transition(ServerState.ERROR)
+    assert calls == ["server_mgr", "tt"]
