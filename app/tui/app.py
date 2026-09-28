@@ -202,11 +202,7 @@ class TuiApp(App[None]):
         self._rebuild_ad_cards()
 
     def _on_community_catalog_loaded(self, entries: list) -> None:
-        """Wire freshly-fetched tt-model-manager community bundles into the rail.
-
-        ModelRail.load_community_entries is added in Task 6 — until then this
-        callback is registered but unresolved if actually invoked.
-        """
+        """Wire freshly-fetched tt-model-manager community bundles into the rail."""
         rail = self.query_one(ModelRail)
         rail.load_community_entries(entries)
 
@@ -329,13 +325,20 @@ class TuiApp(App[None]):
         rail = self.query_one(ModelRail)
         entry = rail.selected_entry
         port  = rail.port_value
-        if entry:
+        if not entry:
+            return
+        if getattr(entry, "source", "inference_server") == "community":
+            self._ctrl.launch_community(entry, port)
+        else:
             opts = self._ctrl.get_options()
             self._ctrl.launch(entry, port, opts)
 
     def _do_launch(self, entry, port: str) -> None:
-        opts = self._ctrl.get_options()
-        self._ctrl.launch(entry, port, opts)
+        if getattr(entry, "source", "inference_server") == "community":
+            self._ctrl.launch_community(entry, port)
+        else:
+            opts = self._ctrl.get_options()
+            self._ctrl.launch(entry, port, opts)
         # Refresh RECENT section after launch so the new entry appears immediately.
         self.call_after_refresh(
             lambda: self.query_one(ModelRail)._refresh_starred_recent()

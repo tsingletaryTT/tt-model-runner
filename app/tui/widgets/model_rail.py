@@ -87,6 +87,9 @@ class ModelRail(Widget):
     #discover-list {
         max-height: 6;
     }
+    #community-list {
+        max-height: 6;
+    }
     #model-active {
         height: auto;
         color: $text;
@@ -131,6 +134,7 @@ class ModelRail(Widget):
         self._compat_devices: list = []      # device types detected on this host
         self._hw_filter: bool = True         # when True, show only compatible entries
         self._compat_entries: list = []  # (display_name, compat_entry, sw_stack) tuples
+        self._community_entries_raw: list = []
         self._catalog = None
         self._cached_repos: set = set()  # HF repos with local cache snapshots
         self._port_check_timer = None   # pending debounce timer handle
@@ -150,6 +154,8 @@ class ModelRail(Widget):
         yield ListView(id="model-list")
         yield Static("", id="discover-label")
         yield ListView(id="discover-list")
+        yield Static("", id="community-label")
+        yield ListView(id="community-list")
         yield Static("", id="hw-strip", markup=True)
         yield Label("Port:", classes="rail-section-label")
         with Widget(id="port-row"):
@@ -306,6 +312,22 @@ class ModelRail(Widget):
                 item._entry = None
                 item._compat_entry = ce
                 dlv.append(item)
+        else:
+            lbl.update("")
+
+    def load_community_entries(self, entries: list) -> None:
+        """Populate the COMMUNITY section from tt-model-manager bundles."""
+        self._community_entries_raw = list(entries)
+        clv = self.query_one("#community-list", ListView)
+        clv.clear()
+        lbl = self.query_one("#community-label", Static)
+        if entries:
+            lbl.update(f"[dim]— COMMUNITY ({len(entries)}) —[/dim]")
+            for e in entries:
+                item = ListItem(Label(f"{e.display_name[:18]}\n  [{e.device_type}]"))
+                item._entry = e
+                item._compat_entry = None
+                clv.append(item)
         else:
             lbl.update("")
 
