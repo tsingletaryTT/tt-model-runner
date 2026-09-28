@@ -30,7 +30,7 @@ from health_worker import HealthWorker
 from hf_cache import ModelCacheInfo, scan_model_cache
 from launch_options import LaunchOptions
 from model_catalog import ModelCatalog, ModelEntry
-from server_manager import LaunchConfig, ServerManager, ServerState, \
+from server_manager import LaunchConfig, LogParser, ServerManager, ServerState, \
     _set_env_key, _scrub_env_key
 from timing_store import TimingStore
 from tt_model_launcher import TtModelLauncher, TtModelLaunchConfig
@@ -697,15 +697,24 @@ class AppController:
                 if self._state in (ServerState.IDLE, ServerState.ERROR):
                     break
                 _time.sleep(0.5)
-            self._do_launch(entry, port)
+            # Community bundles relaunch through `tt serve` (TtModelLauncher),
+            # never through run.py — _do_launch would run
+            # `run.py --model <bundle_id>`, which is the wrong command entirely.
+            if entry.source == "community":
+                self.launch_community(entry, port)
+            else:
+                self._do_launch(entry, port)
 
-        # Stop first (async); then relaunch from the stop-wait thread
+        # Stop first (async); then relaunch from the stop-wait thread.
+        # Stop every launcher (mirrors stop()) so a running `tt serve` can't
+        # keep holding the port the relaunch is about to bind.
         self._transition(ServerState.STOPPING)
         if self._health_worker:
             self._health_worker.stop()
             self._health_worker = None
         self._server_mgr.stop()
         self._dev_launcher.stop()
+        self._tt_model_launcher.stop()
         threading.Thread(target=_after_stop, daemon=True).start()
 
     def _force_idle(self) -> None:
@@ -853,6 +862,13 @@ class AppController:
         entry = self._current_entry
         port = self._port
         if not entry or not port:
+            return False
+        # Auto-remediation is out of scope for community bundles (spec:
+        # "no auto-remediation/retry logic for community bundle launches").
+        # A community failure surfaces as plain ERROR with the raw CLI output;
+        # relaunching it here would also go through run.py (_do_launch),
+        # which is the wrong launcher for a tt-model-manager bundle.
+        if entry.source == "community":
             return False
         try:
             w = _wr.match_symptom(line, entry.device_type, entry.display_name)
@@ -1172,6 +1188,16 @@ class AppController:
         """
         if self._state not in (ServerState.IDLE, ServerState.ERROR):
             return
+        # Fresh remediation state, mirroring launch(). Remediation never fires
+        # for community entries (_maybe_remediate guards on source), but
+        # resetting keeps stale counters from leaking across launch types.
+        self._remediation_attempts = 0
+        self._applied_remedy = None
+        # _handle_log_line feeds every log line (community ones included) to
+        # self._server_mgr.parser; reset it so state left over from a prior
+        # tt-inference-server launch (weights_missing, last_substage, ...)
+        # can't bleed into this launch and raise false warnings.
+        self._server_mgr.parser = LogParser()
         self._current_entry = entry
         self._port = port
         config = TtModelLaunchConfig(bundle_id=entry.model_id, port=port)
@@ -1459,10 +1485,14 @@ class AppController:
                 # Kill monitoring threads so ghost log lines don't appear after
                 # the failure.  _server_mgr.stop() sets _stop_event (silencing
                 # the tail threads) and sends docker stop (no-op if already gone).
+                # _tt_model_launcher.stop() does the same for a community
+                # bundle's `tt serve` so it can't keep holding the port after
+                # e.g. a lost health check (no-op when no bundle is running).
                 if self._health_worker:
                     self._health_worker.stop()
                     self._health_worker = None
                 self._server_mgr.stop()
+                self._tt_model_launcher.stop()
 
     def _start_progress_ticker(self) -> None:
         """Start the 1-second repeating timer that emits on_progress during LOADING."""
