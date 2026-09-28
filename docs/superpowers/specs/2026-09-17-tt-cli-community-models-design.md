@@ -100,18 +100,26 @@ and `tenstorrent/tt-inference-server`) established:
 
 - `source: str` — `"inference_server"` (default, existing entries) or
   `"community"`.
-- Existing fields are reused for community entries where the shape fits:
-  - `model_id` / `model_name` ← the bundle id (`"org/name"`)
-  - `hf_model_repo` ← the bundle's `weights` pointer (HF repo id)
-  - `inference_engine` ← the bundle's `kind` (`vllm` / `tt-dit-server`) so the
-    existing `LogParser` regexes apply unmodified (both kinds produce log
-    patterns it already recognizes — vLLM startup lines, or ASGI/uvicorn
-    startup for `tt-dit-server`)
-  - `device_type` ← best-effort mapped from the bundle's `arch`/`mesh` onto
-    the existing device-type taxonomy (e.g. `p150` → `P150`); unmappable
-    values fall back to a new `"UNKNOWN"` bucket that is always shown —
-    community bundles skip the strict hardware-compatibility gate that
-    `get_compatible`/`get_blackhole_family` apply to inference-server entries
+- Existing fields are reused for community entries where the shape fits.
+  (2026-09-28: corrected to match `app/community_catalog.py`, which follows
+  tt-cli's real `BundleInfo` record — the earlier `kind`/`arch`/`mesh`
+  mapping described here was superseded.)
+  - `model_id` / `model_name` ← the bundle's `name` (bundle id, `"org/name"`);
+    `display_name` is the part after `/`, `family` the org
+  - `hf_model_repo` ← the bundle's `weights_repo` (falls back to the bundle id)
+  - `inference_engine` ← the bundle's `engine`, lowercased (e.g. `vLLM` →
+    `vllm`); a missing `engine` defaults to `vllm`
+  - `device_type` ← the first tag in the bundle's `hardware` list, uppercased
+    (e.g. `p150` → `P150`, `p300x2` → `P300X2`), with a small alias table for
+    tags that don't uppercase onto model_spec.json's vocabulary (`t3000`/`t3k`
+    → `T3K`, `galaxy` → `GALAXY`); an empty/missing `hardware` list maps to
+    `"UNKNOWN"`. Community bundles skip the strict hardware-compatibility gate
+    that `get_compatible`/`get_blackhole_family` apply to inference-server
+    entries, and never contribute to the curated device filter
+    (`all_device_types()` only considers `source == "inference_server"`)
+  - Duplicate rows for the same bundle id (tt-cli lists a bundle once per
+    source when it is both published and installed locally) are collapsed to
+    one entry, preferring the `installed: true` record
   - `status` ← new value `"COMMUNITY"`, driving a badge in the UI
   - `docker_image` ← empty (no docker image; bundles are self-contained)
   - `param_count` / `min_disk_gb` / `min_ram_gb` ← `None` (not exposed by the
