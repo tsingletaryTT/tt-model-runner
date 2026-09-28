@@ -76,6 +76,32 @@ def test_parse_community_list_missing_hardware_is_unknown():
     assert entries[0].device_type == "UNKNOWN"
 
 
+def test_parse_community_list_dedupes_same_bundle_listed_per_source():
+    """tt-cli lists a bundle once per source (HuggingFace + local) when it is
+    both published and installed; the catalog must end up with one entry per
+    id, preferring the installed record."""
+    raw = json.dumps({"models": [
+        {"name": "a/one", "source": "HuggingFace", "installed": False,
+         "hardware": ["p150"], "weights_repo": "hf/remote"},
+        {"name": "b/two", "source": "HuggingFace", "installed": True,
+         "hardware": ["p150"], "weights_repo": "hf/two-first"},
+        {"name": "a/one", "source": "local", "installed": True,
+         "hardware": ["p150"], "weights_repo": "hf/local"},
+        {"name": "b/two", "source": "local", "installed": True,
+         "hardware": ["p150"], "weights_repo": "hf/two-second"},
+    ]})
+    entries = parse_community_list(raw)
+    assert [e.model_id for e in entries] == ["a/one", "b/two"]
+    assert entries[0].hf_model_repo == "hf/local"       # installed record wins
+    assert entries[1].hf_model_repo == "hf/two-first"   # tie -> first seen
+
+
+def test_parse_community_list_text_fallback_dedupes():
+    raw = TEXT_OUTPUT + "acme/llama-fast          local        vLLM     t3000               x\n"
+    entries = parse_community_list(raw)
+    assert [e.model_id for e in entries] == ["episod/tt-animatediff", "acme/llama-fast"]
+
+
 def test_parse_community_list_empty_input():
     assert parse_community_list("") == []
     assert parse_community_list("   \n  ") == []

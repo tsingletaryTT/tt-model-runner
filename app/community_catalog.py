@@ -65,6 +65,29 @@ def _entry_from_record(rec: dict) -> ModelEntry:
     )
 
 
+def _dedupe_by_id(records: list) -> List[ModelEntry]:
+    """Build entries from raw records, keeping one per bundle id.
+
+    tt-cli lists a bundle once per source when it is both published and
+    installed locally (e.g. one row with source "HuggingFace", one with
+    source "local"), so the same id can appear more than once. Keep the
+    first record seen for each id, except that a later `installed: true`
+    record replaces an earlier non-installed one (the locally installed
+    bundle is the more useful row to show). Order of first appearance is
+    preserved.
+    """
+    chosen: dict = {}   # bundle id -> raw record (dict keeps insertion order)
+    for rec in records:
+        if not isinstance(rec, dict):
+            continue
+        entry_id = _entry_from_record(rec).model_id
+        prev = chosen.get(entry_id)
+        if prev is None or (rec.get("installed") is True
+                            and prev.get("installed") is not True):
+            chosen[entry_id] = rec
+    return [_entry_from_record(rec) for rec in chosen.values()]
+
+
 def parse_community_list(raw: str) -> List[ModelEntry]:
     """Parse `tt model list --community --all` output into ModelEntry objects.
 
@@ -79,7 +102,7 @@ def parse_community_list(raw: str) -> List[ModelEntry]:
     try:
         data = json.loads(raw)
         records = data if isinstance(data, list) else data.get("models", [])
-        return [_entry_from_record(rec) for rec in records]
+        return _dedupe_by_id(records)
     except (json.JSONDecodeError, AttributeError):
         pass
 
@@ -89,6 +112,8 @@ def parse_community_list(raw: str) -> List[ModelEntry]:
         parts = line.split()
         if not parts or "/" not in parts[0]:
             continue
+        if any(e.model_id == parts[0] for e in entries):
+            continue   # same bundle listed once per source — keep the first
         entries.append(_entry_from_record({"name": parts[0]}))
     return entries
 
