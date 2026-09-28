@@ -92,3 +92,21 @@ def test_stop_calls_tt_model_stop_with_bundle_id():
 
     stop_args = mock_run.call_args[0][0]
     assert stop_args == ["/usr/bin/tt", "model", "stop", "acme/llama-fast"]
+
+
+def test_stop_clears_bundle_id_so_later_stops_do_not_rerun_tt_model_stop():
+    launcher = TtModelLauncher()
+    with patch("tt_model_launcher.shutil.which", return_value="/usr/bin/tt"), \
+         patch("tt_model_launcher.subprocess.Popen") as mock_popen, \
+         patch("tt_model_launcher.subprocess.run") as mock_run:
+        mock_popen.return_value = _fake_popen([])
+        launcher.launch(
+            TtModelLaunchConfig(bundle_id="acme/llama-fast", port="8001"),
+            lambda l: None, lambda s: None,
+        )
+        launcher._thread.join(timeout=5)
+        launcher.stop()
+        launcher.stop()   # e.g. a later stop() for an unrelated launch
+
+    assert mock_run.call_count == 1
+    assert launcher._bundle_id is None

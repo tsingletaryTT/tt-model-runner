@@ -73,6 +73,10 @@ class TtModelLauncher:
                     )
                 except Exception:
                     pass
+            # Clear the id so later stop() calls (e.g. stopping an unrelated
+            # tt-inference-server launch, or the ERROR-transition stop) don't
+            # re-run `tt model stop` against a stale bundle.
+            self._bundle_id = None
         proc = self._proc
         if proc is not None and proc.poll() is None:
             try:
