@@ -125,3 +125,26 @@ def test_merge_community_appends_entries():
     assert len(all_entries) == 1
     assert all_entries[0].source == "community"
     assert all_entries[0].model_id == "org/bundle"
+
+
+def _community(device_type):
+    return ModelEntry(
+        model_id=f"org/{device_type}", model_name=f"org/{device_type}",
+        display_name=device_type, hf_model_repo="org/w", model_type="COMMUNITY",
+        family="org", device_type=device_type, inference_engine="vllm",
+        docker_image="", status="COMMUNITY", param_count=None, min_disk_gb=None,
+        min_ram_gb=None, source="community",
+    )
+
+
+def test_all_device_types_excludes_community_entries(tmp_path):
+    """The curated device dropdown is built from all_device_types(); community
+    bundles' tt-cli hardware tags must never contribute to it."""
+    spec = tmp_path / "model_spec.json"
+    spec.write_text(json.dumps(MINI_SPEC))
+    cat = ModelCatalog.load(spec)
+    before = cat.all_device_types()
+    cat.merge_community([_community("P150X4"), _community("UNKNOWN")])
+    after = cat.all_device_types()
+    assert after == before
+    assert "P150X4" not in after and "UNKNOWN" not in after

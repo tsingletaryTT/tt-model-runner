@@ -872,7 +872,12 @@ class Sidebar(Gtk.Box):
             if entry:
                 self._selected_entry = entry
                 _settings.last_model = model_key
-                _settings.last_device = device
+                # Community bundles carry tt-cli hardware tags as device_type
+                # (often not in the curated device dropdown); persisting one as
+                # last_device would corrupt the curated tree's device filter
+                # on the next start/reload.
+                if entry.source != "community":
+                    _settings.last_device = device
                 _settings.save()
                 self._on_model_select(entry)
 

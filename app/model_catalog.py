@@ -107,7 +107,14 @@ class ModelCatalog:
         return None
 
     def all_device_types(self) -> List[str]:
-        return sorted(set(e.device_type for e in self._entries))
+        """Device types from the curated tt-inference-server catalog only.
+
+        Community entries are excluded: their device_type comes from tt-cli's
+        `hardware` tag, which is outside model_spec.json's device taxonomy,
+        and they must never contribute to the curated device filter.
+        """
+        return sorted(set(e.device_type for e in self._entries
+                          if e.source == "inference_server"))
 
     def all_entries(self) -> List[ModelEntry]:
         return list(self._entries)

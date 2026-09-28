@@ -165,7 +165,11 @@ class ModelRail(Widget):
 
     def load_catalog(self, catalog, compatible_devices: List[str]) -> None:
         """Populate the model list from the catalog, then scan HF cache in background."""
-        self._raw_entries = list(catalog.all_entries())
+        # Community bundles live ONLY in #community-list (load_community_entries);
+        # exclude them here so they can't also appear in the main #model-list
+        # when their device_type coincidentally matches the hw filter.
+        self._raw_entries = [e for e in catalog.all_entries()
+                             if getattr(e, "source", "inference_server") != "community"]
         self._compat_devices = compatible_devices or []
         self._catalog = catalog
         self._apply_hw_filter()
