@@ -282,12 +282,22 @@ class Sidebar(Gtk.Box):
         # Model tree
         scroll = Gtk.ScrolledWindow()
         scroll.set_vexpand(True)
-        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        # AUTOMATIC (not NEVER) on the horizontal axis: a NEVER policy tells
+        # GTK the ScrolledWindow may never scroll horizontally, so instead of
+        # clipping an over-wide row it propagates the child's natural width
+        # upward and grows the whole window. A long community bundle name
+        # (Hub repo names run far longer than the curated catalog's short
+        # display names) was the first label wide enough to actually trigger
+        # this — the tree view's column has no ellipsize either, so it never
+        # had a reason to request more than the sidebar's width before.
+        scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
         self._tree_store = Gtk.TreeStore(str, str, str, bool)  # display, model_key, device_type, is_leaf
         self._tree_view = Gtk.TreeView(model=self._tree_store)
         self._tree_view.set_headers_visible(False)
         self._tree_view.set_activate_on_single_click(False)
-        col = Gtk.TreeViewColumn("Model", Gtk.CellRendererText(), text=0, sensitive=3)
+        _model_col_renderer = Gtk.CellRendererText()
+        _model_col_renderer.set_property("ellipsize", Pango.EllipsizeMode.END)
+        col = Gtk.TreeViewColumn("Model", _model_col_renderer, text=0, sensitive=3)
         self._tree_view.append_column(col)
         self._tree_view.get_selection().connect("changed", self._on_tree_selection)
         self._tree_view.set_has_tooltip(True)
